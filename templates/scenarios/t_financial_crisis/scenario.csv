@@ -1,0 +1,2 @@
+name,description,start,end,seed,parent_scenario,created_by,meta_json
+t_financial_crisis,"A 2008-style crash on top of the long-run rates: one bad year for stocks, then a recovery, with cash near zero and inflation low for years.",,,,t_inflation_series:t_market_series,,{}

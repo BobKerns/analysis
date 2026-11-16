@@ -7,6 +7,7 @@ personal loss that isn't deductible."""
 from __future__ import annotations
 
 import csv
+from contextlib import closing
 import sqlite3
 from collections.abc import Callable
 from pathlib import Path
@@ -17,7 +18,9 @@ from click.testing import CliRunner
 
 from analysis.cli import main
 from analysis.sim.chain_edit import CHAIN_COLUMNS
-from analysis.sim.engine import EngineError, _capital_gains, run_scenario
+from analysis.sim.engine import EngineError, run_scenario
+from analysis.sim.tax_api import TaxYear
+from analysis.sim.taxes.common import capital_gains
 from analysis.sim.loader import LoadError, LoadResult
 
 SALE = {
@@ -67,7 +70,7 @@ def _run(load_test_copy: Callable[[], LoadResult], runs_dir: Path, name: str = "
 
 
 def _legs_out_of(run: Path, account: str) -> dict[str, int]:
-    with sqlite3.connect(run) as con:
+    with closing(sqlite3.connect(run)) as con:
         return dict(con.execute(
             "SELECT te.tax_character, SUM(te.amount) FROM transfer_event te "
             "JOIN account fa ON fa.id = te.from_account WHERE fa.name = ? "
@@ -79,7 +82,7 @@ def _legs_out_of(run: Path, account: str) -> dict[str, int]:
 def _last_state(run: Path, account: str, month: str = "9999-12-31") -> tuple[int, int | None]:
     """``account``'s balance and cost basis at the end of ``month`` (default:
     of the run)."""
-    with sqlite3.connect(run) as con:
+    with closing(sqlite3.connect(run)) as con:
         return con.execute(
             "SELECT ls.balance, ls.cost_basis FROM lot_state ls "
             "JOIN simulation_step s ON s.id = ls.step_id "
@@ -90,7 +93,7 @@ def _last_state(run: Path, account: str, month: str = "9999-12-31") -> tuple[int
 
 
 def _capital_losses(run: Path) -> list[tuple[str, int, str]]:
-    with sqlite3.connect(run) as con:
+    with closing(sqlite3.connect(run)) as con:
         return con.execute(
             "SELECT a.name, cl.amount, cl.tax_character FROM capital_loss cl "
             "JOIN account_lot m ON m.id = cl.lot_id JOIN account a ON a.id = m.account_id"
@@ -180,7 +183,7 @@ def test_a_capital_improvement_adds_to_the_basis(
                         description="new kitchen")
     run = _run(load_test_copy, runs_dir)
     assert _last_state(run, "Asset_Home") == (600_000_00, 415_000_00)
-    with sqlite3.connect(run) as con:
+    with closing(sqlite3.connect(run)) as con:
         assert con.execute(
             "SELECT tax_character FROM transfer_event te JOIN account ta ON ta.id = te.to_account "
             "WHERE ta.name = 'Expense_Housing' AND te.date = '2027-03-31' AND amount = 1500000"
@@ -260,13 +263,13 @@ def _loss(con: sqlite3.Connection, year: int, character: str, amount: int) -> No
 
 
 def test_a_capital_loss_offsets_three_thousand_a_year_and_carries_the_rest(
-    ledger_con: sqlite3.Connection,
+    ledger_con: sqlite3.Connection, tax_year_of: Callable[..., TaxYear],
 ) -> None:
     _loss(ledger_con, 2026, "ltcg", 10_000_00)
     _gain(ledger_con, 2027, "ltcg", 2_000_00)
 
     def gains(year: int) -> tuple[int, int, int, int]:
-        result = _capital_gains(ledger_con, tax_year=year, loss_limit=lambda _y: 3_000_00)
+        result = capital_gains(tax_year_of(ledger_con, year), loss_limit=lambda _y: 3_000_00)
         return result.ltcg, result.loss_deduction, result.carryover_st, result.carryover_lt
 
     assert gains(2026) == (0, 3_000_00, 0, 7_000_00)
@@ -276,25 +279,27 @@ def test_a_capital_loss_offsets_three_thousand_a_year_and_carries_the_rest(
     assert gains(2029) == (0, 0, 0, 0)
 
 
-def test_short_and_long_term_results_net_before_the_limit(ledger_con: sqlite3.Connection) -> None:
+def test_short_and_long_term_results_net_before_the_limit(
+    ledger_con: sqlite3.Connection, tax_year_of: Callable[..., TaxYear],
+) -> None:
     """A short-term loss offsets a long-term gain; a loss left over keeps the
     character of the side that had it, and the deduction uses short-term first."""
     _gain(ledger_con, 2026, "ltcg", 4_000_00)
     _loss(ledger_con, 2026, "stcg", 1_000_00)
-    netted = _capital_gains(ledger_con, tax_year=2026, loss_limit=lambda _y: 3_000_00)
+    netted = capital_gains(tax_year_of(ledger_con, 2026), loss_limit=lambda _y: 3_000_00)
     assert (netted.stcg, netted.ltcg, netted.loss_deduction) == (0, 3_000_00, 0)
 
     _loss(ledger_con, 2027, "stcg", 2_000_00)
     _gain(ledger_con, 2027, "ltcg", -5_000_00)  # a withdrawal at a loss posts a negative leg
-    both = _capital_gains(ledger_con, tax_year=2027, loss_limit=lambda _y: 3_000_00)
+    both = capital_gains(tax_year_of(ledger_con, 2027), loss_limit=lambda _y: 3_000_00)
     assert (both.loss_deduction, both.carryover_st, both.carryover_lt) == (3_000_00, 0, 4_000_00)
 
 
 def test_the_tax_summary_shows_the_deduction_and_the_carryover(
     retire_alice_csv: Callable[[str], Path], append_calendar_row: Callable[..., None],
-    load_test_copy: Callable[[], LoadResult], runs_dir: Path,
+    load_test_copy: Callable[[], LoadResult], runs_dir: Path, add_tax: Callable[..., Path],
 ) -> None:
-    """A federal tax_accumulator for 2027 sees the brokerage loss through the
+    """The federal tax for 2027 sees the brokerage loss through the
     capital_loss_limit table."""
     _set_value(retire_alice_csv, "Asset_Brokerage_Joint", opening_cost_basis="400000.00")
     _chain(retire_alice_csv, "destination", "brokerage_sale", [
@@ -305,21 +310,49 @@ def test_the_tax_summary_shows_the_deduction_and_the_carryover(
     append_calendar_row(date="2027-01-31", kind="transfer_balance",
                         account_1="Asset_Brokerage_Joint", lot_1="default",
                         account_2="brokerage_sale", description="sell the brokerage lot")
-    _add_rule(retire_alice_csv, name="federal_tax", from_account="Asset_Checking",
-              to_account="Expense_Taxes_Federal", cadence="annual", month_of_year="4",
-              amount_rule_kind="tax_accumulator", tax_character="none", start="2028-04-30",
-              priority="400", meta_json="{}", params_json='{"year": "previous"}')
+    add_tax(start="2028-04")
     run = _run(load_test_copy, runs_dir)
-    with sqlite3.connect(run) as con:
+    with closing(sqlite3.connect(run)) as con:
         summary = dict(con.execute(
             "SELECT bucket, amount FROM tax_year_summary WHERE year = 2027 "
             "AND bucket LIKE 'federal_capital_loss_%'"
         ).fetchall())
     [(_account, loss, _character)] = _capital_losses(run)
     assert summary == {
-        "federal_capital_loss_deduction": 3_000_00,
+        "federal_capital_loss_used": 3_000_00,
         "federal_capital_loss_carryover": loss - 3_000_00,
     }
+
+
+@pytest.mark.slow
+@pytest.mark.allow_negative_balance  # after both deaths, checking runs short in 2040
+def test_a_joint_carryover_ends_half_at_the_first_death_and_all_at_the_second(
+    retire_alice_csv: Callable[[str], Path], append_calendar_row: Callable[..., None],
+    load_test_copy: Callable[[], LoadResult], runs_dir: Path, add_tax: Callable[..., Path],
+    write_lifespans: Callable[..., None],
+) -> None:
+    """#277: the joint brokerage's loss is half Alice's while Bill lives."""
+    _set_value(retire_alice_csv, "Asset_Brokerage_Joint", opening_cost_basis="400000.00")
+    _chain(retire_alice_csv, "destination", "brokerage_sale", [
+        {"account_name": "Asset_Savings", "tax_character": "return_of_capital",
+         "basis_of": "Asset_Brokerage_Joint", "basis_of_lot": "default"},
+        {"account_name": "Asset_Savings", "tax_character": "ltcg"},
+    ])
+    append_calendar_row(date="2027-01-31", kind="transfer_balance",
+                        account_1="Asset_Brokerage_Joint", lot_1="default",
+                        account_2="brokerage_sale", description="sell the brokerage lot")
+    add_tax(start="2028-04")
+    write_lifespans("alice,70,,,,,,", "bill,72,,,,,,")  # final months 2035-03 and 2039-08
+    run = _run(load_test_copy, runs_dir)
+    with closing(sqlite3.connect(run)) as con:
+        lines = {(bucket, year): amount for bucket, year, amount in con.execute(
+            "SELECT bucket, year, amount FROM tax_year_summary "
+            "WHERE bucket IN ('federal_capital_loss_carryover', 'federal_capital_loss_lapsed')")}
+    carried, lapsed = "federal_capital_loss_carryover", "federal_capital_loss_lapsed"
+    assert abs(lines[lapsed, 2035] - lines[carried, 2035]) <= 1
+    assert lines[carried, 2039] == 0 < lines[lapsed, 2039]
+    assert lines[carried, 2038] - lines[lapsed, 2039] <= 3_000_00  # the final return used some
+    assert {year for (bucket, year) in lines if bucket == lapsed} == {2035, 2039}
 
 
 @pytest.mark.parametrize(("steps", "message"), [

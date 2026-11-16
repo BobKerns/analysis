@@ -11,19 +11,20 @@ from typing import cast
 
 from IPython.display import clear_output, display
 from ipywidgets import widgets
-import matplotlib.pyplot as plt
 import pandas as pd
 
+from analysis.sim import setup_listings
+from analysis.sim.notebook_ui import scenario_view
 from analysis.sim.accounts import CASHFLOW_KINDS, KIND_LABELS, account_summary_by_kind, accounts_dataframe
 from analysis.sim.accounts import plottable_accounts
 from analysis.sim.connection import RunConnection, ScenarioConnection
-from analysis.sim.plotting import include_zero
-from analysis.sim.types import AccountKind, AccountKindAny, DollarMode, ValuePlotMode
+from analysis.sim.run_charts import balance_history_figure
+from analysis.sim.types import AccountKind, AccountKindAny, Death, DollarMode, ValuePlotMode
 from analysis.sim.notebook_ui.pickers import (
     AccountPicker, DollarModePicker, TimeRangePicker, ValuePlotModePicker,
     YAxisPlotModePicker, controls_row, observe_while_shown, run_years,
 )
-from analysis.sim.notebook_ui.styled import StyledMarkdown
+from analysis.sim.notebook_ui.styled import StyledMarkdown, show_figure
 
 
 # Income/expense balances are cumulative totals, unlike asset/liability's
@@ -46,6 +47,7 @@ def account_balance_history_widget(
     lots_by_account: Mapping[str, Sequence[str]] | None = None,
     lot_balance: Callable[[str, str, DollarMode], pd.Series] | None = None,
     time_range: TimeRangePicker | None = None,
+    deaths: Sequence[Death] = (),
 ) -> widgets.VBox:
     """Build a Kind + Accounts + Output widget set that plots on selection change.
 
@@ -57,7 +59,8 @@ def account_balance_history_widget(
     Given ``lots_by_account`` and ``lot_balance``, a single account with
     several lots can be drilled into: picked lots plot one line apiece in
     place of the account's (#170). ``time_range`` picks the years shown; the
-    caller has already set its ends (``TimeRangePicker.cover``).
+    caller has already set its ends (``TimeRangePicker.cover``). ``deaths``
+    are red lines (#255).
     Returns the combined ``ipywidgets.VBox``; it is not displayed here, because
     ``Connections.show`` displays what a widget function returns.
     """
@@ -108,20 +111,18 @@ def account_balance_history_widget(
         pivot, selected = _pivot(mode)
         with out:
             clear_output(wait=True)
-            mode_title = "CPI-constant" if mode == DollarMode.CPI_CONSTANT else "nominal"
+            mode_title = DollarMode(mode).label
             values_title = "monthly change" if values == ValuePlotMode.MONTHLY else "total"
             kind_title = KIND_LABELS[_kind()]
-            fig = render_balance_history_figure(
+            fig = balance_history_figure(
                 pivot, selected, f"{title} ({kind_title}) [{mode_title}, {values_title}]",
                 zero_anchor=zero_anchor, value_mode=values, clip=time_range.clip,
+                deaths=deaths,
             )
             if fig is None:
                 print("(pick one or more accounts)")
                 return
-            # Show the figure itself: plt.show() did not draw it on the first pass
-            # under Jupyter. Closing it keeps the inline backend from showing it again.
-            display(fig)
-            plt.close(fig)
+            show_figure(fig)
 
     picker.observe(_redraw_caveat, names="kind")
     picker.observe(_redraw, names="selection")
@@ -167,75 +168,9 @@ def account_history_widget(
         lots_by_account=rc.lots_by_account(),
         lot_balance=rc.lot_balance,
         time_range=time_range,
+        deaths=rc.deaths(),
     )
 
-
-def trim_to_last_nonzero(
-    balance_pivot: pd.DataFrame, selected: list[str]
-) -> pd.DataFrame:
-    """Trim trailing months where every selected account is zero (or missing).
-
-    Keeps one month past the last non-zero balance -- the month it actually
-    settles to its final zero -- instead of stretching the x-axis out to the
-    scenario's full end for accounts that closed out early.
-    """
-    nonzero = balance_pivot[selected].fillna(0).ne(0).any(axis=1)
-    if not nonzero.any():
-        return balance_pivot
-    last_nonzero_pos = nonzero.to_numpy().nonzero()[0].max()
-    end_pos = min(last_nonzero_pos + 1, len(balance_pivot.index) - 1)
-    return balance_pivot.iloc[: end_pos + 1]
-
-
-def render_balance_history_figure(
-    balance_pivot: pd.DataFrame,
-    selected: list[str],
-    title: str,
-    *,
-    zero_anchor: bool = True,
-    value_mode: ValuePlotMode = ValuePlotMode.TOTAL,
-    clip: Callable[[pd.DataFrame], pd.DataFrame] | None = None,
-) -> None | plt.Figure:
-    """Build the matplotlib Figure for selected account balance histories, or
-    None if empty.
-
-    ``zero_anchor`` applies the include-zero policy by default; turn it off
-    for a series whose true variation is tiny relative to its magnitude (e.g.
-    a home's value in CPI-constant terms) -- zero-anchoring would otherwise
-    flatten it to an invisible line hugging the top of the axis.
-
-    ``value_mode``: ``ValuePlotMode.TOTAL`` (default) plots the raw balance;
-    ``ValuePlotMode.MONTHLY`` plots the change from the previous month -- the
-    first month has no prior value to diff against, so the visible line
-    effectively starts one month later.
-
-    ``clip`` cuts the rows to plot (``TimeRangePicker.clip``), after the
-    monthly change is taken, so a window's first month keeps its change.
-    """
-    if not selected:
-        return None
-
-    balance_pivot = trim_to_last_nonzero(balance_pivot, selected)[selected].copy()
-    if len(selected) > 1:
-        balance_pivot["Total"] = balance_pivot.sum(axis=1)
-    ylabel = "USD"
-    if value_mode == ValuePlotMode.MONTHLY:
-        balance_pivot = balance_pivot.diff()
-        ylabel = "USD / month"
-    if clip is not None:
-        balance_pivot = clip(balance_pivot)
-    fig, ax = plt.subplots(figsize=(10, 5))
-    for name in balance_pivot.columns:
-        ax.plot(balance_pivot.index, balance_pivot[name], label=name)
-    ax.set_title(title)
-    ax.set_ylabel(ylabel)
-    ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda value, _: f"${value:,.0f}"))
-    ax.grid(True, alpha=0.3)
-    ax.legend(loc="best", fontsize="small", framealpha=0.5)
-    if zero_anchor:
-        include_zero(ax)
-    fig.autofmt_xdate()
-    return fig
 
 def to_month(date: str) -> str:
     if not date:
@@ -247,7 +182,8 @@ def to_month(date: str) -> str:
 
 def show_account_setup(scenario: ScenarioConnection, as_of: str | None = None, **_):
     """
-    Show the account setup for the given scenario as of the specified date.
+    Show the account setup for the given scenario as of the specified date,
+    with where each account is defined (``defined_in``).
 
     Parameters
     ----------
@@ -262,6 +198,10 @@ def show_account_setup(scenario: ScenarioConnection, as_of: str | None = None, *
         The output widget containing the account setup display.
     """
     df = accounts_dataframe(scenario, as_of=as_of).copy()
+    # Where each account comes from, as the edit commands find it (#433); an
+    # account in no accounts.csv is one the loader adds itself.
+    df["defined_in"] = scenario_view.checked_origins(
+        scenario, "accounts.csv", list(df.index), setup_listings.loader_accounts())
     output = widgets.Output()
     with output:
         display(account_summary_by_kind(df).style.format({
@@ -283,3 +223,30 @@ def show_account_setup(scenario: ScenarioConnection, as_of: str | None = None, *
                 ))
     return output
 
+
+
+def basis_step_up_table(rc: RunConnection, **_):
+    """The run's basis step-ups at a death (#434), one row per lot: the
+    month, whose death, the lot, its balance, its basis before and after, and
+    the rule that decided how much stepped up. An empty widget when the run
+    has none: Connections.show clears with wait=True, which takes effect only
+    once something is displayed, so returning None would leave the last
+    scenario's table up. For an ensemble, the run shown is member 0's, as
+    the death lines on its charts are."""
+    found = rc.basis_step_ups()
+    if not found:
+        return widgets.HTML()
+    frame = pd.DataFrame({
+        "month": [s.month[:7] for s in found],
+        "person": [s.display for s in found],
+        "account": [s.account for s in found],
+        "balance": [s.balance_cents / 100 for s in found],
+        "basis before": [s.basis_before_cents / 100 for s in found],
+        "basis after": [s.basis_after_cents / 100 for s in found],
+        "rule": [s.rule_label for s in found],
+    })
+    money = "${:,.2f}"
+    return (frame.style
+            .hide(axis="index")
+            .set_caption(f"Basis step-ups at a death - {rc.label}")
+            .format({"balance": money, "basis before": money, "basis after": money}))

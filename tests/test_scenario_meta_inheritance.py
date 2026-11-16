@@ -6,6 +6,7 @@ does, making the child a plain scenario (#169)."""
 from __future__ import annotations
 
 import json
+from contextlib import closing
 import sqlite3
 from collections.abc import Callable
 from pathlib import Path
@@ -20,7 +21,7 @@ ROOT = "retire_alice"
 
 
 def _meta(intent_path: Path) -> dict[str, object]:
-    with sqlite3.connect(intent_path) as con:
+    with closing(sqlite3.connect(intent_path)) as con:
         (meta_json,) = con.execute("SELECT meta_json FROM scenario").fetchone()
     return json.loads(meta_json)
 
@@ -68,7 +69,7 @@ def test_a_meta_json_that_is_not_an_object_fails_the_load(
 
 def _create_child_and_run(
     test_data_dir: Path, append_calendar_row: Callable[..., None],
-    intent_dir: Path, runs_dir: Path, group: str,
+    intent_dir: Path, runs_dir: Path, group: str, *then: list[str],
 ) -> str:
     """Derive ``what_if`` with ``sim <group> create`` from a two-member recipe
     with one varying row, then ``sim run`` it; returns the run's output."""
@@ -83,6 +84,7 @@ def _create_child_and_run(
     for args in (
         ["sim", "ensemble", "create", "recipe", ROOT, "--size", "2", *data],
         ["sim", group, "create", "what_if", "recipe", *data],
+        *([*args, *data] for args in then),
         ["sim", "load", "what_if", *data, "--intent-dir", str(intent_dir),
          "--allow-dirty-data", "--no-run"],
     ):
@@ -111,14 +113,16 @@ def test_sim_run_on_an_ensemble_child_of_a_recipe_uses_the_recipes_member_count(
     assert "2/2 member(s) succeeded" in output
 
 
-def test_sim_run_on_a_scenario_child_of_a_recipe_runs_its_base_case(
+def test_sim_run_on_a_recipes_child_sized_zero_runs_its_base_case(
     test_data_dir: Path, append_calendar_row: Callable[..., None],
     intent_dir: Path, runs_dir: Path,
 ) -> None:
-    """#169: ``sim scenario create`` never makes an ensemble, so its child of
-    a recipe runs once, at member 0's central values, to an ordinary run file."""
+    """#169, #369: a recipe's child whose size is set to 0 is not an
+    ensemble, so it runs once, at member 0's central values, to an ordinary
+    run file."""
     output = _create_child_and_run(
         test_data_dir, append_calendar_row, intent_dir, runs_dir, "scenario",
+        ["sim", "ensemble", "edit", "what_if", "--size", "0"],
     )
     assert "what_if is not an ensemble: running its base case" in output
     run_files = list(runs_dir.glob("*_what_if_*.sqlite3"))
@@ -126,11 +130,11 @@ def test_sim_run_on_a_scenario_child_of_a_recipe_runs_its_base_case(
     assert not (runs_dir / "what_if").exists()
     query = ("SELECT amount, vary_distribution FROM calendar_event "
              "WHERE name = 'checking_rate_vary'")
-    with sqlite3.connect(intent_dir / "what_if.sqlite3") as con:
+    with closing(sqlite3.connect(intent_dir / "what_if.sqlite3")) as con:
         (authored, vary) = con.execute(query).fetchone()
     assert vary == "uniform"  # the load's own intent keeps the varying row
     # Resolved to the uniform's midpoint, 4.5%: the authored amount.
-    with sqlite3.connect(run_files[0]) as con:
+    with closing(sqlite3.connect(run_files[0])) as con:
         assert con.execute(query).fetchone() == (authored, None)
 
 

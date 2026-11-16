@@ -1,0 +1,2 @@
+name,measure,select,portfolio,side,threshold,basis,sense,start,end,description
+tight,spending,,,above,60000.00,cpi_constant,negative,2027-01,,A tight spending line in today's dollars

@@ -1,0 +1,4 @@
+schema_version: "1.1"
+name: er-costco-fiscal-calendar
+expected_outcome: |
+  A one-page equity research tear sheet on Costco with current, sourced market data and an as-of date, fiscal periods labelled correctly for Costco's late-August fiscal year end, latest results and guidance or outlook, multi-year financials, valuation vs. peers, and a sources list, with derived figures computed and no investment advice.

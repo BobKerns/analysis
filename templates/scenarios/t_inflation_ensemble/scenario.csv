@@ -1,0 +1,2 @@
+name,description,start,end,seed,parent_scenario,created_by,meta_json
+t_inflation_ensemble,"A year-by-year path for every inflation series, around a drawn long-run level.",,,,t_inflation_series,,"{""ensemble_size"":80}"

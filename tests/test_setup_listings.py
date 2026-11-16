@@ -58,12 +58,12 @@ def test_calendar_list_numbers_rows_as_edit_does_and_marks_overrides(
     assert by_target["healthcare"].number == 1
     assert by_target["healthcare"].defined_in == "overrides retire_alice"
     assert by_target["healthcare"].row["description"] == "changed"
-    assert len(listed) == 26  # retire_alice's 25, plus the child's own
+    assert len(listed) == 29  # retire_alice's 28, plus the child's own
     assert by_target["rent"].number == 2
     assert by_target["rent"].defined_in == "this scenario"
     assert by_target["salary_alice"].defined_in == "retire_alice"
     factor = next(e for e in listed if e.row["name"] == "core_inflation")
-    assert factor.defined_in == "base"
+    assert factor.defined_in == "t_inflation_factors"
     # Date order, latent factors (no date) first.
     dates = [e.row["date"] for e in listed]
     assert dates == sorted(dates)
@@ -87,6 +87,22 @@ def test_calendar_list_filters_by_kind_or_command_name_and_tag(
     assert "no calendar rows in child match" in sim(
         "calendar", "list", "--scenario", "child", "--tag", "estimate:other",
     ).output
+
+
+def test_calendar_list_counts_latent_factors_unless_asked_for(
+    sim: Callable[..., Result], derive_scenario: Callable[..., Path],
+) -> None:
+    """#368: the inherited latent factors are counted, not listed, so the
+    dated events stand out; --kind latent_factor lists them."""
+    derive_scenario("child", "retire_alice")
+
+    listed = sim("calendar", "list", "--scenario", "child").output
+    assert "salary_alice" in listed and "core_inflation" not in listed
+    assert "latent factor(s), for ensemble variation, not shown" in listed
+
+    factors = sim("calendar", "list", "--scenario", "child", "--kind", "latent_factor").output
+    assert "core_inflation" in factors and "salary_alice" not in factors
+    assert "not shown" not in factors
 
 
 def test_calendar_list_sums_up_variation(derive_scenario: Callable[..., Path]) -> None:
@@ -145,7 +161,7 @@ def test_ytd_list_has_inherited_rows_and_scheduled_ytd(
 
     rows = {r.name: r for r in setup_listings.ytd_listing(child)}
 
-    assert rows["prior_ordinary_wages"].defined_in == "retire_alice"
+    assert rows["prior_wages_alice"].defined_in == "retire_alice"
     assert rows["prior_federal_withholding"].amount == "9500.00"
     assert rows["prior_federal_withholding"].defined_in == "overrides retire_alice"
     assert rows["salary_alice"].source == "scheduled"
@@ -214,12 +230,15 @@ def test_scenario_show_marks_inherited_settings_and_finds_the_latest_run(
     child = derive_scenario("child", "recipe:base", seed="7",
                             description="A child of the recipe.")
     for stamp in ("20260101T000000", "20260201T000000"):
-        (runs_dir / f"{stamp}_child_abc123.sqlite3").write_bytes(b"")
+        (runs_dir / f"{stamp}_child_abc123.sqlite3").write_bytes(b"x")
 
     shown = setup_listings.scenario_show(child.parent.parent, child, runs_dir)
 
     assert (shown.parent, shown.mixins) == ("recipe", ["base"])
-    assert shown.load_order == ["base", "retire_alice", "recipe", "child"]
+    assert shown.load_order == [
+        "t_empty", "t_inflation_factors", "t_inflation_series", "t_market_factors", "t_market_series",
+        "base", "retire_alice", "recipe", "child",
+    ]
     assert shown.reserve == ("$250,000.00", True)
     assert shown.ensemble_size is not None and shown.ensemble_size.inherited
     assert shown.seed is not None and (shown.seed.value, shown.seed.inherited) == (7, False)

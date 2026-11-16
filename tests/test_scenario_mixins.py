@@ -5,6 +5,7 @@ in ``lineage.load_order``."""
 from __future__ import annotations
 
 import json
+from contextlib import closing
 import sqlite3
 from collections.abc import Callable
 from pathlib import Path
@@ -24,11 +25,13 @@ from analysis.sim.staging import _affected_scenarios
 # The scenario the tests derive from, and its own load order: it inherits
 # the prototype's root, `base` (#91).
 PARENT = "retire_alice"
-PARENT_LINE = ["base", PARENT]
+# The prototype's base builds on the inflation and market series templates.
+TEMPLATE_LINE = ["t_empty", "t_inflation_factors", "t_inflation_series", "t_market_factors", "t_market_series"]
+PARENT_LINE = [*TEMPLATE_LINE, "base", PARENT]
 
 
 def _amounts(intent_path: Path) -> dict[str, int]:
-    with sqlite3.connect(intent_path) as con:
+    with closing(sqlite3.connect(intent_path)) as con:
         return dict(con.execute("SELECT name, amount_cents FROM scheduled_transaction"))
 
 
@@ -129,7 +132,7 @@ def test_a_mixins_series_and_chain_overrides_are_inherited(
         ),
     })
     derive_scenario("combo", f"{PARENT}:mix_rates")
-    with sqlite3.connect(load_test_scenario("combo")) as con:
+    with closing(sqlite3.connect(load_test_scenario("combo"))) as con:
         (payload,) = con.execute(
             "SELECT payload_json FROM aux_table WHERE kind = 'rate' AND series = 'Asset_Checking'"
         ).fetchone()
@@ -167,7 +170,7 @@ def test_the_intent_records_parents_and_load_order(
     derive_scenario("main", PARENT)
     derive_scenario("mix", PARENT)
     derive_scenario("combo", "main:mix")
-    with sqlite3.connect(load_test_scenario("combo")) as con:
+    with closing(sqlite3.connect(load_test_scenario("combo"))) as con:
         parents, order = con.execute(
             "SELECT parents_json, load_order_json FROM scenario"
         ).fetchone()
@@ -186,7 +189,7 @@ def test_description_view_shows_parents_mixins_and_load_order(
     assert isinstance(md, str)
     assert md.endswith(
         "**Parent:** `main`; **mix-ins:** `mix`  \n"
-        f"**Load order:** `base` → `{PARENT}` → `main` → `mix` → `combo`"
+        "**Load order:** " + " → ".join(f"`{n}`" for n in [*PARENT_LINE, "main", "mix", "combo"])
     )
 
 
@@ -195,10 +198,6 @@ def test_a_single_parent_shows_no_mixins() -> None:
     assert lineage_markdown(row) == (
         "**Parent:** `base`  \n**Load order:** `base` → `child`"
     )
-
-
-def test_a_file_from_before_lineage_was_recorded_shows_none() -> None:
-    assert lineage_markdown({"description": "old"}) == ""
 
 
 def test_a_mixins_set_rate_warns_alone_and_is_read_by_its_child(

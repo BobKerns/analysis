@@ -15,6 +15,8 @@ from contextvars import ContextVar
 import html as html_lib
 import os
 import re
+import shlex
+import weakref
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, cast
@@ -26,15 +28,20 @@ from dateutil import relativedelta
 import ipywidgets as widgets
 import pandas as pd
 import traitlets
-from IPython.display import clear_output, display
+from IPython.display import HTML, clear_output, display
 
-from analysis.frames import index_years
+from analysis.frames import clip_years, index_years
 from analysis.sim.accounts import KIND_LABELS
 from analysis.sim.allocation import GROUPINGS, Grouping, _NO_SPLIT
+from analysis.sim import compare, load_warnings, shortfalls
 from analysis.sim.connection import RunConnection, ScenarioConnection
 from analysis.sim.ensemble import latest_ensemble_batch, member_run_statuses
 from analysis.sim.notebook_ui.first_draw import when_cell_is_done
-from analysis.sim.loader import ScenarioRef, list_scenario_names, resolve_scenario_name
+from analysis.sim.loader import (
+    PendingRun, RunStatus, ScenarioRef, is_ensemble_batch, last_good_run_path, latest_run_path,
+    list_scenario_names, read_disabled_scenarios, read_run_status, resolve_scenario_name,
+    runs_not_succeeded_after,
+)
 from analysis.sim.accounts import plottable_accounts
 from analysis.sim.readme import description_view
 from analysis.sim.types import (
@@ -55,19 +62,24 @@ def this_month() -> datetime.date:
     return to_month(today.year, today.month)
 
 
-def warning_html(message: str) -> str:
+def warning_html(message: str, details: Sequence[str] = ()) -> str:
     """Build the HTML for a legible warning box.
 
     Markdown blockquotes (`> ⚠️ ...`) pick up the ambient text color in some
     notebook themes, which can render as black-on-black. This builds plain
     HTML instead, with an explicit light-yellow background and dark text;
     ``notebook.css`` styles its inline code like the rest of our output.
+    ``details`` are lines shown below the message as written, in a fixed
+    font so their columns line up.
     """
     # Escape first so literal "<...>" in messages (e.g. "sim load <name>")
     # isn't swallowed as an HTML tag; **bold**/`code` add real tags after.
     text = html_lib.escape(message)
     text = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", text)
     text = re.sub(r"`(.+?)`", r"<code>\1</code>", text)
+    if details:
+        text += ('<pre style="margin:4px 0 0; padding:0; background:none; color:inherit; '
+                 'white-space:pre-wrap;">' + html_lib.escape("\n".join(details)) + "</pre>")
     return styled_html(
         '<div style="background-color:#fff8c5; color:#111; padding:6px 10px; '
         'border-left:4px solid #e6b800; border-radius:3px; margin:4px 0;">'
@@ -75,11 +87,164 @@ def warning_html(message: str) -> str:
     )
 
 
-def display_warning(message: str) -> None:
+def display_warning(message: str, details: Sequence[str] = ()) -> None:
     """Display a warning with a legible background (see `warning_html`)."""
-    from IPython.display import HTML, display
+    display(HTML(warning_html(message, details)))
 
-    display(HTML(warning_html(message)))
+
+# The most negative-balance warnings a banner lists before pointing to
+# `sim explain`, which lists them all.
+SHORTFALL_LINES = 10
+
+
+def _times(count: int) -> str:
+    return "once" if count == 1 else ("twice" if count == 2 else f"{count} times")
+
+
+def explain_command(rc: RunConnection, scenario: str | None = None) -> str:
+    """The ``sim explain`` command line that reads ``rc``'s run."""
+    # An ensemble member's run is named by its file: `sim explain RECIPE`
+    # reads member 0. So is a run older than the scenario's latest (#437):
+    # `sim explain SCENARIO` reads the latest.
+    if rc.ensemble_member() is not None or (
+            scenario and latest_run_path(rc.run_path.parent, scenario, wait=False) != rc.run_path):
+        return f"sim explain --runfile {shlex.quote(str(rc.run_path))}"
+    return f"sim explain {scenario}" if scenario else "sim explain"
+
+
+def shortfall_banner(rc: RunConnection | None, scenario: str | None = None) -> str | None:
+    """The HTML of a warning listing ``rc``'s negative-balance warnings
+    (#431) as ``sim explain`` lists them, or None for a run with none."""
+    if rc is None:
+        return None
+    found = rc.negative_balances()
+    if not found:
+        return None
+    lines = shortfalls.warning_lines(found)
+    explain = explain_command(rc, scenario)
+    if len(lines) > SHORTFALL_LINES:
+        lines = [*lines[:SHORTFALL_LINES],
+                 f"... and {len(lines) - SHORTFALL_LINES} more; `{explain}` lists them all"]
+    return warning_html(
+        f"**This run went negative {_times(len(found))}.** A shortfall doesn't stop a "
+        "run: the debit posts and the balance goes below zero.",
+        lines,
+    )
+
+
+def load_warnings_html(found: load_warnings.LoadWarnings) -> str | None:
+    """The HTML listing a load's warnings (#432) in a warning box, then its
+    notes on things defined but not read yet folded away, since those are
+    often deliberate (#204); None for a load with neither."""
+    parts = []
+    if found.warnings:
+        parts.append(warning_html(
+            f"**{load_warnings.count_phrase(found)}.** The load went ahead; "
+            "`sim check` prints the same.", found.warnings))
+    if found.unused:
+        n = len(found.unused)
+        parts.append(styled_html(
+            "<details><summary>"
+            f"{n} thing{'' if n == 1 else 's'} defined but not read yet "
+            "(often deliberate: work in progress, or meant for a child scenario)</summary>"
+            '<pre style="margin:4px 0 0; white-space:pre-wrap;">'
+            + html_lib.escape("\n".join(found.unused)) + "</pre></details>"))
+    return "".join(parts) or None
+
+
+def load_warnings_line(rc: RunConnection | None, scenario: str | None = None) -> str | None:
+    """One line of HTML counting the warnings recorded when ``rc``'s
+    scenario was loaded for it (#432), pointing to where they're listed;
+    None for a run with none. Things defined but not read yet aren't
+    counted: they're often deliberate, and only ``sim check`` prints them."""
+    if rc is None:
+        return None
+    found = rc.load_warnings()
+    if not found.warnings:
+        return None
+    return warning_html(
+        f"**{load_warnings.count_phrase(found)}** when this run's scenario was loaded: "
+        f"`scenario_overview.ipynb` lists them, and so does `{explain_command(rc, scenario)}`.")
+
+
+def _local_time(utc: str | None) -> str | None:
+    """A run's UTC ``finished_at`` as local ``YYYY-MM-DD HH:MM``, as
+    ``ScenarioRef.describe`` shows file times."""
+    if not utc:
+        return None
+    try:
+        when = datetime.datetime.fromisoformat(utc.replace("Z", "+00:00"))
+    except ValueError:
+        return utc
+    return f"{when.astimezone():%Y-%m-%d %H:%M}"
+
+
+def _failure(status: RunStatus) -> str:
+    """What became of a run that didn't succeed, for a sentence."""
+    if status.status == "failed":
+        return "failed" + (f" ({status.failure_reason})" if status.failure_reason else "")
+    if status.status == "running":
+        return "is still running, or was interrupted"
+    return f"is {status.status}"
+
+
+def open_run_line(name: str, run_path: Path | None) -> str | None:
+    """One line of Markdown naming the run a notebook has open for scenario
+    ``name`` and when it finished (#437), as ``sim list`` would; for an
+    ensemble member, its batch, as ``--batch`` names it. None for no run."""
+    if run_path is None:
+        return None
+    status = read_run_status(run_path)
+    finished = _local_time(status.finished_at)
+    if run_path.stem.startswith("member_") and is_ensemble_batch(run_path.parent):
+        batch = run_path.parent.name
+        line = (f"`{name}`: batch `{batch}` (`--batch {batch}`), "
+                f"`{run_path.stem}`")
+    else:
+        line = f"`{name}`: run `{run_path.name}`"
+    if status.status == "succeeded":
+        return line + (f", finished {finished}" if finished else "")
+    # Escaped: StyledMarkdown passes HTML through, and a failure reason
+    # can hold a repr such as "<object object at 0x...>".
+    return (line + f" **{html_lib.escape(_failure(status))}**"
+            + (f" at {finished}" if finished else "")
+            + "; its results stop where it ended")
+
+
+def latest_run_ref(ref: ScenarioRef) -> ScenarioRef:
+    """``ref`` for its summary table, whose "latest run" row names the
+    scenario's latest run (#437): the picker pins the run it opened, which
+    may be an older one, or an ensemble member; the line above names that."""
+    return replace(ref, run=PendingRun(ref.runs_dir, ref.name))
+
+
+def newer_runs_warning(name: str, run_path: Path | None) -> str | None:
+    """The HTML of a warning that ``name`` has runs newer than the open
+    ``run_path`` that didn't succeed (#437), so the notebook shows an older
+    one; None when it has none."""
+    if run_path is None:
+        return None
+    newer = runs_not_succeeded_after(run_path.parent, name, run_path)
+    if not newer:
+        return None
+    latest = newer[0]
+    more = f" ({len(newer)} newer runs didn't succeed)" if len(newer) > 1 else ""
+    return warning_html(
+        f"**The latest run of `{name}` {_failure(latest)}**{more}, so this shows the last "
+        f"run that succeeded. `sim explain --runfile {shlex.quote(str(latest.path))}` says more; "
+        "`sim list` lists every run.")
+
+
+def shortfall_summary_line(name: str, rc: RunConnection) -> str | None:
+    """One line on ``rc``'s negative-balance warnings for a list of
+    scenarios (#431): how often, and the lowest balance and where; None
+    for a run with none."""
+    found = rc.negative_balances()
+    if not found:
+        return None
+    worst = min(found, key=lambda w: w.lowest_cents)
+    return (f"{name}: negative {_times(len(found))} from {found[0].month}; lowest "
+            f"{worst.label} {shortfalls.compact_cents(worst.lowest_cents)} at {worst.lowest_month}")
 
 
 # The detachers of the observers the widget now being drawn by
@@ -237,7 +402,8 @@ class SingleScenarioConnections(Connections):
 
         As with :meth:`show`, `fn` must accept arbitrary keyword arguments
         (end its signature with ``**_``): it receives the same context
-        keywords, such as ``member``, and ``run``.
+        keywords, such as ``member``, and ``run``, which is None when the
+        scenario has no run (``scenario_picker(require_run=False)``).
 
         Parameters
         ----------
@@ -247,15 +413,21 @@ class SingleScenarioConnections(Connections):
             Additional keyword arguments to pass to `fn`.
         
         """
-        def _invoke_with_scenario(run: RunConnection, *args, **kwargs):
+        def _invoke_with_scenario(run: RunConnection | None, *args, **kwargs):
             return fn(self.scenario, *args, run=run, **kwargs)
+        _scenario_only.add(_invoke_with_scenario)
         return self.show(_invoke_with_scenario, *args, **kwargs)
 
     def _invoke(self, fn: Callable, *args, **kwargs):
         """Invoke the given function with the current connections context."""
-        if self.run is None:
+        if self.run is None and fn not in _scenario_only:
             raise RuntimeError("No run connection available")
         return fn(self.run, *args, **kwargs)
+
+
+# show_scenario's wrappers: they read the scenario, so they run without a run
+# (#312's lifespan notebook, with scenario_picker(require_run=False)).
+_scenario_only: weakref.WeakSet[Callable] = weakref.WeakSet()
 
 
 def _open_single(
@@ -269,6 +441,12 @@ def _open_single(
                                 scenarios_dir=scenarios_dir,
                                 runs_dir=runs_dir,
                                 run_path=run_path)
+    if run_path is None:
+        # A newer run that failed holds only the months before it failed:
+        # open the last good one, and say so (#437, newer_runs_warning).
+        chosen = last_good_run_path(ref.runs_dir, ref.name)
+        if chosen is not None:
+            ref = replace(ref, run=PendingRun(ref.runs_dir, ref.name, chosen))
     if require_run and ref.run_path is None:
         raise FileNotFoundError(
             f"no runs for {name!r} in {ref.runs_dir}; run "
@@ -283,6 +461,36 @@ _META_COLS = [
     "code_version", "code_dirty", "data_version", "data_dirty",
     "run_by",
 ]
+
+
+def enabled_scenario_names(
+    data_dir: Path, *, scenarios_dir: Path | None = None, keep: Iterable[str | None] = (),
+) -> list[str]:
+    """The scenarios a picker offers: every one but the disabled ones
+    (`sim scenario disable`, #300), except those in ``keep`` (the ones it
+    starts on)."""
+    disabled = read_disabled_scenarios(data_dir) - set(keep)
+    return [name for name in list_scenario_names(data_dir, scenarios_dir=scenarios_dir)
+            if name not in disabled]
+
+
+def note_picks(data_dir: Path, *pickers: widgets.ValueWidget) -> None:
+    """Picking a scenario in a notebook is use of it (#322): when any of
+    ``pickers`` changes, every scenario they now show moves to the top of
+    the working set, the first picker's topmost. A value is a name, a tuple
+    of names (a multiple select), or None. The pick the widget starts on
+    isn't one."""
+    from analysis.sim import working_set
+
+    def _picked(*_: object) -> None:
+        names: list[str] = []
+        for picker in pickers:
+            value = picker.value
+            names.extend(value if isinstance(value, tuple) else [value] if value else [])
+        working_set.use(data_dir, *names)
+
+    for picker in pickers:
+        picker.observe(_picked, names="value")
 
 
 def find_data_dir(data_dir: Path | str | None = None) -> Path:
@@ -302,10 +510,18 @@ def find_data_dir(data_dir: Path | str | None = None) -> Path:
     Path
         The resolved data directory.
     """
-    REPO = Path.cwd().parent if Path.cwd().name == "notebooks" else Path.cwd()
     if data_dir is None:
-        return Path(os.environ.get("ANALYSIS_DATA_DIR", REPO / "data/shared/sim"))
+        env = os.environ.get("ANALYSIS_DATA_DIR")
+        return Path(env) if env is not None else _checkout_data_dir()
     return Path(data_dir)
+
+
+def _checkout_data_dir() -> Path:
+    """The data dir linked into this checkout, found from the working
+    directory (a notebook runs in notebooks/). One function so the tests
+    can point it away from a developer's real data repo."""
+    repo = Path.cwd().parent if Path.cwd().name == "notebooks" else Path.cwd()
+    return repo / "data" / "shared" / "sim"
 
 
 def find_state_dir(*,
@@ -378,6 +594,9 @@ def scenario_picker(
     require_run: bool = True,
     show_metadata: bool = False,
     show_description: bool = False,
+    show_shortfalls: bool = True,
+    show_load_warnings: bool = True,
+    list_load_warnings: bool = False,
 ) -> tuple[widgets.VBox, SingleScenarioConnections, widgets.Dropdown]:
     """A ``Scenario:`` dropdown that keeps a live connection pair in sync.
 
@@ -400,6 +619,18 @@ def scenario_picker(
         Whether to display run metadata below the scenario reference.
     show_description : bool, default False
         Whether to display the scenario description below the scenario reference.
+    show_shortfalls : bool, default True
+        Whether to list the run's negative-balance warnings (#431) below the
+        scenario reference, as ``sim explain`` does; a run with none, or no
+        run, shows nothing.
+    show_load_warnings : bool, default True
+        Whether to show the warnings recorded when the scenario was loaded
+        (#432): a one-line count of the open run's, pointing to where
+        they're listed; a run with none, or no run, shows nothing.
+    list_load_warnings : bool, default False
+        List the intent's load warnings in full instead of counting the
+        run's, with its notes on things defined but not read yet folded
+        away, as ``scenario_overview.ipynb`` does (ADR-004 §6).
 
     When the selected scenario is an ensemble recipe with generated members
     and ``require_run`` is true, a second ``Member:`` dropdown appears,
@@ -424,7 +655,7 @@ def scenario_picker(
             scenarios_dir=scenarios_dir,
             runs_dir=runs_dir,
         ).name
-    options = list_scenario_names(data_dir, scenarios_dir=scenarios_dir)
+    options = enabled_scenario_names(data_dir, scenarios_dir=scenarios_dir, keep=[default])
     dropdown = widgets.Dropdown(options=options, value=default, description="Scenario:")
     member_dropdown = widgets.Dropdown(description="Member:", layout=widgets.Layout(display="none"))
     ref_out = widgets.Output()
@@ -438,7 +669,26 @@ def scenario_picker(
     def _redraw() -> None:
         with ref_out:
             clear_output(wait=True)
-            display(container.scenario_ref)
+            # Not container.value: on a switch, _on_change redraws before the
+            # dropdown's link updates it.
+            name = container.scenario_ref.name
+            run_path = container.run.run_path if container.run is not None else None
+            line = open_run_line(name, run_path)
+            if line is not None:
+                display(StyledMarkdown(line))
+            newer = newer_runs_warning(name, run_path)
+            if newer is not None:
+                display(HTML(newer))
+            display(latest_run_ref(container.scenario_ref))
+            if show_shortfalls:
+                banner = shortfall_banner(container.run, name)
+                if banner is not None:
+                    display(HTML(banner))
+            if show_load_warnings:
+                warned = (load_warnings_html(container.scenario.load_warnings()) if list_load_warnings
+                          else load_warnings_line(container.run, name))
+                if warned is not None:
+                    display(HTML(warned))
             if show_metadata:
                 rc = container.run
                 if rc is not None:
@@ -460,7 +710,7 @@ def scenario_picker(
             container.member = 0
             return
         ref = container.scenario_ref
-        batch = latest_ensemble_batch(ref.runs_dir / ref.name)
+        batch = latest_ensemble_batch(ref.runs_dir / ref.name, mode="monte_carlo")
         assert batch is not None  # the member dropdown lists only an existing batch's members
         old_run = container.run
         run_path = batch / f"{change['new']}.sqlite3"
@@ -469,7 +719,7 @@ def scenario_picker(
         container.member = int(member_name.split("_", maxsplit=1)[1])
         # The panel and metadata describe the member actually shown, not
         # the member 0 that resolve_scenario_name picked.
-        container.scenario_ref = replace(ref, run_path=run_path)
+        container.scenario_ref = replace(ref, run=PendingRun(ref.runs_dir, ref.name, run_path))
         if old_run is not None:
             old_run.close()
         _redraw()
@@ -483,7 +733,7 @@ def scenario_picker(
         regardless of member, since member resolution happens in each
         member's own *run*, not in the shared scenario-level intent)."""
         ref = container.scenario_ref
-        batch = latest_ensemble_batch(ref.runs_dir / ref.name) if require_run else None
+        batch = latest_ensemble_batch(ref.runs_dir / ref.name, mode="monte_carlo") if require_run else None
         if batch is None:
             member_dropdown.layout.display = "none"
             member_dropdown.options = ()
@@ -533,6 +783,7 @@ def scenario_picker(
 
     dropdown.observe(_on_change, names="value")
     member_dropdown.observe(_on_member_change, names="value")
+    note_picks(data_dir, dropdown)
     traitlets.link((dropdown, "value"), (container, "value"))
     _sync_member_dropdown()
     _redraw()
@@ -601,12 +852,16 @@ def _load_multi(
     connections: dict[str, RunConnection] = {}
     missing = []
     for name in [baseline, *variants]:
+        # Found before opening the scenario, whose inputs may not load.
         ref = resolve_scenario_name(data_dir, name)
-        if ref.run_path is None:
+        run_path = last_good_run_path(ref.runs_dir, name)
+        if run_path is None:
             missing.append(name)
             continue
-        scenarios = _open_single(data_dir, name, require_run=True)
-        connections[name] = RunConnection(ref.run_path, scenarios.scenario)
+        scenarios = _open_single(data_dir, name, require_run=True,
+                                 runs_dir=ref.runs_dir, run_path=run_path)
+        assert scenarios.run is not None
+        connections[name] = scenarios.run
 
     if baseline not in connections:
         return MultiScenarioConnections(connections, "", [], {}, [
@@ -616,6 +871,7 @@ def _load_multi(
 
     resolved_variants = [name for name in variants if name in connections]
     scenarios = [baseline, *resolved_variants]
+    compare.align_cpi(connections, baseline)
 
     import matplotlib.pyplot as plt
 
@@ -668,11 +924,8 @@ def multi_scenario_picker(
     """
 
     if data_dir is None:
-        REPO = Path.cwd().parent if Path.cwd().name == "notebooks" else Path.cwd()
-        data_dir = Path(os.environ.get("ANALYSIS_DATA_DIR", REPO / "data" / "shared" / "sim"))  
+        data_dir = find_data_dir()
     data_dir = Path(data_dir)
-    available = list_scenario_names(data_dir)
-
     if default_baseline is None:
         # Same resolution the CLI uses: $ANALYSIS_SCENARIO, else the data repo's
         # .current_scenario, else "current".
@@ -680,6 +933,7 @@ def multi_scenario_picker(
             data_dir, os.environ.get("ANALYSIS_SCENARIO") or None,
             intent_dir=intent_dir, runs_dir=runs_dir,
         ).name
+    available = enabled_scenario_names(data_dir, keep=[default_baseline, *(default_variants or [])])
 
     baseline_picker = widgets.Dropdown(
         options=available, value=default_baseline, description="Baseline:",
@@ -714,6 +968,27 @@ def multi_scenario_picker(
             clear_output(wait=True)
             for message in container.warnings:
                 display_warning(message)
+            shown = [(name, rc.run_path) for name, rc in container.connections.items()
+                     if name in container.scenarios]
+            lines = [line for name, path in shown
+                     if (line := open_run_line(name, path)) is not None]
+            if lines:
+                display(StyledMarkdown("\n".join(f"- {line}" for line in lines)))
+            for name, path in shown:
+                if (newer := newer_runs_warning(name, path)) is not None:
+                    display(HTML(newer))
+            lines = [f"{line} ({explain_command(rc, name)})"
+                     for name, rc in container.connections.items()
+                     if name in container.scenarios
+                     and (line := shortfall_summary_line(name, rc)) is not None]
+            if lines:
+                display_warning("**Negative balances** (a shortfall doesn't stop a run; "
+                                "`sim explain` lists them):", lines)
+            lines = [f"{name}: {load_warnings.count_phrase(found)} ({explain_command(rc, name)})"
+                     for name, rc in container.connections.items()
+                     if name in container.scenarios and (found := rc.load_warnings()).warnings]
+            if lines:
+                display_warning("**Load warnings** (`scenario_overview.ipynb` lists them):", lines)
 
     def _on_change(*_) -> None:
         old_connections = dict(container.connections)
@@ -736,6 +1011,7 @@ def multi_scenario_picker(
 
     baseline_picker.observe(_on_change, names="value")
     variant_picker.observe(_on_change, names="value")
+    note_picks(data_dir, baseline_picker, variant_picker)
     _redraw()
 
     picker_widget = widgets.VBox(
@@ -897,6 +1173,21 @@ class HeatmapValuePicker(widgets.ToggleButtons):
             layout=widgets.Layout(**_TOGGLE_LAYOUT),
         )
         self.value = heatmap_value
+
+
+class CorrelationMeasurePicker(widgets.ToggleButtons):
+    """Which per-row measure a Monte Carlo batch's correlation chart plots
+    (ADR-007 §6.2, §9): Spearman rho, the rank-regression coefficient
+    (SRRC), or the partial rank correlation (PRCC), as named in
+    ``sensitivity.CORRELATION_MEASURES``."""
+
+    def __init__(self, by: str = "rho"):
+        super().__init__(
+            options=[("rho", "rho"), ("SRRC", "srrc"), ("PRCC", "prcc")],
+            description="Measure:",
+            layout=widgets.Layout(**_TOGGLE_LAYOUT),
+        )
+        self.value = by
 
 
 class AttributionPicker(widgets.ToggleButtons):
@@ -1432,20 +1723,9 @@ class TimeRangePicker(widgets.IntRangeSlider):
         self.min, self.max = first, last
 
     def clip(self, data: pd.DataFrame | pd.Series) -> Any:
-        """The rows of ``data`` in the selected years.
-
-        ``data`` is indexed by month (a ``DatetimeIndex`` or ``PeriodIndex``)
-        or by year (integers, or their strings). A full selection returns
-        ``data`` itself."""
-        if self.is_full:
-            return data
-        index = data.index
-        if isinstance(index, (pd.DatetimeIndex, pd.PeriodIndex)):
-            years = pd.Index([moment.year for moment in index])
-        else:
-            years = pd.Index([int(year) for year in index])
-        low, high = self.value
-        return data[(years >= low) & (years <= high)]
+        """The rows of ``data`` in the selected years (``frames.clip_years``:
+        by month or by year). A full selection returns ``data`` itself."""
+        return data if self.is_full else clip_years(data, self.value)
 
 
 def controls_row(*controls: widgets.Widget) -> widgets.HBox:

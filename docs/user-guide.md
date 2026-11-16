@@ -6,7 +6,19 @@
 
 This guide shows how to make common changes to a scenario, step by step, with
 real examples, and how to look at what a run produced. It assumes you already
-have a data repo. If you don't, see [templates/README.md](../templates/README.md) first.
+have a data repo. If you don't, start one with `sim init DIR`, which asks who you
+are and builds it from the code repository's templates ([templates/README.md](../templates/README.md)).
+The one-line installer ([SETUP.md](SETUP.md)) does that for you.
+
+**Videos.** The *Retirement Simulator Guide* walks through the same ground
+with Alice and Bill, starting from what the simulator does and how to install
+it, on YouTube in [English](https://www.youtube.com/playlist?list=PLMCxY-aRDiI4) and in [Japanese (日本語)](https://www.youtube.com/playlist?list=PLQhWLzBzvwNM).
+Video 1, *What it does, and how it works*, is the place to start:
+[English](https://www.youtube.com/watch?v=VvoRgRvgIiY),
+[Japanese (日本語)](https://www.youtube.com/watch?v=kH_Uzpp4ghU).
+You don't need every later video before you begin. A simple model over one
+future already answers useful questions, and each video adds one kind of
+detail for when a question needs it.
 
 For the reasons behind these designs, see the documents in
 `docs/architecture/`. [ADR-003](architecture/ADR-003-registries-and-csv-schemas.md) lists every CSV column in detail. This guide
@@ -66,11 +78,29 @@ This creates the new scenario's folder, with empty CSV files ready for you to
 add rows to, and a `series/` folder (with a short `README.md`) for any growth
 or inflation series it changes. It checks that the scenario loads, and makes it your current
 scenario. You then add only the rows that need to be different — the rest of
-this guide shows what to put in them.
+this guide shows what to put in them. The parent and mix-ins may be `t_`
+template scenarios too. Leave the parent off and the command asks for what
+the scenario builds on, one name at a time with tab completion: the parent,
+then any mix-ins, until you press Enter on a blank line.
+
+A scenario meant only for mixing into others needs no parent:
+
+```sh
+sim scenario create <name> --no-parent
+```
+
+Answering the parent question with a blank line does the same, once you
+confirm it. Such a **mix-in only** scenario has no start or end of its own,
+since a mix-in's dates would replace those of the scenario it's mixed into,
+so it can't run by itself: `sim run` refuses it, `sim all` skips it, and
+`sim scenario list --verbose` shows `(mix-in only)` for its parents.
+`sim check` still checks it, on top of the empty `t_empty` template. Give
+it a start and end (`sim scenario edit`) and it's an ordinary scenario that
+runs alone.
 
 You can also start from what the scenario inherits: `sim account edit`,
 `sim account lot edit`, `sim scheduled edit`, `sim calendar edit` and
-`sim ytd edit` (and `sim calendar tag add|rm`) on an inherited item write the edited row into
+`sim ytd edit` (and `sim account|scheduled|calendar tag add|rm`) on an inherited item write the edited row into
 the derived scenario as an override, and leave the parent alone. A derived
 scenario can't remove what it inherits, so `sim account delete`,
 `sim calendar delete` and `sim person lifespan clear` refuse an inherited
@@ -80,9 +110,11 @@ starts, and `sim ytd delete` on an inherited row sets its amount to zero
 with an override. Deleting the derived scenario's override brings back the inherited
 row. Renames always reach every scenario sharing the name.
 
-A scenario made this way is never an ensemble, even when its parent is
-one: it runs once, with each varying row at its central value. Use
-`sim ensemble create` (§4.10) for an ensemble.
+A scenario made this way sets no member count of its own, so it is an
+ensemble only when its parents make one, and a what-if mixed into an
+ensemble leaves it one. To run an ensemble's child once, with each varying
+row at its central value, set its size to 0 with `sim ensemble edit NAME
+--size 0`. Use `sim ensemble create` (§4.10) for a new ensemble.
 
 `sim scenario create` writes a `README.md` in the scenario's own folder;
 edit it to say what the scenario is for. Its title and first paragraph show up wherever a scenario's description
@@ -97,6 +129,7 @@ To see which scenarios the data repo has:
 sim scenario list            # names only, one per line, for scripts
 sim scenario list --verbose  # a table with each one's parents, dates, seed, size and description
 sim ensemble list            # just the ensembles (also takes --verbose)
+sim scenario list --all      # also the t_ template scenarios (ensemble list takes --all too)
 ```
 
 The verbose table marks your current scenario with `*`, and shows each
@@ -111,6 +144,9 @@ argument or `--scenario`) makes it current, and the command says so
 `sim ensemble create` do for the new scenario. When you leave it out, the command
 first prints `Using scenario <name>`; with no current scenario (a fresh data
 repo, or after deleting it) the command asks you to name one.
+To look at a scenario without making it current (in a script, or for an AI
+assistant answering questions for you), set `ANALYSIS_KEEP_SCENARIO=1`:
+commands then use the scenario they name and leave your current one as it is.
 `sim switch` prints your current scenario, and `sim switch <name>` makes
 `<name>` current, printing the one it replaces. The shell
 prompt that `activate-analysis` sets shows it, as
@@ -127,10 +163,31 @@ built on it (as parent or mix-in), your current scenario, and links to it
 in the data repo's `README.md` files. Runs you already made keep the old
 name.
 
+To try an alternative next to a scenario rather than on top of it, copy it
+(`sim ensemble copy` is the same, but offers only ensembles):
+
+```sh
+sim scenario copy <old> <new>
+sim scenario edit <new> --parents base:high_inflation   # say, a different parent
+```
+
+The copy gets every file in the old scenario's folder, so it has the same
+parents and rows, and the two change independently from then on. Only the
+copy's own name changes: its `scenario.csv` name and `created_by`, its
+`README.md` title, and its links to itself. A copied ensemble keeps the
+seed and size, so it pairs with the original member by member. The old
+scenario may be a `t_` template. Runs aren't copied, and the copy becomes
+your current scenario.
+
 To change a scenario's own settings (`sim ensemble edit` is the same
 command), run `sim scenario edit <name>` with no options: it shows the
 fields, and you name one to change it, with tab completion, then write.
-Options make the change at once instead:
+Changing `parents` asks for each in turn, offering the current one: press
+Enter to keep it, type `-` to remove it, `+<name>` to insert `<name>` before
+it, or another name to replace it; then add mix-ins at the end until you
+press Enter on a blank line. Removing them all asks you to confirm that the
+scenario builds on nothing. Options make the change at once instead (tab
+completes each name in `--parents`):
 
 ```sh
 sim scenario edit <name> --description "Bill works two more years"
@@ -157,6 +214,21 @@ and names them. If it was your current scenario, none is current
 afterwards. Runs you already made of it are kept, and any markdown file
 that still mentions it is listed.
 
+A scenario that only exists to be built on, such as a mix-in or an
+abstract base, can be disabled (or `sim ensemble disable`):
+
+```sh
+sim scenario disable <name>   # sim scenario enable <name> undoes it
+```
+
+`sim all` and the background builder then skip it, and the notebooks'
+pickers leave it out. It still works as a parent or mix-in, and
+`sim run <name>` still builds it. The command writes a `.disable` file in
+the scenario's folder; commit it like any other change. It isn't
+inherited, and it isn't part of any scenario's data, so disabling a base
+doesn't make the scenarios built on it rebuild. `sim scenario list -v`
+shows `no` under build for a disabled scenario.
+
 Renaming anything else a scenario can share works the same way: the
 `rename` commands for accounts, chains, scheduled rules, calendar rows,
 series and lots change the name in every scenario that shares it, not just
@@ -171,6 +243,35 @@ sim scheduled rename <old> <new>
 sim calendar rename <old> <new>      # a row's name, and rows correlated with it
 sim series rename <old> <new>        # its series/ files too
 ```
+
+A scenario's growth-rate and inflation series have their own commands. Each
+change is written only if the scenario, and every scenario built on it,
+still loads:
+
+```sh
+sim series list                       # what the scenario reads, and from where
+sim series show <name>                # its rows, and what names it
+sim series add <name> --kind rate --rate 4.5% --set 2030-01=3.5%
+sim series edit <name> --set 2030-01=3% --remove 2035-01
+sim series delete <name>              # asks first; --yes doesn't
+sim series revert <name>              # inherit the parent's again
+```
+
+`add` and `edit` ask for whatever you leave out. `edit` with no options
+shows the rows, numbered: type a number to change that row, `+` to add one,
+`-` and a number to remove one, and press Enter on a blank line to write.
+Editing a series the scenario inherits writes the scenario's own copy of
+the whole file, which replaces the parent's for this scenario and those
+built on it.
+
+`delete` removes a series only this scenario has. One it inherits is
+*emptied* instead: the scenario's own file keeps just its header. An empty
+series is as good as none, but it also hides the parent's, so a scenario
+built on this one that reads the series has to supply its own. That keeps
+the parent's rates from being used by mistake. `sim series revert` drops
+the scenario's own file, emptied or not, so it inherits the parent's again.
+Deleting a series that something still reads is refused, naming what reads
+it, and `cpi` can't be deleted.
 
 Everything below works the same way, whether you are editing `base` directly,
 or editing a derived scenario's own files.
@@ -197,11 +298,12 @@ project word could be confused with a general word, that is pointed out.
 | **`prices/`** | Shared security price histories every scenario uses unless it says otherwise. |
 | **Itemization** | A CSV file under `itemizations/<name>.csv`. It lists dollar amounts in a `Value` column, and the loader adds them up into one total. Other files can use that total by writing `@name` instead of a plain number (for example `opening_cost_basis = @home_basis`). **This is a different thing from an *itemized deduction*, a tax term — see the next table.** |
 | **`tax_character`** | A label on a money movement that says how it is taxed: `ordinary`, `ltcg`, `stcg`, `tax_free`, `tax_deferred_out`, `return_of_capital`, `none`, and a few others. This label decides which tax bucket the movement is counted in. |
-| **Asset class** | Used only for the portfolio overview (`sim allocation`): `stock_us`, `stock_intl`, `stock` (when the US/international split is not known), `bond`, `cd`, `cash`, `real_estate`, `other`. Set for each symbol in `allocations.csv`. Not related to `tax_character`. |
+| **Asset class** | Used only for the portfolio overview (`sim allocation`): `stock_us`, `stock_intl`, `stock` (when the US/international split is not known), `bond`, `muni` (many states' municipal bonds), `muni_CA` and the like (one state's municipal bonds), `cd`, `cash`, `real_estate`, `other`. Set for each symbol in `allocations.csv`. A municipal bond class also decides how its interest is taxed; otherwise it isn't related to `tax_character`. |
 | **Calendar event** | One dated change in `calendar.csv`. It can change a rate, change an amount, end a rule, or make a one-time transfer. See Part 4.8. |
 | **Scheduled transaction / rule** | One row in `scheduled.csv`. It is a rule that moves money, either on a regular schedule or just once. |
 | **Debit / credit** | The two sides of one money movement. A **debit** takes money out of a lot: a payment, a withdrawal, or the "from" side of any transfer. A **credit** puts money into a lot: the "to" side. For an asset lot, a debit lowers the balance and a credit raises it. For a liability (a loan or a card), a debit is borrowing more, so what you owe goes up, and a credit is paying it down. The refill check runs before each debit, which is why the chain flowcharts label refill "before a debit". These are everyday banking senses, not the bookkeeping ones, where debiting an asset account *raises* it. |
 | **Refill / overflow** | A lot's own rule for keeping its balance in a range. If a payment would drop it below `minimum_balance`, money is drawn from `refill_chain` first. If it goes above `maximum_balance`, the extra is swept into `overflow_chain` at the end of the month. Each lot can have its own setting. |
+| **Guard rail** | A line a scenario's spending, or its withdrawals from the portfolio, should stay on one side of, such as the 4% rule. A row of `guard_rails.csv`; reports show how far inside or past it each year was, and over the years. It doesn't change the run. See Part 4.15 and [the guard rails guide](guides/guard-rails.md). |
 | **RMD subject account** | The IRA or 401(k) account a Required Minimum Distribution is calculated from. If that account has more than one lot, you must name the account in `params_json`, and `from_account` must be a chain that lists only that account's lots. |
 
 ### Simulation words used by ensembles
@@ -220,6 +322,7 @@ beginning.
 | <a id="g-seed"></a>**Seed** | The number a recipe's random draws all start from. The same seed reproduces the same members exactly. | [Random numbers come from a seed](guides/simulation-basics.md#random-numbers-come-from-a-seed) |
 | <a id="g-rng-stream"></a>**RNG stream** | The separate random-number sequence each uncertain row gets, keyed by the seed, the member and the row's name. Adding or changing one row never shifts another row's draws, so comparisons between scenarios show the change, not fresh noise. | [Why every row gets its own stream](guides/simulation-basics.md#why-every-row-gets-its-own-stream) |
 | <a id="g-common-random-numbers"></a>**Common random numbers** | Giving two scenarios being compared the same random draws, so the difference between them is the change you made rather than luck. Streams and a shared seed provide it. | [Why every row gets its own stream](guides/simulation-basics.md#why-every-row-gets-its-own-stream) |
+| <a id="g-date-marker"></a>**Date marker** | A named date (`crash_start`) that other rows' dates are written relative to, as `crash_start+2y`. Varying the marker moves the whole event together. | [Ensembles](guides/ensembles.md#events-with-an-uncertain-start-date-markers) |
 | <a id="g-latent-factor"></a>**Latent factor** | A named shared influence ("core inflation") that rows correlate with, but that isn't itself a value in the model. It has no units: in each future it says only how high or low things run, as a percentile. | [Ensembles](guides/ensembles.md#correlated-parameters) |
 | <a id="g-correlation-tree"></a>**Correlation tree** | Rows and factors linked by `vary_correlate_with`, each with one parent and a correlation ρ to it. The top of a tree is its **root**. | [Ensembles](guides/ensembles.md#correlated-parameters) |
 | <a id="g-copula"></a>**Copula** | The rule that ties correlated rows' random draws together without changing any one row's own range or shape. The default **Gaussian copula** makes linked rows move together; the **Student-t copula** also makes their extremes coincide. | [A visual introduction](https://twiecki.io/blog/2018/05/03/copulas/) |
@@ -258,6 +361,7 @@ met a word gets an answer about how it's used here.
 | <a id="g-correlation"></a>**Correlation (ρ)** | A number from −1 to 1 for how strongly two quantities move together: 1 in lockstep, 0 no tendency, −1 opposite. ρ² is roughly the share of one's variation the other accounts for. | [OpenStax §13.1](https://openstax.org/books/introductory-business-statistics-2e/pages/13-1-the-correlation-coefficient-r) |
 | <a id="g-persistence"></a>**Persistence, autocorrelation** | The correlation between a quantity and its own value some time later, usually the next year. Near 1, this year's value carries over (interest rates); near 0, each year is a fresh draw (stock returns). | [A century of rates](guides/century-of-rates.md#how-much-does-this-year-predict-next-year) |
 | <a id="g-mean-reversion"></a>**Mean reversion** | A tendency for an unusually high or low value to be followed by one closer to the long-run average. An inflation spike is usually followed by a smaller one, then by ordinary years. | [A century of rates](guides/century-of-rates.md#how-much-does-this-year-predict-next-year) |
+| <a id="g-shock"></a>**Shock, shock SD** | The part of one year's value that the past doesn't predict: the surprise. A process row (`vary_process ar1`) builds its yearly path from the level, the share of last year's gap from it that carries over (persistence), and a new random shock each year. The shock SD (`vary_shock_sd`, and Shock SD in `analysis historical`) is the typical size of one year's shock, in growth terms, as a percent. It is smaller than the single-year SD whenever persistence carries part of the spread from year to year. Rows under one factor get correlated shocks each year; in a tree with tail dependence a whole year's shocks can be extreme together. Also called an innovation. | [A rate that moves every year](guides/historical-calibration.md#a-rate-that-moves-every-year) |
 | <a id="g-rank-correlation"></a>**Rank correlation** | Correlation computed on the values' order rather than the values themselves, so it's unchanged by stretching or reshaping either quantity's range. | [Kendall's τ](https://www.socscistatistics.com/tutorials/kendall-tau/) |
 | <a id="g-kendall-tau"></a>**Kendall's τ** | A rank correlation. Take every pair of members: the pair agrees if both rows put the two members in the same order, and disagrees otherwise. τ is the share that agree minus the share that disagree. For the simulator's copulas τ = (2/π)·asin(ρ), so the correlation check reads ρ back from τ. | [Tutorial](https://www.socscistatistics.com/tutorials/kendall-tau/) |
 | <a id="g-r2"></a>**R²** | The share of the outcome's variation that a regression on the inputs explains, from 0 to 1. | [OpenStax §12.3](https://openstax.org/books/introductory-statistics-2e/pages/12-3-the-regression-equation) |
@@ -273,7 +377,7 @@ met a word gets an answer about how it's used here.
 | **Capital gain/loss** | The sale price minus the cost basis. **Long-term** gains (`ltcg`, held more than a year) usually get a lower tax rate. **Short-term** gains (`stcg`, held a year or less) are taxed as ordinary income. See Part 3. |
 | **RMD (Required Minimum Distribution)** | The smallest amount the IRS requires you to withdraw each year from a pre-tax retirement account, once you reach a certain age. A real tax rule; also the name of a rule kind in this tool (`rmd`). |
 | **Traditional vs. Roth** | Traditional money delays tax until you withdraw it (`tax_deferred_out`). Roth money is already taxed, so withdrawals come out tax-free (`tax_free`). An IRA or 401k is an account of subkind `retirement`, and each of its lots says which it is, with `subkind` in `account_lots.csv` (`traditional_ira`, `roth_ira`, `traditional_401k`, `roth_401k`). Traditional money moved into a Roth lot is a conversion, taxed as ordinary income; moved into another traditional lot it is an untaxed rollover. |
-| **Roth five-year rule** | Roth earnings come out tax-free only once you are 59½ and five tax years have passed since January 1 of the year of your first Roth contribution or conversion. Until then the simulator taxes the earnings as ordinary income (`roth_nonqualified`), and a chain skips a Roth step that would pay them unless it is the chain's last. Contributions and conversions (the lot's `opening_cost_basis`) always come out tax-free. Give each conversion its own Roth lot with its `acquired` date. |
+| **Roth five-year rule** | Roth earnings come out tax-free only once you are 59½ and five tax years have passed since January 1 of the year of your first Roth contribution or conversion. Until then the simulator taxes the earnings as ordinary income (`roth_nonqualified`), and a chain skips a Roth step that would pay them unless it is the chain's last. Contributions and conversions (the lot's `opening_cost_basis`) always come out tax-free. Give each conversion its own Roth lot with its `acquired` date. After a death, a surviving spouse who takes the decedent's Roth IRA as their own (`"roth_survivor": "own"` in `scenario.csv` `meta_json`, the default) gets the earlier of the two clocks for all their Roth IRAs, and the 59½ test becomes the survivor's. With `"beneficiary"`, with no surviving spouse, or for a Roth 401k, the decedent's account keeps its own clock and has no age test. |
 | **Filing status** | `MFJ` (married filing jointly), `Single`, or `MFS` (married filing separately). This tool does not model Head of Household. Filing status changes automatically after a spouse's death, based on `lifespan.csv`; see Part 4.7. |
 | **Standard deduction** | A flat amount the IRS lets you subtract from income before tax is calculated. This simulator always uses the standard deduction; it does not yet model choosing to itemize deductions instead. |
 | **Itemized deduction** | An IRS alternative to the standard deduction: instead of the flat amount, you add up specific expenses (mortgage interest, large medical bills, and so on) and use that total if it's bigger. See Part 4.9 for how to add one for a given year. This is a different idea from this tool's *itemization* files, above, which just add up a list of dollar amounts for any purpose — the similar name is confusing, but it predates this guide. |
@@ -282,9 +386,30 @@ met a word gets an answer about how it's used here.
 
 ## 3. How tax is handled
 
+**Video.** *Taxes* walks through this section and §4.9, §4.12 and §4.14
+with Alice and Bill: what the plan pays in tax, a Roth conversion,
+Medicare's surcharge and a big medical year:
+[English](https://www.youtube.com/watch?v=nw0-pCtZ9yc),
+[Japanese (日本語)](https://www.youtube.com/watch?v=S1_TNzzaOR0).
+
 Tax is not calculated as each rule fires. Instead, it is calculated once per
 tax year, by looking back over everything that happened that year (the
 `transfer_event` ledger).
+
+Each income tax is a file in the scenario's `taxes/` folder: `federal.csv`
+for federal tax and `state.csv` for state tax. Each April the file works out
+the year before's tax and pays what is still due, from its `source_chain`
+(usually `Asset_Checking`) into its `destination` (`Expense_Taxes_Federal`).
+Each tax is paid into an expense account of its own kind: subkind
+`taxes_federal` for the federal tax, `taxes_state` for the state's and
+`taxes_local` for a local one, and no two taxes share one. Only income tax
+payments (withholding, estimated payments) go into these accounts; pay
+property tax into a `taxes_property` account, where it counts as property
+tax for itemizing with no tag. `sim tax add federal` writes one, asking for
+each field (and adds the account if the scenario has none of the right
+kind), and `sim tax list` shows them. A child scenario inherits its parent's files; its own file for
+a jurisdiction replaces the parent's whole. A scenario with no `taxes/`
+files pays no income tax.
 
 - **Ordinary income** includes: salary, pension, interest, the taxable part of
   Social Security, taxable withdrawals from Traditional accounts
@@ -293,27 +418,148 @@ tax year, by looking back over everything that happened that year (the
   that file exists. These rates apply on top of your ordinary taxable income.
   If the file does not exist, long-term gains are taxed the same as ordinary
   income.
+- **Dividends and interest** from a taxable brokerage lot are taxed in the
+  year they are paid, even though the simulator reinvests them: stock
+  dividends (`qualified_dividend`) at the long-term gain rates, and other
+  dividends and interest as ordinary income. Each reinvested payout adds to the lot's
+  cost basis, so only the appreciation is left to tax at a sale. How much a
+  lot pays comes from a `_yield` rate series beside its growth series; see
+  Part 4.11. A fund's capital-gain distributions are taxed the same year
+  too: long-term ones as long-term gains, short-term ones as ordinary
+  income. IRAs, Roth accounts and HSAs owe nothing on any of these: their
+  earnings are taxed (or not) only when money leaves.
+- **Municipal bond interest** (a lot or fund of asset class `muni`, or
+  `muni_CA` for one state's bonds) is left out of federal AGI. It still
+  counts toward how much Social Security is taxed and toward the MAGI that
+  sets Medicare's IRMAA surcharge, and `sim report tax` shows it as
+  `fed_exempt_interest`. A state taxes every state's municipal bonds but its
+  own: living in California, `muni` interest is taxed and `muni_CA` interest
+  isn't, and after a move away, both are. A territory's bonds (`muni_PR`)
+  are exempt in every state, and the District of Columbia taxes none. A
+  fund that pays at its own `_yield` series is exempt only when at least
+  half of it is municipal bonds, and then only for that share.
 - **Filing status** comes from the `filing_status` aux table for that tax
-  year. One exception: MFJ or MFS automatically changes to Single, starting
+  year: your data repo's `aux/filing_status.csv`, one row per date such as
+  `2026-01-31,MFJ`. The templates leave it empty, and a scenario that
+  computes tax fails to load without a row. One exception: MFJ or MFS automatically changes to Single, starting
   the year after a primary person's final month in `lifespan.csv`. You do
   not need to add a matching row to `filing_status.csv` yourself; see Part 4.7.
 - **Deductions**: the standard deduction, from `standard_deduction.csv`,
   unless you add itemized deductions for that year — see §4.9. The simulator
   then uses whichever is greater. (See the glossary above — *itemization* and
   *itemized deduction* mean two different things in this guide.)
-- **State tax** works the same way as federal tax, using
-  `state_brackets__CA.csv` (or your own state's file, in `aux/`) and the
-  state's standard deduction from `state_standard_deduction__CA.csv` (named
-  for the same state as the brackets). Without
+- **Inflation**: the brackets, the standard deduction and the long-term
+  gain bands rise each year with inflation, as the law raises them. The
+  supplied tables carry the latest published figures and grow them with
+  `cpi` from then on (`floor_series`/`amount_series`, see the `aux/`
+  README). The Social Security thresholds and the $3,000 capital loss limit
+  stay fixed, as they are in law.
+- **State tax** starts from the federal return, as most states' forms do:
+  federal AGI, with the state's own additions and subtractions (dividends
+  taxed as ordinary income, its gain exclusion, retirement exclusions, an
+  HSA it taxes), each shown as its own `state_` line of the tax summary. So
+  a state tax needs the federal one (`taxes/federal.csv`). It uses the
+  brackets of the state the household lives in, which `residence.csv`
+  says: choose it with `sim tax state`, which asks for the state by name
+  and adds a state tax like the federal one if there is none. A year is
+  taxed by the state you live in on its December 31. For California it reads `state_brackets__CA.csv`
+  and the state's standard deduction from
+  `state_standard_deduction__CA.csv` (named for the same state). Tables for California, the District of Columbia, Idaho, Kansas,
+  Nebraska and North Carolina come with the simulator; for another state,
+  put its files in your `aux/`. Without
   that file the federal standard deduction is used, and loading warns,
-  since most states' deduction is much smaller. State taxable income
-  leaves out Social Security, and long-term gains are taxed as ordinary
-  income.
+  since most states' deduction is much smaller. Capital gains are taxed
+  as ordinary income unless the state's own tables say otherwise: a share
+  of long-term gain excluded (`state_ltcg_exclusion__XX.csv`), or gain
+  rates of its own (`state_ltcg_brackets__XX.csv`,
+  `state_stcg_brackets__XX.csv`). State taxable income leaves out Social
+  Security unless your state taxes it: then add
+  `state_social_security__XX.csv`, which starts from the federally taxable
+  amount and leaves out an exclusion that phases out with income. The
+  `aux/` README describes them all. Two more tables, also named for the
+  state, are optional: `state_surcharge__CA.csv` adds California's 1% on
+  taxable income over $1 million, and `state_hsa__CA.csv` says California
+  doesn't recognize health savings accounts, so it taxes an HSA like a
+  brokerage account: it doesn't deduct what goes in, taxes the dividends
+  and interest the year they're paid, and taxes what comes out only on its
+  gain over the account's cost basis (contributions and reinvested
+  dividends), even a qualified medical withdrawal; a loss is a capital
+  loss. Growth left in the HSA isn't taxed. An HSA lot's basis starts at
+  its `opening_cost_basis` in `account_lots.csv`, or its whole balance when
+  that is blank.
+- **Washington**: it ships, and has two taxes. Its capital gains tax
+  (`state_gains_tax__WA.csv`, `state_gains_deduction__WA.csv`) takes 7% of
+  the year's net long-term gain over a deduction ($278,000 in 2025, grown
+  with inflation), and 9.9% of the part over $1 million. A short-term loss
+  doesn't offset the gain, and a home's gain (from a `real_estate`
+  account) is exempt; dividends, interest, IRA withdrawals and Social
+  Security aren't taxed. From 2028 its income tax takes 9.9% of income
+  over $1 million, Social Security, pensions and IRA withdrawals included,
+  and credits the gains tax against it. If a court strikes that tax down,
+  a dated 0% row of `state_brackets__WA.csv` in your data repo ends it.
+- **Local income tax**: some counties and cities tax income on top of the
+  state (a Maryland county, New York City, an Indiana county, the Portland
+  area). Where the local tax is figured on the state's taxable income, put
+  your own county's or city's rates in `aux/state_local_tax__<county>.csv`
+  (any name, such as `MD-county`), in the columns of the state's brackets:
+  one band for a flat county rate, the city's brackets, or a 0% band below
+  a threshold, with rows for each filing status your state brackets have,
+  and name the county where you live: `sim tax state --county MD-county`.
+  (A table named for the state, `state_local_tax__MD.csv`, applies wherever
+  you live in it without a county.) Then `sim tax add local` adds
+  `taxes/local.csv`, the local tax's own file: it is paid from the state
+  tax's source, unless you name another, into an account of its own,
+  `Expense_Taxes_Local` (subkind `taxes_local`) unless you have one, and `sim report tax`
+  shows it as `local_tax`, apart from `state_tax`. A scenario with the table
+  and no `taxes/local.csv` doesn't load. A local tax only on wages, or with a base of its own
+  (Philadelphia's on investment income, Yonkers's share of the state tax),
+  isn't modeled.
+- **State retirement income exclusions**: most states leave some pension,
+  IRA and 401(k) income out, often from an age, up to an amount per person,
+  and sometimes only below a household income. Add your state's rules as
+  `state_retirement_exclusion__<state>.csv` in `aux/` (none ships; the
+  `aux/` README lists the columns), and the state's taxable income leaves
+  that income out for each of you. `sim report tax` shows what was left out
+  as `state_exclusion`. Give a pension income account its owner, so the
+  pension counts as that person's; a joint account's income is split
+  between you.
+- **Spouses filing separately on one state return**: Arkansas, Delaware,
+  the District of Columbia, Kentucky and Virginia let a married couple
+  file separately on one state return, each through the brackets and
+  standard deduction alone, which saves tax when you both have income.
+  `state_separate_return__<state>.csv` in `aux/` with `allowed` `yes`
+  turns it on (the District's ships): the state tax figures both ways and
+  takes the lower, with your income split by whose accounts it comes from
+  (a joint account's split evenly). `sim report tax --return state` shows
+  `joint_tax`, `separate_tax` and each of yours.
+- **State deductions and credits** of the state's own, such as a renter's
+  deduction or credit, a 529 or long-term care premium deduction, personal
+  exemptions and exemption credits, or a deduction for federal tax paid, are
+  rows of `state_adjustments__<state>.csv` in `aux/`. California's
+  exemption credits and renter's credit ship. A row that counts spending
+  or income reads a tag: tag the rule that pays your rent
+  `tax:rent` (`sim scheduled edit housing --tags tax:rent`) for the
+  renter's credit. A credit the state pays even past the tax (Idaho's
+  grocery credit) is marked `refundable`; a pension exclusion that shrinks
+  with your Social Security (Maryland's) is marked `less_ss`. `sim report
+  tax --return state` shows each line.
 - **MAGI**, for Medicare's income surcharge (Part 4.14), is the federal AGI
-  each year.
+  each year plus municipal bond interest.
 - **RMDs** are calculated from the account's lot balances on the previous
   December 31, divided by the IRS factor for that age. The factor comes from
   `rmd_factors.csv` and `rmd_start_age.csv`.
+- **Your own rules**: a deduction or credit the built-in calculators don't
+  have (a renter's deduction, a public pension exclusion), or a state they
+  don't model, can be a small Python class in your data repo's `taxes/`
+  folder, named by a tax file's `kind` (`sim tax edit state --kind ...`).
+  It reads your spending and income by tag, so a rent deduction follows the
+  rent you pay. `sim tax kinds` lists the calculators and their parameters,
+  `sim tax check` runs a scenario twice to make sure its results don't
+  change, and `sim report tax --return state` shows every line of a return.
+  [The tax calculators guide](guides/tax-calculators.md) works an example
+  through, and the video *Tax plugins* walks through it with Alice and
+  Bill: [English](https://www.youtube.com/watch?v=rWfsNvoNnVI),
+  [Japanese (日本語)](https://www.youtube.com/watch?v=tckwO18axvw).
 
 **One important thing to know before you model a sale (Part 4.5):** the
 simulator can automatically split a withdrawal into "return of capital" and
@@ -416,7 +662,10 @@ Asset_Brokerage_Joint,inherited_2029,,AAA,2029-03-15,500,,,50000.00
   instead. The balance is then calculated from a price. Run
   `sim prices fetch` to get prices; it saves them to
   `prices/security_price__<SYMBOL>.csv`, and `sim prices show` lists what
-  it saved. Run `sim prices check` to compare a
+  it saved. With the background builder installed, you don't need to: it
+  fetches them after each weekday's close and commits them to `main` when
+  `main` is checked out and has no uncommitted changes. New prices after a
+  scenario's start don't change its results, so they rerun nothing. Run `sim prices check` to compare a
   balance you typed in against quantity times price. Part 4.11 covers
   adding a symbol the data repo doesn't have yet.
 - Once you have a run, `sim account holdings <account>` shows every lot's
@@ -441,7 +690,9 @@ sim scheduled edit groceries_monthly                   # or pick fields to chang
 
 `sim scheduled add --kind <kind>` adds a rule of any kind (a Social Security
 benefit, an RMD, a mortgage, ...), asking for what that kind needs, and
-`sim scheduled delete` removes one.
+`sim scheduled delete` removes one. Without `--tax-character`, a rule takes
+its kind's usual one, and a fixed amount out of a salary, pension or
+interest income account is `ordinary` income.
 
 ### 4.4 Change an estimated expense starting at a later date
 
@@ -596,19 +847,37 @@ together, with worked examples and recipes.
 
 ### 4.7 Lifespan assumptions
 
+**Video.** *Advanced* walks through this section and §4.15 and §4.19
+with Alice and Bill: lifespans drawn from the life table, what a death
+changes, guard rails on their withdrawals, and a strategy that cuts
+spending when a rail is crossed:
+[English](https://www.youtube.com/watch?v=sCqdL0pSIA0),
+[Japanese (日本語)](https://www.youtube.com/watch?v=dcyW3Mzd-yE).
+
 `lifespan.csv` has one optional row for each person: `person` and
 `age_at_death`, a decimal age in years such as `84.5`. The person's final
 month is their birth month plus that many months (`84` is the month of the
-84th birthday). After that month, every scheduled rule tied to that person
-stops firing — this includes rules where the person is set directly, and
-rules for accounts that person owns (salary, their share of expenses, and so
-on). Growth rules (`percent_of_balance`) are an exception: a balance keeps
-earning interest, or growing in value, after its owner dies.
+84th birthday). After that month, every scheduled rule whose `person`
+column names them stops firing: their Social Security, RMDs, salary, their
+share of expenses, and so on. Who owns an account doesn't matter, so a
+survivor keeps paying from, and into, the decedent's accounts. Give a rule a
+`person` (`sim scheduled add --person`, on any kind of rule) when it should
+end at that death. Growth rules (`percent_of_balance`) never stop: a balance
+keeps earning interest, or growing in value, after its owner dies.
 
 Setting `age_at_death` is also all you need to do for filing status to change
 correctly after a spouse's death: MFJ or MFS automatically becomes Single,
 starting the following year (Part 3). You do not need to add a matching row
 to `filing_status.csv`.
+
+A death also ends the decedent's own tax losses. Their share of a capital-loss
+carryover, and of a business's net operating loss, can still be used on the
+return for the year they die, and then it's gone. Losses on their own
+accounts are theirs, and half of a joint account's while the spouse lives.
+The survivor keeps their own share. A loss counts by its year, so one
+taken from the decedent's account later in the year of the death still
+counts as theirs. `sim report tax --return federal` shows
+what ended as `capital_loss_lapsed` and `nol_lapsed`.
 
 In an ensemble the age can vary from member to member. Give
 `vary_distribution` (`uniform` or `triangular`) and the lowest and highest
@@ -649,12 +918,51 @@ The table supplies the spread. `vary_low`, `vary_high` and `vary_mode` stay
 blank. The person needs a `sex` (`f` or `m`) in `persons.csv`, which `sim
 person edit <id> --sex f` sets.
 
+A lifespan can read another country's table: `lifespan.csv`'s optional
+`life_table` column names an aux `life_table__<name>.csv`, and blank reads
+`life_table.csv`. The templates ship `jp`, Japan's 2023 table, which `sim
+person lifespan set <id> 90 --vary life_table --life-table jp` picks. It is
+per scenario, like the age, so one scenario (or a mix-in) can try another
+table and another median, to compare. `scripts/blend_life_tables.py` builds
+a table between two, such as one for someone who has lived in both
+countries. Use a country's own table rather than a later
+`age_at_death` on the US one. The set-forward moves the table's median but
+keeps its spread, and the US tail is fatter: for a woman alive at 60, with
+the median put at Japan's (about 90), the shifted US table gives about a
+12% chance of reaching 100 and 2.5% of reaching 105, while Japan's own
+gives 6.5% and 0.5%.
+
+`sim lifespan tables` lists every life table there is to choose from: the
+templates' `aux/`, the data repo's and each scenario's, each at its latest
+vintage. For each age and sex it gives `q`, the chance of dying before the
+next birthday, and the expected age at death for someone who has just
+reached that age, as the simulator reads the table. `sim lifespan check
+67.5` gives the same for one age, interpolating between whole ages, with
+the years left. `notebooks/age_comparison.ipynb` shows the tables side by
+side.
+
 `sim person lifespan set alice 80 --vary life_table` prints what the median
 means: how many years older or younger the table is read, the mortality
 multiplier that would give the same median (an insurer's "table rating",
 e.g. about 200% of the table's death rates), and the ages at the 10th, 25th,
 50th, 75th and 90th percentiles. For a man 70 at the start with a median of
 80, the 2023 table gives about 72 at the 10th percentile and 88 at the 90th.
+
+`sim person show [person]` shows the whole distribution for each person with
+a sex: the ages at death by percentile and, every five years, the chance of
+having died by then. Each is centered on the scenario's age at death: the
+table read older or younger so its median is that age, as a `life_table`
+lifespan's ensemble draws it, and for a fixed age the same shift, to show
+what the age implies; the plain table's median is shown beside it. To see
+the plain table itself, set the age at death to that median. With
+no person it ends with the household: the year the last of them dies, by
+percentile, taking the lifespans as independent, since a plan has to last
+until then. `--graph` (or `--graph-file lifespans.png`) draws each person's
+chance of dying at each age and of having died by it, shaded like the
+ensemble fan chart, and the chance that someone in the household is still
+alive each year. In a terminal that reports its size, `--graph` fills its
+width and height, less three lines for the prompt. `notebooks/lifespan.ipynb`
+shows the same chart, shrunk to fit the window.
 
 There's deliberately no separate multiplier to set. With the median held
 fixed, multiplying the death rates changes the spread by a year or two at
@@ -714,7 +1022,7 @@ only for ensembles, Part 4.10):
 | `retire_scheduled` | `scheduled_name` | "salary stops on retirement" |
 | `one_off_transfer` | `account_1`/`lot_1`, `account_2`/`lot_2`, `amount`, `tax_character` | a windfall, a gift, a settlement; either side may be a chain (Part 4.5) |
 | `transfer_balance` | `account_1`/`lot_1`, `account_2`/`lot_2`, `tax_character`; `amount` left blank | rolling a 401(k) into an IRA: moves everything the lot holds at the start of that month |
-| `swap_aux_table` | `series` (the table replaced; blank for one without a series), `params_json` naming the kind and the replacement | moving to another state: from that month, the state tax brackets are another state's |
+| `swap_aux_table` | `series` (the table replaced; blank for one without a series), `params_json` naming the kind and the replacement | a tax law that changes on a known date: from that month, the federal brackets are another table |
 
 Leave `tax_character` blank on a `one_off_transfer` or `transfer_balance` out
 of a brokerage lot and the move is a sale: the lot's share of basis comes out
@@ -728,64 +1036,140 @@ blank means `none`. Set `tax_character` to override any of these.
 A rule that should start on a future date needs no calendar event: give its
 `scheduled.csv` row that `start` date.
 
-For a move, put the new state's brackets beside the old ones, as
-`aux/state_brackets__WA.csv` say, and swap them in on the moving date:
+For a move, `sim tax move 2031-07 Washington` asks for anything left out
+and adds a row to the scenario's `residence.csv`, which says where the
+household lives from each month on:
 
 ```csv
-date,kind,series,params_json
-2031-07,swap_aux_table,CA,"{""aux_kind"": ""state_brackets"", ""source_series"": ""WA""}"
+effective_date,state,county,description
+2026-05,CA,,
+2031-07,WA,,Move to Washington (WA)
 ```
 
-From July 2031 on, everything that read the `CA` brackets reads the `WA`
-ones instead, including their later dated changes. With two states'
-brackets in `aux/`, the state `tax_accumulator` rule must say which it reads:
-`"bracket_series": "CA"` in its `params_json`. Do the same for
-`state_deductions` if you use it. Any aux table works the same way: a new
-federal bracket table on the date a law takes effect, or another inflation
-series.
+The first row is where you live when the scenario starts (`sim tax state`
+writes it). A tax year is taxed by the state you live in on its December 31,
+so a move in February 2031 leaves 2030's return, paid that April, in the old
+state, and 2031 is the new state's. Everything the state tax reads follows
+the move: the new state's brackets, standard deduction, Social Security,
+gain, gains tax, surcharge, retirement exclusion and HSA tables, or none where it has
+none (the federal standard deduction stands in for a missing one). Washington's
+tables ship, so that move needs none of your own. Another state needs its
+tables, as `aux/state_brackets__OR.csv` say, unless they ship or it has no
+income tax (it then reads a 0% table, `state_brackets__none.csv`). A move to another county is a row too:
+`sim tax move 2033-01 CA --county CA-county` reads
+`aux/state_local_tax__CA-county.csv` from then on. A child scenario adds its
+own rows to its parent's, and one of the same month replaces the parent's.
 
-### 4.9 Modeling itemized deductions (for example, a big medical year)
+A move to a territory works the same way. Guam, the Northern Mariana Islands
+and the U.S. Virgin Islands tax their residents under a copy of the federal
+tax law, paid to the territory instead of the IRS, so the federal tax is the
+whole tax there and the state tax pays nothing. Tables of your own for one
+are refused, since they would tax the same income twice. Each has local breaks for
+income earned there, such as the Northern Mariana Islands' rebate, which a
+household retiring from the mainland seldom has. Puerto Rico and American
+Samoa have tax codes of their own, which the simulator can't model yet
+([#570](https://github.com/BobKerns/analysis/issues/570)), so a move to
+either is refused.
 
-By default, tax is calculated using the standard deduction — a flat amount
-that depends only on filing status (Part 3). If a year has enough deductible
-expenses (a large medical bill is the usual case), you can add a
-`federal_deductions.csv` file to `aux/`. It has one dated row per year:
+Any other aux table can be swapped with a calendar row, `swap_aux_table`: a
+new federal bracket table on the date a law takes effect, or another
+inflation series. A state's tables can't be: they follow where you live.
 
-```csv
-# aux/federal_deductions.csv
-effective_date,amount
-2029-01-31,42000.00
+### 4.9 Itemized deductions
+
+By default, tax is calculated using the standard deduction, a flat amount
+that depends only on filing status (Part 3). The simulator also adds up your
+itemized deductions from the year's spending, and uses whichever is greater.
+You do not need to compare them yourself. Each line shows in
+`sim report tax --return federal`:
+
+| Line | Comes from | Limited by |
+| --- | --- | --- |
+| `itemized_salt` | Property tax (spending tagged `tax:property`), and the state and local income tax you paid during the year, the April payment for the year before included | The SALT cap: $40,400 in 2026, rising 1% a year through 2029, less 30% of income over $505,000 but not below $10,000; $10,000 from 2030 |
+| `itemized_mortgage_interest` | A `mortgage_payment` rule's interest on a `mortgage` liability, automatically (not a car loan's or a HELOC's) | Interest on up to $750,000 of mortgage debt, tested month by month |
+| `itemized_charity` | Spending tagged `tax:charity` | At most 60% of AGI, less 0.5% of AGI |
+| `itemized_medical` | Spending tagged `tax:medical`, and IRMAA's Medicare surcharges, automatically; not what an HSA paid | Only the part over 7.5% of AGI |
+| `itemized_other` | Anything else you add by hand (below) | None |
+
+Tag the expense account (or the rule paying into it) to say what it is:
+
+```sh
+sim account tag add Expense_Property_Tax tax:property
+sim account tag add Expense_Donations tax:charity
 ```
 
-For that tax year, the simulator uses whichever is greater: this amount, or
-the standard deduction. You do not need to compare them yourself. This file
-is shared by every scenario by default; add your own copy under a scenario's
-own `aux/` folder if only that scenario should have it (Part 2, `aux/`).
+A mortgage or property tax on a rental isn't a personal deduction: tag its
+rule `tax:rental` and it stays out. A business expense (the
+`business_expense` character) stays out by itself: Schedule C deducts it.
+Other spending paid from a business account, a gift say, still counts. A
+tag a rule carries for a report (`tax:itemized`) doesn't move spending off
+its account's line. Pay property tax by its `property_tax` character only
+from an account named directly; through a chain, tag it `tax:property`.
+Pay estimated state tax into an account of its own, not the federal
+tax's: the state tax paid into the federal account can't be told apart,
+and only the April settlement there counts. Married filing separately
+halves each dollar limit. The limits are in `aux/itemized_limits.csv`; a
+scenario that wants none of this, federal or state, puts an
+`itemized_limits.csv` with only its header line in its `aux/`.
 
-Instead of a plain number, `amount` can be `@name`, pointing at an
-`itemizations/<name>.csv` file that lists the actual expenses and adds them
-up for you:
+When more state tax was withheld than you owed, the state pays the rest
+back the April after. If you itemized that year, the refund is federal
+income the year it arrives, as far as deducting it saved tax (the
+tax-benefit rule). The simulator figures this the way the IRS's state refund
+worksheet does: none after a year you took the standard deduction, and
+otherwise no more than what itemizing gained over the standard deduction,
+nor more than the SALT line would have lost without the refund, so a year
+at the SALT cap recaptures little. The refunds show as `state_refunds` on
+the federal return and the taxable part as `state_refund_income`. The
+state doesn't tax its own refund.
 
-```csv
-# itemizations/medical_2029.csv
-Item,Value
-surgery,32000.00
-prescriptions,3000.00
+For deductions the ledger doesn't hold, add a year's total with
+`sim deduction add`, listing the expenses:
+
+```sh
+sim deduction add 2028 --item casualty_loss=38000 --item gambling_losses=2000
 ```
 
-```csv
-# aux/federal_deductions.csv
-effective_date,amount
-2029-01-31,@medical_2029
-```
+That total is added to the lines above for that tax year only; the years
+around it don't get it. Leave the `--item` options off and the command asks
+for the expenses one by one, or give a total instead
+(`sim deduction add 2029 12500`). Don't add anything the lines above already
+count, such as property tax or mortgage interest: it would count twice.
+Medical bills, too, go in tagged spending, where the 7.5% floor applies.
+A total typed in before these lines existed may hold them; `sim check`
+warns of a year's total beside a mortgage, IRMAA, tagged spending or a
+state income tax.
 
-State tax uses the same idea, in `state_deductions.csv`. If you don't add
-one, the state figure automatically uses whatever is in
-`federal_deductions.csv` — most states don't need their own file.
+A state with its own limits (California's ship) figures its lines the same
+way. Another state figures none, and without its own total
+(`sim deduction add --state`) takes the federal one, which now holds only
+the rest; `sim check` warns. Give it its own total, or set
+`itemized_limits_aux` to `itemized_limits` in `taxes/state.csv`'s params to
+figure the federal lines for it.
 
-This is a simple, whole-dollar comparison. It does not model anything more
-detailed, such as medical expenses only counting above a share of your
-income.
+`sim deduction list` shows each year's total, `sim deduction edit 2028`
+changes a year (it asks for each expense in turn), and
+`sim deduction delete 2028` takes one away.
+
+The deductions are the current scenario's. The command keeps them in the
+scenario's `aux/federal_deductions.csv`, with the expenses in
+`itemizations/deductions_2028.csv` (`sim itemization show deductions_2028`).
+A scenario built on this one inherits them; changing them there gives that
+scenario its own copy, and the parent keeps its own.
+
+State tax uses the same idea, with `--state` on each command. If you don't
+add any, the state figure uses the federal one; most states don't need
+their own. The state figures its own lines from the same spending, but
+never deducts state income tax. It figures them only under its own limits,
+`aux/state_itemized_limits__<state>.csv` (California's ship: no SALT cap,
+$1,000,000 of mortgage debt, charity up to half of AGI); a state without
+them gets only the hand-typed total, since its rules may differ from the
+federal ones. A state that taxes an HSA, as California does, counts the medical
+bills the HSA paid.
+
+Not modeled: the 2026 law's limit on itemized deductions in the 37%
+bracket, its charity deduction for people who don't itemize, and
+California's phase-out of itemized deductions at high incomes.
 
 ### 4.10 Running an ensemble (a range of outcomes, not one number)
 
@@ -821,7 +1205,9 @@ at the data repo root, shared by every scenario:
   symbol.
 - **what it holds**, in `allocations.csv`: its share in each asset class.
   These drive `sim allocation` and how a fund lot grows (at the blend of its
-  classes' rate series). Without them the symbol shows as `unclassified`.
+  classes' rate series). Without them the symbol shows as `unclassified`,
+  unless its lot grows at an asset class's own series (`stock_us`, `bond`,
+  ...), which classes it as that class.
 - **its prices**, in `prices/security_price__ABCDX.csv`. A price is needed
   only when a lot gives `quantity` instead of `opening_balance`.
 
@@ -868,19 +1254,73 @@ To check it:
   price.
 - `sim allocation --by security` shows how the symbol's lots split.
 
+`accounts.ipynb` shows the first three in its "Prices and symbols"
+section, with a chart of the picked symbol's prices.
+
+#### Dividends and interest
+
+Part of a fund's return is paid out each year, as dividends from its stocks
+and interest from its bonds, and in a taxable brokerage account that is
+taxed the year it is paid, even when it is reinvested (Part 3). The
+simulator splits each lot's growth into the two: what it pays out, from a
+`_yield` rate series, and the appreciation, the rest. The template series
+include yields for the asset classes (`stock_us_yield` 1.5%,
+`stock_intl_yield` 3%, `stock_yield` 2%, `bond_yield` 4%), so a fund pays at
+the blend of its classes' yields with no setup: stocks as qualified
+dividends, bonds as ordinary (non-qualified) dividends, since anything a
+fund pays is a dividend on its 1099-DIV. A lot growing at one series pays
+that series' yield, and cash and CDs pay all of their rate. Only a lot with
+no symbol (a bond or cash held directly) is paid interest.
+
+A symbol whose own yield you know can have it in
+`series/rate__ABCDX_yield.csv` (`effective_date,annual_rate`, such as
+`2026-01-31,2.5%`), which then replaces the class blend. It is taxed as
+qualified dividends when everything the symbol holds is stock, and as
+ordinary dividends otherwise. Payouts are always reinvested; taking them as
+cash is not modeled yet.
+
+Many funds also distribute capital gains each year, mostly long-term and
+sometimes short-term, and these are taxed whether or not they are
+reinvested. Give them their own series, found the same way as `_yield`:
+`rate__ABCDX_cg_yield.csv` for long-term distributions, taxed as long-term
+gains, and `rate__ABCDX_stcg_yield.csv` for short-term ones, which a 1099-DIV
+counts as ordinary dividends. A class's series (`stock_us_cg_yield`) works
+too. The templates ship none, so nothing is distributed until you add one.
+All three come out of the series' total return, so the lot's value is
+unchanged; only what is taxed, and when, moves.
+
+In an IRA or a Roth, a lot that holds shares (it has a `quantity`)
+gets the same payouts, untaxed. They only buy more shares, the way a
+statement shows reinvested dividends, so the projected share count and
+price stay close to the real ones. They add no Roth basis. A lot
+kept in dollars has no shares to keep track of and gets none.
+
+Every HSA lot gets them, shares or not: they're untaxed federally, but
+California taxes them the year they're paid, as it would a brokerage
+account's, and they add to the cost basis it taxes a withdrawal over.
+
+`sim report gains` counts reinvested dividends and interest as realized
+taxable gains.
+
 #### Asking an AI to fill it in
 
 An AI assistant can look up a fund's published breakdown for you, and a
-price history the fetch can't get. Give it the formats, because the loader
-rejects anything else. To get the weights as a command you can run:
+price history the fetch can't get. With Claude Code, the finance-research
+plugin does the whole job: ask it for a tear sheet on the fund, and its
+Allocations section ends with rows in `allocations.csv`'s format, with
+sources and dates ([the finance research guide](guides/finance-research.md)).
+`sim symbol research` runs it for you (below).
+Otherwise, give the assistant the formats, because the loader rejects
+anything else. To get the weights as a command you can run:
 
 ```text
 Look up the most recent published asset breakdown of the fund ABCDX and
 write it as one command:
   sim symbol add ABCDX --name "<its name>" --weight CLASS=PERCENT ...
-- CLASS is one of: stock_us, stock_intl, stock, bond, cd, cash,
-  real_estate, other. Use stock only when the US/international split is
-  not published.
+- CLASS is one of: stock_us, stock_intl, stock, bond, muni, muni_<ST>,
+  cd, cash, real_estate, other. Use stock only when the US/international
+  split is not published. Municipal bonds are muni, or muni_CA (and so on)
+  for a fund of one state's bonds; bond is every other bond.
 - PERCENT has its % sign, such as 62.5%, at most four decimal places. The
   weights must add up to exactly 100%.
 - Add --as-of YYYY-MM, the month the breakdown describes. For a
@@ -897,7 +1337,79 @@ Check the answer against the fund's own fact sheet before you save it. An
 AI's figures can be out of date or simply wrong, and nothing in the
 simulator can tell.
 
+#### Research a fund or company with `sim symbol research`
+
+With Claude Code and the finance-research plugin's files in this repo, one
+command researches a fund, records its weights and shows you the tear sheet:
+
+```sh
+sim symbol research ABCDX
+```
+
+1. It runs the plugin's `fund-tear-sheet` skill, or `public-tear-sheet`
+   for a company, without a chat, configured
+   by the data repo's `research.yaml` ([the finance research
+   guide](guides/finance-research.md)). A run takes several minutes and
+   about 150k tokens on Claude Code's own login: your claude.ai plan's usage
+   limits, or real money per token if `ANTHROPIC_API_KEY` is set.
+2. It keeps what the skill wrote, a *bundle*, in the data repo under
+   `research/ABCDX/<today>/`: the tabs as Markdown, the allocation export
+   and a `report.html` page. A second run the same day gets its own folder.
+   `research/` is outside what a run's provenance covers, so a bundle never
+   makes the data dirty; commit the bundles as the record of where a set of
+   weights came from, or list `research/` in `.gitignore`.
+3. It opens `report.html`: the Overview, Tear sheet, Price chart, Detail
+   and Glossary as tabs, and a language switch when the tabs are also in
+   another language (switching keeps the tab you're on). Links between tabs
+   switch tabs. `--no-open` prints its path instead.
+4. It shows the proposed weights beside the fund's current set, with the
+   method behind them (issuer-reported, look-through, computed from
+   holdings), the as-of month and any warnings, and asks before writing them
+   to `allocations.csv`. For a symbol not yet in `securities.csv` it also
+   asks for a name, offering the tear sheet's title.
+
+If the fund already has a set for the same month, answering yes replaces
+it. `--yes` writes without asking, but refuses to replace a set unless you
+add `--replace`. `--as-of 2026-10` dates the set by another month. If the
+research left part of the fund unclassified, or wrote no rows for another
+reason (its weights added up to more than 100%, say), nothing is written;
+the command prints the reason and the skill's warnings, and keeps the
+bundle.
+
+A bundle made elsewhere, such as a tear sheet made in claude.ai and
+downloaded, or an earlier run, is imported without a run:
+
+```sh
+sim symbol research ABCDX --from-bundle ~/Downloads/abcdx-tear-sheet
+```
+
+The run decides from what it finds whether the subject is a fund or a
+company; `--fund` or `--company` decides for it. A company's tear sheet has
+no weights, so nothing is written to `allocations.csv`. For a single stock
+you hold, `sim symbol add ABCDX --weight stock_us=100%` (or `stock_intl`)
+is all it needs.
+
+The subject can be a name instead of a ticker: a private company has no
+ticker, and a name settles which company or fund you mean when a ticker
+might not. Quote it:
+
+```sh
+sim symbol research "Acme Robotics"
+```
+
+The bundle goes under the name's words joined by `-`
+(`research/ACME-ROBOTICS/<today>/`), or under `--symbol TICKER` if you give
+one. If the name turns out to be a fund with weights, the command asks
+which ticker to write them under (blank writes nothing); `--symbol` answers
+in advance, and with `--yes` and no `--symbol` nothing is written.
+
 ### 4.12 Make a new investment, or a Roth conversion
+
+**Video.** *Investments* walks through this section and §4.2 and §4.11
+with Alice and Bill: the lots in each account, buying a fund, how each lot
+grows, where the tax falls, and a Roth conversion into a stock fund:
+[English](https://www.youtube.com/watch?v=pZ7fnO18Wug),
+[Japanese (日本語)](https://www.youtube.com/watch?v=y5amRH5w594).
 
 `sim invest` sets up a purchase the scenario makes later in one command. It
 writes a new lot, holding the symbol you name and acquired on the date, and a
@@ -912,7 +1424,12 @@ The source can be an account (with `--source-lot` if it has several lots) or
 a source chain. The date defaults to the scenario's first month and can't be
 earlier; a day within the month still buys at its end. If the lot's symbol
 grows and the account has no `tax_character` yet, the command sets one, as it
-does for a new account. A new account takes `--account-subkind` and
+does for a new account. The lot grows at its symbol's rate series or allocation,
+else at the account's series. `--series` names a rate series for it instead,
+such as an asset class's (`--series stock_us`); it replaces the symbol's, as a
+lot's `series` does in `account_lots.csv`. A lot with
+none of these would hold its dollars flat for the whole run, so the command
+asks for a series when it is asking, and otherwise warns. A new account takes `--account-subkind` and
 `--owner` (`joint` unless you say otherwise, but a retirement account needs a
 person). A new symbol takes `--symbol-name` and `--weight`, as for
 `sim symbol add`, and its prices are fetched unless you pass `--no-fetch`; if
@@ -927,7 +1444,7 @@ income, and the new lot's basis is the amount converted:
 
 ```sh
 sim invest Asset_TraditionalIRA_Alice Asset_Roth_Alice conv_2027 \
-    --subkind roth_ira --amount 20000 --date 2027-01
+    --subkind roth_ira --series stock --amount 20000 --date 2027-01
 ```
 
 #### Converting up to a bracket, every year
@@ -943,8 +1460,8 @@ sim scheduled add 2029-01 Asset_TraditionalIRA_Alice Asset_Roth_Alice \
     --from-lot default --to-lot default --kind fill_bracket --rate 22% --end 2037-12
 ```
 
-The scenario needs a `tax_accumulator` rule, since the conversion is measured
-with that rule's brackets, deduction and filing status. The engine finds the
+The scenario needs a federal tax (`taxes/federal.csv`), since the conversion
+is measured with its brackets, deduction and filing status. The engine finds the
 amount that brings the year's ordinary taxable income to the top of the
 bracket. It counts every effect the extra income has: more of a Social
 Security benefit becomes taxable as income rises, so a $10,000 conversion can
@@ -962,8 +1479,8 @@ The rule has no `priority`. It runs after everything else in its month, so
 the year's RMD comes out first: an RMD can't be converted, and the first
 money out of the IRA in an RMD year counts toward it. Converting this year
 lowers next year's RMD, which is figured from this year's December 31
-balance. Its tax is paid the next April by the `tax_accumulator` rule, from
-wherever that rule draws; paying it from a taxable account rather than the
+balance. Its tax is paid the next April by the federal tax, from
+wherever that draws; paying it from a taxable account rather than the
 IRA is what makes a conversion pay off. Over 59½, converting year after year
 into one Roth lot is fine; younger than that, give each year its own lot, as
 the five-year rule (Part 2) counts from each conversion.
@@ -978,7 +1495,8 @@ reports, but they don't change any balance, since the opening balances
 already include them.
 
 ```sh
-sim ytd add prior_wages Income_Salary_Alice Asset_Checking 62000 --tax-character ordinary
+sim ytd add prior_wages_alice Income_Salary_Alice Asset_Checking 32000 --tax-character ordinary
+sim ytd add prior_wages_bill Income_Salary_Bill Asset_Checking 30000 --tax-character ordinary
 sim ytd add loss_2025 Income_CapitalGain Income_CapitalGain \
     --tax-character ltcg --year 2025 -- -1500
 ```
@@ -991,6 +1509,15 @@ year. `sim ytd edit` changes a row and `sim ytd delete` removes one, and
 `sim ytd list` shows them all. A payment that one scheduled rule already
 describes is better given as that rule's `ytd_amount` or `ytd_preroll`
 (`sim scheduled edit`).
+
+Give each spouse's wages a row of their own, out of their own salary account,
+and use gross pay (box 3 of the W-2, Social Security wages), with any 401(k)
+contribution as its own `tax_deferred_in` row, so income tax still sees the
+taxable wages. Self-employment tax on a
+business's profit counts a person's wages toward their own Social Security
+wage base, so wages entered under the wrong person, or as take-home pay with
+no tax character, make it come out wrong
+([#623](https://github.com/BobKerns/analysis/issues/623)).
 
 ### 4.14 Medicare's income surcharge (IRMAA)
 
@@ -1013,7 +1540,7 @@ irmaa_alice,Income_SS_Alice,Expense_Healthcare,monthly,irmaa,alice,ss_benefit,20
 
 Each month it charges the surcharge for that year: Part B and Part D both,
 unless `params_json` says `{"parts": "B"}` (no drug coverage). The
-scenario also needs a federal `tax_accumulator` rule, which works out MAGI.
+scenario also needs a federal tax (`taxes/federal.csv`), which works out MAGI.
 For the first two years of a scenario, MAGI comes from years before the
 scenario starts. Give those in `scenario.csv`'s `meta_json`:
 
@@ -1049,7 +1576,556 @@ more than that rate on average, surcharge included; otherwise it stops at the
 floor. Both use this year's tiers, which is all you know in December; the
 floors usually rise, so this errs safe.
 
+### 4.15 Guard rails: watch spending against a line
+
+**Video.** *Advanced* adds guard rails to Alice and Bill's plan and
+reads them on one run and across an ensemble:
+[English](https://www.youtube.com/watch?v=sCqdL0pSIA0),
+[Japanese (日本語)](https://www.youtube.com/watch?v=dcyW3Mzd-yE).
+
+A guard rail is a line spending, or the withdrawals from your savings,
+should stay on one side of: "take no more than 4% a year", "cut back if the
+withdrawal rate climbs past 6%", a budget in today's dollars. Rails don't
+change the run; they are a way to read it. Each rail is a row of the
+scenario's `guard_rails.csv`:
+
+```text
+name,measure,side,threshold,basis,sense,start
+four_percent,withdrawals,above,4%,initial_portfolio,negative,2031-01
+gk_lower,withdrawals,below,4%,portfolio,positive,2031-01
+budget,spending,above,85000.00,cpi_constant,negative,2031-01
+```
+
+`sim guard-rail add` writes one, asking for each field. `sim report
+guard-rails` then shows each year's **margin**, the room left before the
+rail (negative is past it), and the **cumulative margin**, those added up
+since the rail began: room banked, or overdrawn. A `positive` rail is one
+where past it is good news, such as room to spend more. Since rails aren't
+part of the run, changing one needs no new run. On an ensemble (Part 4.10),
+`sim ensemble guard-rails` shows, for each rail and year, the share of
+members past it, the share that have been past it so far, and how far past
+they are (the RMS overshoot), and `sim ensemble compare` shows how a variant
+changes them. [The guard rails guide](guides/guard-rails.md) explains the
+usual rails, how to write them and how to read the results.
+
+### 4.16 Draw from whatever is overweight (responsive strategies)
+
+**Video.** *Rebalancing* walks through this section with Alice and Bill:
+classing every lot, a target, a strategy that draws and one that invests,
+what it did, and what it buys across an ensemble:
+[English](https://www.youtube.com/watch?v=Id-wps0PVrw),
+[Japanese (日本語)](https://www.youtube.com/watch?v=sd8p2AofnSA).
+
+A chain draws its steps in the order you wrote them, whatever your
+portfolio looks like. A **strategy** decides instead, from the month's
+balances. The built-in `rebalance` keeps a portfolio near a target
+allocation with the money that moves anyway: when stocks have run up, the
+next refill of checking comes from stocks; after a crash, from bonds.
+
+1. Tag the accounts that make up the portfolio
+   (`sim account tag add Asset_Brokerage_Joint portfolio:invest`, and the
+   same for each). Every lot in them needs an asset class: a symbol with
+   `allocations.csv` rows (Part 4.11), or, for a lot with no symbol, a row
+   whose symbol is `<account>:<lot>`, such as `Asset_IRA_Alice:stable`.
+2. Say what you're aiming for:
+   `sim target set main stock_us=60% bond=40%`. Add `--as-of 2035-01` for
+   a set that starts later, so a glide path is more sets.
+3. Give the strategy the chain checking refills from:
+   `sim strategy add` asks for the kind (`rebalance`), the chain, and its
+   parameters: `portfolio` (the tag), `targets` (the set), `band` (how far
+   a class may drift before it matters, 5% unless you say) and `step`.
+
+While every class is within the band, the chain's own order decides, so
+your usual tax-driven order still applies most of the time. Past the band,
+each slice of a draw comes from whichever lot brings the mix closest to the
+targets; whatever the strategy doesn't pay, the chain's steps do.
+
+`sim strategy log` shows each decision with a note such as
+`bond 53.6% vs 40.0% target (band 5%): took $961 from Asset_TraditionalIRA_Alice:default`,
+`sim allocation --drift` shows how far the portfolio strayed at each
+year-end, and `sim explain` totals what each strategy moved. In the
+notebooks, `accounts.ipynb` charts the drift month by month, with the
+band shaded and a tick for each month the strategy stepped in.
+
+To see what the strategy is worth, make a scenario built on this one and
+switch the strategy off there:
+
+```sh
+sim scenario create alice_no_rebalance alice_rebalance
+sim strategy edit draw_by_allocation --disable --scenario alice_no_rebalance
+sim run alice_rebalance && sim run alice_no_rebalance
+sim compare alice_rebalance alice_no_rebalance
+```
+
+`sim compare` then adds a strategies section: what the strategy moved,
+and each run's largest drift by year end, side by side, while the net
+worth and break-even sections say what it cost or gained.
+`scenario_compare.ipynb` draws the two runs' drift together. For an
+ensemble, `sim ensemble drift` (and the drift chart in `ensemble.ipynb`)
+shows how far the members stray and how many end up past the band.
+
+The same strategy can own a destination chain: an overflow then goes to
+whatever is underweight.
+
+Each strategy is one file in the scenario's `strategies/` folder, named for
+it (`strategies/draw_by_allocation.csv`), as a chain is. A scenario built on
+another inherits its strategies; its own file for one replaces the
+inherited one whole, which is what `sim strategy edit` writes.
+
+**Varying a strategy across an ensemble.** How wide a band or how deep a cut
+should be is rarely certain, so an ensemble can draw a strategy's
+parameters as it draws any other uncertain value. Beside the strategy's
+file, `strategy_vary/<name>.csv` lists the parameters that vary, one row
+each, in the parameter's own unit:
+
+```csv
+param,vary_distribution,vary_low,vary_high,vary_mode,vary_correlate_with,vary_correlation
+band,triangular,3%,8%,,,
+step,uniform,0.5%,2%,,,
+```
+
+Any percent, dollar or number parameter can vary, with the same
+distributions as a calendar row. Member 0 keeps the values the strategy's
+own file gives, which must lie within each range (and a blank `vary_mode`
+is that value). Each parameter is a node named `strategy:<name>.<param>`
+(`strategy:draw_by_allocation.band`), so it can be correlated with another
+parameter, a lifespan or a calendar row, and the sensitivity notebook
+sweeps it like the rest. See
+[ADR-006 §3b](architecture/ADR-006-ensemble-scenarios.md).
+
+**Strategy plugins.** You can write your own kind in Python, in your data
+repo's `sim/strategies/` folder: a strategy plugin. The video *Strategy
+plugins* walks through the example below with Alice and Bill: writing it,
+checking it, and what it does across eighty futures:
+[English](https://www.youtube.com/watch?v=WeRm1pjYMT4),
+[Japanese (日本語)](https://www.youtube.com/watch?v=rs4Ya5Dq6-Q).
+A plugin can build on a built-in by subclassing it or by delegating to
+it. For example, Alice and Bill want guardrail to decide how much travel
+a year can afford, while their own code decides which trips fit, taken whole:
+
+```python
+from dataclasses import dataclass
+
+from analysis.sim.strategies import Guardrail
+from analysis.sim.strategy_api import Context, Decision, RuleView, Spend, register
+
+
+@register
+class WholeTrips(Guardrail):
+    """Guardrail decides the year's travel budget; the trips fit into it
+    whole, most wanted first, and the rest wait a year."""
+
+    kind = "whole_trips"
+
+    @dataclass(frozen=True)
+    class Params(Guardrail.Params):
+        order: tuple[str, ...] = ()
+        """The trips, most wanted first."""
+
+    def year_start(self, ctx: Context) -> Decision | None:
+        decision = super().year_start(ctx)       # guardrail's January decision
+        allowance = ctx.memory.get("factor", 1.0) * ctx.budget()
+        costs = ctx.rule_budgets()               # each trip, this year
+        kept, skipped = [], []
+        for trip in self.in_order(costs):
+            if sum(costs[t] for t in kept) + costs[trip] <= allowance:
+                kept.append(trip)
+            else:
+                skipped.append(trip)
+        ctx.memory["kept"] = kept
+        note = decision.note if decision else ""
+        if skipped:
+            note += f"; skip {', '.join(skipped)}"
+        return Decision([], note=note)
+
+    def scale(self, ctx: Context, rule: RuleView, amount: int) -> Decision | None:
+        if rule.name in ctx.memory.get("kept", [rule.name]):
+            return None                          # pay it as planned
+        return Decision([Spend(0)], note=f"skip {rule.name} this year")
+
+    def in_order(self, trips):
+        """The trips, most wanted first; any that order leaves out come last."""
+        order = list(self.params.order)
+        return sorted(trips, key=lambda t: order.index(t) if t in order else len(order))
+```
+
+Delegating instead, the kind holds a guardrail rather than being one, and
+hands it the January decision with a memory of its own:
+
+```python
+@register
+class WholeTripsByDelegation(Strategy):
+    kind = "whole_trips_delegated"
+    Params = WholeTrips.Params
+
+    def __init__(self, name, params):
+        super().__init__(name, params)
+        self.guardrail = self.delegate(Guardrail)    # takes the parameters it shares
+
+    def year_start(self, ctx):
+        decision = self.guardrail.year_start(ctx.with_memory("guardrail"))
+        factor = ctx.memory["guardrail"].get("factor", 1.0)
+        ...                                          # then as above
+```
+
+`sim strategy kinds` lists it with guardrail's parameters and its own,
+and a strategy file uses it like any other kind
+(`sim strategy add spend --kind whole_trips --rules flex:optional
+--param portfolio=portfolio:invest --param 'order=["visit_family","trip_abroad"]'`).
+Commit the module before you run: the data repo has to be clean.
+`sim strategy check` runs a scenario twice to make sure your strategy
+decides the same way each time. The code is copied into each run, so a run
+always shows exactly what decided it. The design, the API a strategy is
+written against, and the built-in classes you can build on are in
+[ADR-010](architecture/ADR-010-responsive-strategies.md) §3.
+
+### 4.17 Spend less after bad years (spending strategies)
+
+**Video.** *Spending strategies* walks through this section with Alice
+and Bill: travel tagged as optional spending, the plan as written across
+eighty futures, and the threshold, guardrail, ceiling and floor, and VPW
+strategies side by side:
+[English](https://www.youtube.com/watch?v=Hv4B9sdu4PY),
+[Japanese (日本語)](https://www.youtube.com/watch?v=FgyPqniorvk).
+
+Your scheduled rules spend the same inflation-indexed amount every year,
+whatever the markets do. A **spending strategy** changes that: it owns the
+rules carrying a tag and decides, each January, how much of their budget to
+spend that year.
+
+1. Tag the rules it may change, for example the optional ones:
+   `sim scheduled tag add travel flex:optional`, and the same for gifts.
+   Only `fixed_amount` rules can be owned.
+2. `sim strategy add` asks for the kind, the rule tag (`flex:optional`) and
+   its parameters. Five are built in:
+   - `threshold` spends the tagged rules only in a year that starts with
+     the portfolio above a minimum (and, if you like, not after a year it
+     lost money).
+   - `guardrail` (Guyton-Klinger) cuts the tagged spending 10% when the
+     withdrawal rate has risen 20% above where it started, raises it 10%
+     when it has fallen 20% below, and skips the inflation raise after a
+     down year.
+   - `ceiling_floor` aims at a share of the portfolio but never lets
+     spending rise more than 5% or fall more than 2.5% in a year, after
+     inflation. A `rate` you give is the share for the tagged rules alone,
+     so if you tag only the optional ones, leave it at 0% to start from
+     your plan.
+   - `amortize` is VPW (variable percentage withdrawal) and the RMD
+     method. Each January it works out what the portfolio could pay every
+     year, the same after inflation, if it were spent down by the time the
+     younger of Alice and Bill is 100 (`horizon`, default `age:100`), at
+     VPW's real returns (5% for stocks, 1.9% for bonds; or `real_return`).
+     The first year spends your plan; after that the tagged spending takes
+     the whole change in that payment, in today's dollars, so the rest of
+     your spending is paid as planned. `horizon` can also be `survival:10%`
+     (until the chance either of them is alive falls to 10%, from the life
+     table) or `rmd` (the portfolio over the IRS divisor). `ceiling` and
+     `floor` limit how much the tagged spending changes in a year.
+   - `cut_on_breach` spends less while a guard rail is past, and can
+     spend more while a positive one is (§4.19).
+
+A cut is shared proportionally across the rules a strategy owns: a 10% cut
+makes a $5,000 trip $4,500. If that isn't how you'd cut, for example a trip
+you'd skip rather than shorten, give each such item its own tag and its own
+strategy (a `threshold` skips its rules whole), or write a strategy of your
+own whose `scale` decides rule by rule. A strategy changes only what carries
+its tag, so a Medicare premium or a tax payment is never cut by surprise.
+
+Each rule still says what you planned, and the run keeps both: what the
+plan would have spent and what was spent.
+`sim report spending` puts them side by side, year by year, in today's
+dollars: budgeted, delivered, the difference and the share of plan, then
+how much of the spending went somewhere other than the plan's mix
+(`redirected`) and how much of each group's budget was spent (`filled:`).
+`--by tag:category` groups it by your own tags. `sim strategy log` shows
+each year's decision, such as
+`cut 10%: rate 12.50% above 10.50% + 20% (now 90% of plan)`; the monthly
+line for each rule a strategy scaled is counted at the end, and
+`--hook scale` lists them.
+
+Compare against the plan as written the same way as above: a child
+scenario with the strategy switched off, run both, and `sim compare` them;
+its spending section sets each run's spending, and its plan, side by side.
+For an ensemble, `sim ensemble spending` shows the spread of spending across
+the members by year, the average of the worst 5% and 20% (CVaR), how often
+members had to cut, and each member's worst full year. A member whose
+household has ended (every lifespan over) counts only up to its final
+month: spending nothing after it is neither a cut nor a worst year, and a
+final year that ends before December counts toward cuts but not toward
+the dollar figures. The notebooks draw
+the same: `net_worth.ipynb` for one run, `scenario_compare.ipynb` for runs
+side by side, and `ensemble.ipynb` across the members.
+The design is in
+[ADR-010 §6.2 and §6.4](architecture/ADR-010-responsive-strategies.md).
+
+### 4.18 Tax-aware moves each December (year-end strategies)
+
+Two built-in strategies act once a year, in December, after every rule has
+posted, on the year's income as the April tax settlement will see it. They
+own no chain and no rules: each works on the taxable lots of the accounts
+carrying a `portfolio` tag, such as `portfolio:invest`.
+
+- `harvest` sells and rebuys long-term gains until taxable income reaches
+  the top of the 0% long-term gains band (`band`), the lots with the most
+  gain per dollar first. The holdings stay as they were, and the basis
+  rises, so later sales owe less. It stops sooner when the next $100 of
+  gain would cost more than the band's rate, for example because the gain
+  makes more of Social Security taxable; `max_marginal_rate` sets a
+  different limit. With `losses`, a year in which a lot is down by at least
+  `loss_minimum` sells it at a loss instead (think of switching to a
+  similar fund, so there's no wash sale), and the loss carries forward as
+  usual. A harvested lot keeps its growth and its acquired date, so a gain
+  that was long-term stays long-term.
+- `gift` gives `amount` a year, raised with inflation, into an expense
+  account of subkind `gift` (`to`), but only from what the portfolio holds
+  above `minimum`. By default it gives shares (`in_kind`), the most
+  appreciated first: the recipient takes over their basis and Alice and
+  Bill owe no tax on the gain. With `in_kind` false it sells for cash,
+  least appreciated first, and `max_tax` caps how much the sale may add to
+  the year's federal tax.
+
+For example, Alice and Bill harvest their brokerage gains each year and
+give $10,000 in shares to their family once the portfolio is above
+$500,000:
+
+```sh
+sim account add Expense_Family expense gift
+sim strategy add harvest_gains --kind harvest --param portfolio=portfolio:invest
+sim strategy add family_gift --kind gift --param to=Expense_Family \
+    --param amount=10000 --param minimum=500000 --param portfolio=portfolio:invest
+```
+
+Each command asks for anything it still needs, offering what you gave as
+the answer.
+
+Harvesting gains, and a cash gift with `max_tax`, need the scenario's
+federal tax (`taxes/federal.csv`) to estimate the year's tax; loading the scenario says so
+if it has none.
+`sim strategy log` gives each year's decision, such as
+`realized $26,112 of long-term gain into the 0% band (room $26,112)`.
+`sim report gains` shows the harvested gains in their own `harvested`
+column, `sim report expenses` shows gifts under `gifts`, and `sim explain`
+totals what each strategy moved and realized. The design is in
+[ADR-010 §6.3](architecture/ADR-010-responsive-strategies.md).
+
+### 4.19 Respond when a guard rail is crossed (strategy triggers)
+
+A guard rail (§4.15) only reads a run, unless a strategy's `trigger` names
+it. Then the simulator checks that rail every January, on the run so far,
+exactly as `sim report guard-rails` would show last year: was it past the
+line, still past it, or back inside? It tells the strategy, which can
+change what it does from then on, or move money right away.
+
+A trigger names a rail and which margin to watch: `RAIL:annual` (last
+year's own) or `RAIL:cumulative` (everything since the rail began). Only a
+strategy whose kind has an `on_breach` hook can have one; `sim strategy
+kinds` lists each kind's hooks. The built-in `cut_on_breach` is a
+spending strategy (§4.17) that answers one: while a rail its trigger names
+is past, the rules it owns spend `cut` less (10% unless you say), and the
+year after one back inside they spend as planned again. The cut is flat,
+not compounded: a second year past is still 10% below plan. On a positive
+rail, one where past it is room to spend, they spend `increase` more
+instead (0% unless you say, so a positive rail does nothing until you
+give one). A trigger can name several rails (`--trigger "gk_upper:annual
+gk_lower:annual"`); when a rail to stay inside and a positive one are both
+past, the cut wins. A kind of your own in the data repo's `strategies/`
+folder can answer differently, for example by skipping a trip whole or
+moving money, with an `on_breach` hook (ADR-010 §3.3).
+
+Alice and Bill want to hold spending to $60,000 a year in today's
+dollars, and trim the extras when they go over:
+
+```sh
+sim guard-rail add tight --measure spending --side above --threshold 60000 --basis cpi_constant
+sim strategy add respond --kind cut_on_breach --rules flex:optional --trigger tight:annual
+```
+
+`sim strategy add` asks for the cut and the increase unless you give them
+(`--param cut=15%`), and `sim strategy edit respond --param cut=20%`
+changes one.
+
+`sim strategy log --breaches` lists every January's finding: the year, the
+state (`entered`, `continued` or `left`), how many years in a row it has
+been past, and the margin. `sim strategy log` starts each answer's note
+with the breach it answered, `sim explain` counts how often each rail was
+past and how often it came back inside, and `sim report guard-rails` adds,
+below its summary, each stretch of years past a triggered rail and how
+long it took to come back.
+
+A strategy can also look back at the run itself: `ctx.history` gives the
+month-end balances so far, and `ctx.rail("tight")` the rail's margins
+through last year. A kind with a `month_start` hook is asked at the start
+of every month, after any January breach and `year_start`, and can move
+money then, as a year-end strategy does in December (§4.18).
+
+A scenario with a trigger reads its guard rails, so editing a rail in its
+lineage reruns it; elsewhere a rail stays a lens and editing it reruns
+nothing. The design is in
+[ADR-010 §3.3](architecture/ADR-010-responsive-strategies.md).
+
+### 4.20 Don't sell after a bad year (down markets and buckets)
+
+A draw from your portfolio sells whatever the chain names first, even what
+just fell. Two built-in strategies choose where the money comes from in a
+bad market instead. Both own the chain checking refills from, as
+`rebalance` does (§4.16).
+
+- `down_market` is Guyton's withdrawal rule: each draw skips any lot whose
+  return over the last year is below 0% (`threshold`) and takes from the
+  others in the chain's order. If they can't cover it, the chain's own
+  steps pay the rest, so a fallen lot is sold last rather than never.
+  `lookback: 2` judges by the last two years, which also spares a lot that
+  fell, rose a little, and is still under water.
+- `buckets` keeps a cash reserve. Every lot in the `portfolio` tag is in a
+  bucket by what it holds: cash and CDs, bonds, or stocks. Draws take cash
+  first, then bonds, then stocks. The strategy keeps cash topped up to two
+  years (`cash_years`) of `need`, the yearly spending you expect from the
+  portfolio in today's dollars (it rises with inflation), selling stocks
+  when they gained over the last year and bonds when they didn't. When
+  stocks gained it also tops bonds up to five years (`bond_years`) from
+  stocks. With no bond funds, set `bond_years` to 0.
+
+A refill never crosses accounts: Alice's Roth sells its stock fund into the
+Roth's money-market lot, untaxed, and the brokerage sells into its own cash
+sweep, a sale whose gain is taxed. So each account that should refill needs
+a cash lot (a lot whose symbol is `CASH`), and a bond lot for bonds to be
+refilled there; the note says when an account has none.
+
+Both look at the market every month by default (`cadence: monthly`), over
+the twelve months just finished, so nothing changes all at once at New
+Year. With `cadence: annual` they look at the last calendar year instead,
+and `buckets` refills once, each January, the way many households review
+their portfolio.
+
+```sh
+sim strategy add buckets --kind buckets --chain portfolio_draw
+```
+
+asks for the rest. `sim strategy log` shows notes such as
+`took $4,169 from Asset_Brokerage_Joint:sweep (cash)` and
+`stocks -18.4% over 12 months, bonds not refilled: refilled cash to $98,709 (2 years): $6,652 from bonds`.
+To see what the plan costs or gains, compare it with `rebalance` or with no
+strategy, as in §4.16: a bucket plan holds more cash than a fixed
+allocation would, which helps after a crash that recovers slowly and costs
+growth when markets rise. The design is in
+[ADR-010 §6.5](architecture/ADR-010-responsive-strategies.md).
+
+### 4.21 Bring the plan up to date each year
+
+**Video.** *Keeping the plan current* walks through this section with Alice
+and Bill: rolling the plan forward to January, last year's income for April's
+tax, this year's spending, and comparing the new plan with last year's:
+[English](https://www.youtube.com/watch?v=ZsPk3FI4cd4),
+[Japanese (日本語)](https://www.youtube.com/watch?v=5SmA9xplhgw).
+
+A plan only knows what you told it when you wrote it. Once a year, or after
+a big change, start it again from what the accounts hold now:
+
+```sh
+sim scenario roll base 2027-01 --keep plan-2026
+```
+
+`roll` first keeps the plan as it stands as a sibling copy (`--keep`; the
+default name is the scenario's name and the old start's year), so you can
+compare last year's plan with this year's. Then it moves the start, and
+asks, lot by lot, what each account holds now: shares for a lot kept in
+shares (a symbol, shares and no balance) whose symbol has a price by the
+new start (the balance is shares times that price), dollars otherwise,
+and the cost basis where the lot keeps one. A Roth's basis is what was put
+in, so a year the market fell leaves it above the
+balance. Each question offers what the plan's newest run projected for the
+month before the new start; press Enter to take it, or `--yes` to take
+them all (`--yes` stops instead when a question has nothing to offer). A
+lot's Dec 31 balance (`prior_year_end_balance`), when it has one, follows,
+offering the run's Dec 31.
+
+With more than a few accounts, the balances can come from a file another
+program exported instead, and the year's spending too:
+[Importing your data](guides/importing-data.md), with its own video
+([English](https://www.youtube.com/watch?v=KHS9dpUaHFc),
+[Japanese (日本語)](https://www.youtube.com/watch?v=Dby3vYmfFPA)).
+
+A new year changes what some rows mean, so `roll` deals with those too:
+
+- A year-to-date row (§4.13) with no year belongs to the first year,
+  whichever it is. `roll` offers to pin it to the old year, where it
+  happened.
+- A rule's `ytd_amount` was the old first year's catch-up. `roll` offers to
+  make it a year-to-date row of that year (one that goes through a chain
+  it lists, for you to record by hand).
+- A rule with no start counts a quarterly schedule, or `ytd_preroll`'s
+  months, from the scenario's start. `roll` offers to give it the old
+  start, so it keeps its months.
+- A calendar row dated before the new start no longer happens. `roll` lists
+  them.
+- The months between the old start and the new one are no longer in the
+  run, so their income would drop out of its tax year: last year's, whose
+  tax is paid in April, or this year's, for a start later in the year.
+  `roll` offers the old run's money movements in those months as
+  year-to-date rows of their year, named `projected_<year>_<n>`, so the new
+  run taxes those years as the old one did. They are the plan's guess:
+  replace them with the real figures from the W-2s and 1099s (with any tax
+  already withheld) when you have them, with `sim ytd edit` (§4.13). Without
+  a run to take them from, `roll` says what to record by hand instead.
+
+Everything is written in one edit, only if the scenario and everything
+built on it still load. What's built on it follows by itself: a what-if
+built on `base` starts when `base` does. One with lots of its own still
+holds last year's balances in them, so `roll` lists it, to roll after
+`base` with `sim scenario roll NAME 2027-01 --own`: only its own lots
+reopen (`roll` dealt with its other rows along with `base`'s). Then run
+both and compare them:
+
+```sh
+sim run base --commit
+sim run plan-2026 --commit
+sim compare plan-2026 base
+```
+
+`sim compare` shows where the new plan starts: for each lot, what last
+year's plan expected it to hold, what it holds now, and the difference
+(the `start` section). Its other sections put both runs in the baseline's
+dollars, so a year's inflation doesn't show up as a difference.
+
+#### Rolling forward every month, at night
+
+A run reads prices only up to its start month, so once that month is over,
+new prices don't change it. To keep a plan current with the market, mark it
+to roll:
+
+```sh
+sim scenario edit base --roll monthly
+```
+
+Then the background builder (see [Setup](SETUP.md)) rolls it forward a
+month on the first night after its start month ends, between 01:00 and 05:00
+by default, after that day's prices are in. A scenario further behind (the
+builder was off for a while) rolls a month a night until it catches up, so
+each month opens from a run of the month before, at its prices. It takes every default,
+as `sim scenario roll --yes --no-keep` would: each lot opens with what the
+run projected (a lot kept in shares, at the new prices), and the months it
+skips become projected year-to-date rows. The mark is inherited, so the
+what-ifs built on `base` roll too, each after `base`, and only what is its
+own (`sim scenario roll --own`): its own lots. The projected rows are
+`base`'s for all of them, since the months skipped are past, the same in
+every plan. `sim scenario edit NAME --roll off` stops one rolling its own
+lots; one that takes its start from `base` still starts when `base` does,
+so give it a start of its own to keep it at the old plan.
+It works on its own branch and merges into `main` while `main` is checked out
+with nothing uncommitted, then the builder runs everything again. Instead of
+a copy of last year's plan, a roll into a new year tags the plan before it
+in the data repo, `plan-2026` for instance: `git show plan-2026:sim/scenarios/base/account_lots.csv`
+shows it, and `git worktree add ../plan-2026 plan-2026` brings it all back
+to compare. `sim builder status` lists each roll, and any that was skipped
+(a question with nothing to offer) or failed, with why; roll that one by
+hand. `sim builder install --roll-window 02:00-06:00` changes the night,
+and `--no-roll` turns rolling off.
+
 ## 5. Looking at your results
+
+**Video.** *Looking at the results* walks through this section with Alice
+and Bill's base scenario: [English](https://www.youtube.com/watch?v=8byMoioSYH8),
+[Japanese (日本語)](https://www.youtube.com/watch?v=SDzC49sCXqM).
 
 A **run** is what happens when the simulator plays a scenario forward, month
 by month, from its start date to its end date. The result is a single, dated
@@ -1066,7 +2142,13 @@ simulator deletes runs that `.retention.yaml`, in the data dir, no longer
 keeps: by default it keeps each scenario's five newest runs and anything from
 the last seven days, and always its newest and newest successful run. The
 first `sim load` or `sim run` writes the file if it's missing. To keep a
-particular run for good, add its path under `pins:` in that file. The file's
+particular run for good, add its path under `pins:` in that file. If disk
+space matters more than age, uncomment the limits under `space:`: at most
+`max_size` for all of `state/`, or the free space (`min_free`,
+`min_free_percent`) to leave on its disk. When one is breached, older runs,
+batches and builder logs go first, oldest first, sparing only each rule's
+`protected:` items (by default the two newest and anything from the last
+day), pins, and each scenario's newest runs. The file's
 comments explain the rules, and
 [ADR-004 §10](architecture/ADR-004-reproducibility-and-activation.md) has
 the details.
@@ -1077,16 +2159,30 @@ Run a scenario with:
 sim run <scenario>
 ```
 
-or run every scenario in the data repo at once with `sim all`. If you added
+or run every scenario in the data repo at once with `sim all`. It skips a
+scenario whose latest run can't have changed (the code and the scenario's
+data are committed and the same as when it ran) and says so; `sim all
+--force` reruns everything. If you added
 the VS Code tasks (see below), you don't need to type either command: use the
 **Run All Scenarios** task.
+
+A run is reproducible only from committed data, so when you've changed a
+scenario's files since the last commit, `sim run` lists them and asks
+whether to commit them first (Enter means yes). It commits only those files,
+with a message naming them, such as `Edit base: accounts.csv`. Answer no and
+it doesn't run. `sim run --commit` commits without asking, and
+`sim commit [scenario]` commits without running, which is all you need when
+background builds do your runs.
 
 ### A quick first look
 
 After a run, `sim explain [scenario]` prints a short summary of the
 scenario's latest run: whether it finished successfully, the lots at the end
-of the run, net worth at each year end, and every time an account went
-negative (with what its refill chain did about it). This is the fastest way
+of the run, net worth at each year end, the warnings its scenario's load
+printed (and the things defined but not read yet that `sim check` prints),
+every time an account went
+negative (with what its refill chain did about it), and each stretch of
+years past a guard rail (Part 4.15). This is the fastest way
 to check "did this do roughly what I expected" before opening a notebook.
 `sim networth [scenario]` shows net worth by year (`--monthly` for every
 month) with inflation taken out, so decades compare at a glance;
@@ -1095,27 +2191,46 @@ month) with inflation taken out, so decades compare at a glance;
 Net worth is shown after the tax still owed on it. Traditional IRA and
 401(k) balances, and unrealized gains in a brokerage account, owe tax when
 they're spent. The run prices that tax as if the money were drawn down
-evenly over ten years, on top of that year's other income, at that year's
-brackets. Tax due for a finished year but not yet paid comes off too, until
+evenly over the ten years that follow, each year's share on top of the
+income the run has that year (less what it already draws from the same
+money), at that year's brackets. Years with a salary are skipped, since
+nobody draws savings down while still earning. So a last paycheck doesn't
+make the savings look more heavily taxed; the years they'd be spent in
+decide. Tax due for a finished year but not yet paid comes off too, until
 the April payment. The table shows both deductions; `--pre-tax` shows the
 plain balance total instead. To change the ten years, or to leave gains out
 (a basis step-up at death would erase them), set `after_tax` in the
 scenario's `meta_json`, for example
-`{"after_tax": {"drawdown_years": 15, "step_up": true}}`. `sim compare`,
-`sim ensemble summary` and `sim ensemble compare` report after-tax net
-worth too, with the same `--pre-tax`, and the notebooks' net worth widgets
+`{"after_tax": {"drawdown_years": 15, "step_up": true}}`. `sim explain`,
+`sim compare`, `sim ensemble summary` and `sim ensemble compare` report
+after-tax net worth too, with the same `--pre-tax`, and the notebooks' net worth widgets
 have a Pre-tax/After-tax toggle. An account's balance is always before tax.
 After tax is what shows a Roth conversion's or a taxable sale's real effect.
 Before tax, tax paid now looks like a loss, while the tax a traditional
 balance still owes doesn't show at all.
 
+**Video.** *Comparing what-ifs* builds two what-ifs on Alice and Bill's
+base scenario, runs them, and compares them with `sim compare` and
+`scenario_compare.ipynb`: [English](https://www.youtube.com/watch?v=gq3mAFwscMI),
+[Japanese (日本語)](https://www.youtube.com/watch?v=5RbOMWhtU8c).
+
 `sim compare BASELINE VARIANT` puts two or more scenarios' latest runs side
 by side, as `scenario_compare.ipynb` does: whether the runs came from the same
 code and data, the rules, calendar events, accounts and lots each defines
-differently, net worth at each year end with each variant's difference, and
-the month after which each variant stays ahead (break-even). `--account NAME`
+differently, where a variant that starts later starts (what the baseline
+projected each lot to hold then, against what the variant opens with, §4.21),
+net worth at each year end with each variant's difference, and
+the month after which each variant stays ahead (break-even), and each
+scenario's guard rail margins when any has rails. Runs that start in
+different months are all shown in the baseline's dollars. When they differ, it adds
+gross Social Security by year and over the run (comparing claim ages), and
+total tax by year, the `total_tax` `sim report tax` prints, with each run's
+lifetime tax, Social Security and final net worth (what a Roth conversion
+plan costs in tax, and what it buys). `--account NAME`
 adds that account's balance, `--section` prints only the parts you name, and
-`--graph` draws net worth (or the account) over time in the terminal. Leave
+`--chart` draws net worth (or the account) over time in the terminal instead of
+the tables (`--table` too for both); with `--section social-security` or
+`--section tax`, it draws that section's chart. Leave
 out BASELINE to start from the current scenario.
 
 ### The notebooks
@@ -1125,12 +2240,12 @@ None of them need you to write any code.
 
 | Notebook | What it shows |
 | --- | --- |
-| `scenario_overview.ipynb` | The scenario's setup, without needing a run: people, accounts, chains, scheduled rules, calendar events. Good for checking a scenario is set up the way you intended, before running it. |
-| `accounts.ipynb` | Balance history for any account over time, account setup details, the lots and holdings inside an account, which accounts hold a symbol, and the portfolio by asset class. |
-| `net_worth.ipynb` | Net worth over time, income by category, expenses by category, realized vs. unrealized gains, and after-tax income. |
-| `scenario_compare.ipynb` | Puts two or more scenarios side by side: what differs between them, net worth over time for each, and where they cross over (break-even). |
+| `scenario_overview.ipynb` | The scenario's setup, without needing a run: its lineage (parent, mix-ins, load order), seed, size and reserve, and which run file the other notebooks open; people, accounts, chains, scheduled rules, calendar events, year-to-date rows, itemizations and tags, each row marked with the scenario it is defined in. Good for checking a scenario is set up the way you intended, before running it. |
+| `accounts.ipynb` | Balance history for any account over time, account setup details, the lots and holdings inside an account, which accounts hold a symbol, the portfolio by asset class, and the stored prices: lots whose balance disagrees with quantity × price, every symbol with its name, allocation and latest price, and one symbol's price history. |
+| `net_worth.ipynb` | Net worth over time, income by category, expenses by category, realized vs. unrealized gains, economic income down to the change in net worth, tax by year with its effective rate, and where the run stands against its guard rails. |
+| `scenario_compare.ipynb` | Puts two or more scenarios side by side: what differs between them, net worth over time for each, where they cross over (break-even), gross Social Security, and tax by year. |
 | `events.ipynb` | Every dollar movement in a run, filterable by reason (which rule fired, a refill/overflow, a catch-up fact), tax character, account, and date range, with a running balance for one account and each refill linked to the debit that triggered it — good for auditing "why did this happen." |
-| `ensemble.ipynb` | For an ensemble recipe (Part 4.10): net worth's mean/median over quintile bands shaded out to the 5th–95th percentiles, plus a year-end table of mean/median/SD and the 5th, 20th, ... 95th percentiles. |
+| `ensemble.ipynb` | For an ensemble recipe (Part 4.10): net worth's mean/median over quintile bands shaded out to the 5th–95th percentiles, plus a year-end table of mean/median/SD and the 5th, 20th, ... 95th percentiles, and the share of members past each guard rail. |
 
 Open one with `analysis jupyter` (or the **Jupyter** VS Code task, below), or
 in VS Code directly if it runs well enough there for your machine
@@ -1147,23 +2262,77 @@ machine too small for a notebook comfortably.
 | accounts and their opening balances | `sim account list` |
 | the lots in one account | `sim account holdings <account>` (balances from a run), `sim account lot list <account>` (as entered) |
 | the accounts holding a symbol | `sim account holders <symbol>` |
-| the portfolio by asset class | `sim allocation` |
+| the portfolio by asset class | `sim allocation [--chart]` |
 | scheduled transactions | `sim scheduled list` |
 | one-time transfers | `sim transfer list` |
 | a scenario's description, lineage, dates, seed, ensemble size, reserve and latest run | `sim scenario show [scenario]` |
 | persons and their lifespans | `sim person list` |
-| calendar rows of every kind, with where each is defined | `sim calendar list [--kind KIND] [--tag TAG]` |
+| each person's age-at-death distribution, and the household's last death | `sim person show [person] [--graph]` |
+| calendar rows of every kind, with where each is defined (latent factors, for ensembles, only with `--kind latent_factor`) | `sim calendar list [--kind KIND] [--tag TAG]` |
 | year-to-date rows | `sim ytd list` |
 | itemizations and their totals | `sim itemization list`, `sim itemization show <name>` |
-| a run's year-end net worth, its lots, and its negative-balance warnings | `sim explain [scenario]` |
-| net worth by year or month, after tax, CPI-constant or nominal | `sim networth [scenario] [--monthly] [--dollars nominal] [--pre-tax]` |
-| one account's or lot's balance over time (a lot adds basis, unrealized gain and quantity) | `sim account history <account> [--lot LOT] [--start MONTH] [--end MONTH] [--yearly]` |
-| income or expenses by year, by category, account or tag (income adds cash income and cash flow; by tag, untagged flows are left out unless `--untagged`) | `sim report income`, `sim report expenses [--year YEAR] [--by category\|account\|tag:ROLE] [--untagged]` |
-| realized vs. unrealized gains by year | `sim report gains` |
-| federal and state tax by year, each with its AGI, deduction and taxable income, and the effective rate | `sim report tax [--reconciliation]` |
+| itemized deductions, by tax year | `sim deduction list` (`--state` for the state's) |
+| a run's year-end net worth, its lots, its load warnings and its negative-balance warnings | `sim explain [scenario]` |
+| net worth by year or month, after tax, CPI-constant or nominal | `sim networth [scenario] [--monthly] [--dollars nominal] [--pre-tax] [--start YEAR] [--end YEAR] [--chart]` |
+| one account's or lot's balance over time (a lot adds basis, unrealized gain and quantity) | `sim account history <account> [--lot LOT] [--start MONTH\|YEAR] [--end MONTH\|YEAR] [--yearly] [--chart]` |
+| income or expenses by year, by category, account or tag (income adds cash income and cash flow; by tag, untagged flows are left out unless `--untagged`) | `sim report income`, `sim report expenses [--year YEAR] [--by category\|account\|tag:ROLE] [--untagged] [--start YEAR] [--end YEAR] [--chart]` |
+| economic income (income plus paper gains, net of losses) carried down through tax, spending and inflation to the change in net worth, after tax or pre-tax | `sim report income [--pre-tax] [--start YEAR] [--end YEAR] [--chart]` |
+| realized vs. unrealized gains by year | `sim report gains [--start YEAR] [--end YEAR] [--chart]` |
+| federal and state tax by year, each with its AGI, deduction and taxable income, and the effective rate | `sim report tax [--reconciliation] [--start YEAR] [--end YEAR] [--chart]` |
+| where a run stands against the scenario's guard rails, each year and cumulatively | `sim report guard-rails [--rail NAME] [--carried] [--start YEAR] [--end YEAR] [--chart]` |
+| spending against the plan by year: budgeted, delivered, the share of plan, and what was redirected | `sim report spending [--by category\|account\|tag:ROLE] [--start YEAR] [--end YEAR] [--chart]` |
+| a scenario's guard rails | `sim guard-rail list` |
+| an ensemble's members against its guard rails: the share past each rail, ever past, and the RMS overshoot | `sim ensemble guard-rails [recipe] [--rail NAME] [--chart]` |
+| the latent factors that tie varying rows together, as trees with each link's ρ, and the rows under each factor | `sim ensemble factors [scenario] [--varying] [--chart] [--mermaid]` |
 
 The result views read the scenario's latest run (or `--runfile`) and show
 CPI-constant (today's) dollars unless you pass `--dollars nominal`.
+
+`--start YEAR` and `--end YEAR` limit the years shown, as the notebooks'
+Years slider does, on `sim networth`, every `sim report`, `sim compare` and
+`sim ensemble summary|compare`. They cut only what is shown: a result over
+the whole run, such as `sim compare`'s break-even, a guard rail's summary or
+cumulative margin, or an ensemble's share ever below the reserve, still
+covers the whole run. `sim account history` takes a month or a bare year.
+
+`--chart` shows the notebook's chart of the view instead of its table: drawn
+in the terminal when it shows images (iTerm2, kitty, Ghostty and others),
+else written to a temporary PNG whose name it prints. `--chart-file NAME.png`
+(or `.svg`) writes it to that file instead. `--table` with either prints the
+table too, after the chart. The chart follows the command's
+options: `--dollars`, `--pre-tax`, `--by`, `--year`, `--lot`, `--exclude` and
+the rest. `sim networth --chart` draws every month, after-tax net worth with
+the pre-tax total dashed above it, so the gap is the tax still owed.
+`sim report income --chart` stacks the income by group above economic income
+carried down to the change in net worth; with `--year`, it draws a bar per
+group. `sim report tax --chart` stacks federal, state and any local tax with the
+effective rate on its own axis (with `--reconciliation`, each April's balance
+due and refund). `sim report spending --chart` draws delivered spending as a
+bar per year with the plan as a dashed line over them. `sim allocation --chart` draws a pie of the asset classes, a
+bar per class split by the group with `--by`, and a line per class with
+`--drift`.
+
+`sim report income` tells the whole story of each year. Its total,
+`economic_income`, is income plus paper gains, net of losses: what the year
+added before spending (economists call it Haig-Simons income). Its
+`investment` column counts the growth of everything invested, a house
+included, less market drops and a vehicle's depreciation; its `business`
+column is the business's income less its expenses, so business costs are not
+spending. The columns
+after it carry it down to the change in net worth, and each row adds up:
+
+```text
+economic_income - tax - Δdeferred_tax = after_tax_income
+after_tax_income - spending - inflation = Δnet_worth
+```
+
+`tax` is the year's tax liability, whenever it is paid, and
+`Δdeferred_tax` the change in tax still owed on IRA and 401(k)
+balances and unsold gains, so `Δnet_worth` is the change in after-tax
+net worth, as `sim networth` shows it. `inflation` (CPI-constant dollars
+only) is what inflation took from the real value of what you held. With `--pre-tax`,
+the tax line is what was paid in the year, and net worth is the plain total
+of the balances.
 
 [notebooks/README.md](../notebooks/README.md) keeps the full, up-to-date list, including which
 notebook views don't have a terminal command yet.
@@ -1211,5 +2380,7 @@ asset-class mix; see Part 4.11.
 - [`docs/architecture/ADR-005-lots-and-per-lot-state.md`](architecture/ADR-005-lots-and-per-lot-state.md) — lots in depth.
 - [notebooks/README.md](../notebooks/README.md) — the same information as interactive widgets.
 - [`docs/guides/century-of-rates.md`](guides/century-of-rates.md) — a century of inflation, interest rates and stock returns: what carries over from one year to the next.
+- [`docs/guides/historical-information.md`](guides/historical-information.md) — a compression test of the historical series: which carry memory, which are every year news, and what the models miss.
 - [`docs/guides/chains.md`](guides/chains.md) — chains step by step: drawing and sweeping, shares, chains inside chains, refill and overflow.
+- [`docs/guides/guard-rails.md`](guides/guard-rails.md) — guard rails: the 4% rule, Guyton-Klinger's rails and budgets, and reading their margins (Part 4.15).
 - [`docs/guides/ensembles.md`](guides/ensembles.md) — ranges of outcomes instead of one number (Part 4.10); [ADR-006](architecture/ADR-006-ensemble-scenarios.md) has the full design.

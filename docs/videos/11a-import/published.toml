@@ -1,0 +1,46 @@
+# What's on YouTube, written by `python -m analysis.videos publish` (#395).
+# scenes: each scene's length in seconds in the build that was uploaded.
+
+[en]
+video = "KHS9dpUaHFc"
+uploaded = 2026-11-14T08:53:48Z
+scenes = [
+  ["title", 15.50],
+  ["contents", 23.28],
+  ["idea", 19.53],
+  ["export", 26.05],
+  ["sources", 23.54],
+  ["holdings", 73.75],
+  ["positions", 57.32],
+  ["roth", 61.96],
+  ["again", 41.66],
+  ["sold", 29.96],
+  ["categories", 21.24],
+  ["estimates", 18.16],
+  ["transactions", 49.12],
+  ["saved", 24.82],
+  ["others", 28.01],
+  ["end", 5.50],
+]
+
+[ja]
+video = "Dby3vYmfFPA"
+uploaded = 2026-11-14T08:54:06Z
+scenes = [
+  ["title", 21.52],
+  ["contents", 27.26],
+  ["idea", 24.75],
+  ["export", 32.14],
+  ["sources", 29.05],
+  ["holdings", 90.07],
+  ["positions", 62.87],
+  ["roth", 77.28],
+  ["again", 51.30],
+  ["sold", 39.65],
+  ["categories", 24.29],
+  ["estimates", 20.62],
+  ["transactions", 52.95],
+  ["saved", 33.00],
+  ["others", 35.69],
+  ["end", 6.88],
+]

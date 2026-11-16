@@ -631,7 +631,7 @@ def summarize(label: str, annual: pd.Series, reference: pd.Series | None, window
     then: overlapping windows share most of their years, so consecutive ones
     are nearly equal by construction. So is the shock SD: the SD of one
     year's shock to ``log(1 + rate)`` around its persistent part, what a
-    ``vary_process`` row's ``vary_innovation_sd`` means (ADR-006 §4a),
+    ``vary_process`` row's ``vary_shock_sd`` means (ADR-006 §4a),
     ``sd(log(1 + rate)) * sqrt(1 - persistence**2)``, with a negative
     persistence counted as 0, as a process row can't take one. Correlations
     and the gap use only the years both series have."""
@@ -767,7 +767,7 @@ def _pct(x: float) -> str:
 
 
 ROW_VALUE_COLUMNS = ["Series", "Row", "amount, vary_median", "vary_sd", "vary_persistence",
-                     "vary_innovation_sd"]
+                     "vary_shock_sd"]
 
 
 def row_value_cells(v: RowValues, hold_years: int) -> list[list[str]]:
@@ -804,7 +804,7 @@ LEGEND = [
      "ar1 for a path that moves every year around L; blank to hold one draw."],
     ["vary_persistence", "--vary-persistence", "persistence (φ)", "Persistence",
      "How much of one year's deviation carries into the next. A negative value is entered as 0."],
-    ["vary_innovation_sd", "--vary-innovation-sd", "yearly shock size (σ)", "Shock SD",
+    ["vary_shock_sd", "--vary-shock-sd", "yearly shock size (σ)", "Shock SD",
      "SD of one year's surprise in log growth, written as a percent (18.9 → 18.9%). In a tree "
      "with vary_tail_dependence ν, divide by √(ν / (ν − 2))."],
     ["vary_low, vary_high", "--vary-low, --vary-high", "bounds on the draw", "—",

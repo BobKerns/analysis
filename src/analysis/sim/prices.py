@@ -26,6 +26,8 @@ from typing import TYPE_CHECKING, Protocol
 
 import pandas as pd
 
+from analysis.sim.asset_classes import is_lot_key
+from analysis.sim.lineage import scenario_dir
 from analysis.sim import registries
 from analysis.sim.dates import parse_month
 from analysis.frames import named_rows
@@ -181,7 +183,12 @@ def _csv_symbols(path: Path) -> set[str]:
     if not path.exists():
         return set()
     with path.open(newline="", encoding="utf-8") as fh:
-        return {s.upper() for row in csv.DictReader(fh) if (s := (row.get("symbol") or "").strip())}
+        # An allocations.csv ``account:lot`` key classes a lot with no
+        # symbol (#326); it has no price to fetch.
+        return {
+            s.upper() for row in csv.DictReader(fh)
+            if (s := (row.get("symbol") or "").strip()) and not is_lot_key(s)
+        }
 
 
 def known_symbols(data_dir: Path) -> list[str]:
@@ -208,7 +215,7 @@ def prices_in_use(scenarios_dir: Path, scenario: str | None = None) -> PriceUse:
     symbols: set[str] = set()
     starts: list[date] = []
     for name in names:
-        folder = scenarios_dir / name
+        folder = scenario_dir(scenarios_dir, name)
         values = folder / "account_lots.csv"
         if values.exists():
             with values.open(newline="", encoding="utf-8") as fh:
@@ -334,6 +341,19 @@ def price_history(prices_dir: Path, symbol: str, since: date | None = None) -> p
         if since is None or day >= since:
             rows.append({"effective_date": day, "price": price, "change": change})
     return pd.DataFrame(rows, columns=["effective_date", "price", "change"])
+
+
+def price_on(prices_dir: Path, symbol: str, day: date) -> tuple[date, Decimal] | None:
+    """``symbol``'s latest stored price on or before ``day``: (date, price);
+    None without one. The loader values a lot with shares and no balance the
+    same way, but over the security_price rows it has loaded; this reads the
+    price file, for a question asked before anything is loaded (``sim
+    scenario roll``)."""
+    path = prices_dir / f"{PRICE_FILE_PREFIX}{symbol}.csv"
+    if not path.exists():
+        return None
+    known = [row for row in _stored(path) if row[0] <= day]
+    return known[-1] if known else None
 
 
 CHECK_COLUMNS = (

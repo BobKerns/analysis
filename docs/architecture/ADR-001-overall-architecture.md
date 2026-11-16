@@ -103,7 +103,7 @@ Detail in [ADR-004](ADR-004-reproducibility-and-activation.md); summary here:
 The data repo provides a sourceable `activate` script (venv-style) that sets:
 
 - `ANALYSIS_DATA_DIR` — absolute path to the data repo. Engine refuses to run if unset.
-- `ANALYSIS_USER` — short identifier (`rwk`, `mwk`, …) matching a row `id` in `persons.csv` in the data repo. Refuses to run if unset or unknown. (Persons and operator identities are the same set: every operator is a person, though not every person needs to be an operator.)
+- `ANALYSIS_USER` — short identifier (`alice`, `bill`, …) matching a row `id` in `persons.csv` in the data repo. Refuses to run if unset or unknown. (Persons and operator identities are the same set: every operator is a person, though not every person needs to be an operator.)
 - `ANALYSIS_DATA_REPO_NAME` — display label, defaults to basename of `ANALYSIS_DATA_DIR`.
 
 `PS1` is prefixed `[analysis:$ANALYSIS_DATA_REPO_NAME:$ANALYSIS_USER:<current scenario>]` (the scenario left out when none is current) so the active context is visible in a shared shell. `deactivate` reverses all of it.
@@ -139,7 +139,7 @@ The existing `analysis.storage` module contains item-import schemas specific to 
 - `analysis sim load <scenario>` — build/refresh `state/intent/<scenario>.sqlite3` from the data repo. Silently rebuilds when the source CSV hash or `data_version` no longer matches; `--force` always rebuilds. Intent files are a derived cache and may be deleted at any time.
 - `analysis sim run <scenario>` — execute against the (auto-loaded) intent file, write a new run file at `state/runs/<isoZ>_<scenario>_<dataSHA>.sqlite3`.
 - `analysis sim list` — list run files with status, versions, who, when.
-- `analysis sim explain [<scenario> | <runfile>]` — scenario name, versions, year-end net worth (nominal and CPI-constant), lots at the final step, and the recorded negative-balance warnings, for the scenario's latest run (the current scenario's by default) or a named run file. Sanity dump.
+- `analysis sim explain [<scenario> | <runfile>]` — scenario name, versions, year-end net worth (nominal and CPI-constant; after tax unless `--pre-tax`), lots at the final step, and the recorded negative-balance warnings (each with the lowest balance its account reached before its next warning), for the scenario's latest run (the current scenario's by default) or a named run file. Sanity dump.
 - `analysis sim networth [<scenario>] [--monthly | --yearly] [--dollars cpi_constant|nominal]` — net worth by year (or month) from the scenario's latest run, or `--runfile`, in CPI-constant dollars unless `--dollars nominal`.
 - `analysis sim compare <runfile_a> <runfile_b> [--by subkind|account|owner]` — `ATTACH`es both files, prints net-worth table + matplotlib chart; flags version skew in the report header.
 - `analysis sim query "<sql>" <runfile>` — read-only SQL passthrough, pretty-printed. Entry point for AI-assisted exploration.
@@ -182,3 +182,5 @@ Each entry changed this ADR's design. The sections it names were rewritten in pl
 - [#197](https://github.com/BobKerns/analysis/issues/197): principle 5 no longer relies on `life_transition` events, which are dropped.
 - [#186](https://github.com/BobKerns/analysis/issues/186): `sim explain` takes a scenario and lists negative-balance warnings; `sim networth` added (CLI surface).
 - [#214](https://github.com/BobKerns/analysis/issues/214): the prompt shows the current scenario (Activation).
+- [#332](https://github.com/BobKerns/analysis/issues/332): `sim explain`'s year-end net worth is after tax unless `--pre-tax`, like the other reports (CLI surface).
+- [#431](https://github.com/BobKerns/analysis/issues/431): the notebooks show a run's negative-balance warnings as `sim explain` lists them, each with its lowest balance (principle 7, CLI surface).

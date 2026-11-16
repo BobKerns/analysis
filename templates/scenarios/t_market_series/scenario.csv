@@ -1,0 +1,2 @@
+name,description,start,end,seed,parent_scenario,created_by,meta_json
+t_market_series,"Long-run rates for cash, bonds and stocks.",,,,t_market_factors,,{}

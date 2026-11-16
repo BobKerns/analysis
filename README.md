@@ -1,10 +1,155 @@
 # Financial Analysis and Planning
 
-This project provides tools for personal financial analysis and planning, supporting both CLI and Jupyter notebook workflows. It uses Python 3.14+, uv for package management, and modern Python best practices.
+A retirement simulator for exploring your options and possible futures, at
+home, at your own pace, and for free. A session with a financial planner
+typically gives you one projection from one set of assumptions; here you can
+compare what-if scenarios side by side, and run hundreds of simulated futures
+to see the range of outcomes, not just one number.
+
+- **Guidelines:** check a plan against the 4% rule, or let Guyton-Klinger
+  guardrails adjust your spending
+  ([guard rails](./docs/guides/guard-rails.md),
+  [spending strategies](./docs/user-guide.md#417-spend-less-after-bad-years-spending-strategies)).
+- **Taxes:** federal and state tax worked out each year
+  ([how tax is handled](./docs/user-guide.md#3-how-tax-is-handled);
+  [which states](#state-and-territory-income-tax)), including
+  Medicare's IRMAA surcharge
+  ([§4.14](./docs/user-guide.md#414-medicares-income-surcharge-irmaa)),
+  required minimum distributions, Roth conversions
+  ([§4.12](./docs/user-guide.md#412-make-a-new-investment-or-a-roth-conversion)),
+  capital gains, and home sales
+  ([§4.5](./docs/user-guide.md#45-selling-an-asset)).
+- **Future changes to the rules:** a new tax table from the date a law takes
+  effect, or a move to another state
+  ([§4.8](./docs/user-guide.md#48-calendar-for-more-complex-changes)).
+- **A range of outcomes:** ensembles vary returns, inflation, lifespans and
+  more across hundreds of runs
+  ([ensembles](./docs/guides/ensembles.md)).
+
+Watch the *Retirement Simulator Guide* on
+[YouTube](https://www.youtube.com/channel/UCQnUgmsanqEqAj1I-0i7vOA/), in
+[English](https://www.youtube.com/playlist?list=PLMCxY-aRDiI4) and
+[Japanese (日本語)](https://www.youtube.com/playlist?list=PLQhWLzBzvwNM).
+Start with *Video 1: What it does, and how it works*
+([English](https://www.youtube.com/watch?v=VvoRgRvgIiY),
+[Japanese (日本語)](https://www.youtube.com/watch?v=kH_Uzpp4ghU)). It shows that a
+simple model already answers useful questions. You add detail only when a
+question needs it.
+
+The repository also holds an Amazon expense categorizer. Both tools work from
+a CLI and from Jupyter notebooks, on Python 3.14+ with uv.
 
 To read a formatted `.md` file:
 - In Jupyter: right-click on it and select `Open With / Markdown Preview`
 - In VSCode: Command `Markdown Preview Enhanced: Open Preview` or ⌘⇧V
+
+## State and territory income tax
+
+The simulator works out a state's income tax the same way for every state:
+federal-style income, with capital gains taxed as ordinary income by
+default, less the state's standard deduction, run through the state's
+brackets ([how tax is handled](./docs/user-guide.md#3-how-tax-is-handled)). A
+state needs two tables in `aux/`, `state_brackets__XX.csv` and
+`state_standard_deduction__XX.csv`, a state tax, `taxes/state.csv`, and a
+`residence.csv` saying where the household lives. `sim tax state` chooses the
+state, and adds the state tax if the scenario has none; `sim tax move` records
+a move to another state or county. Where a state treats capital gains differently, up to three more
+tables say how: a share of long-term gain excluded, and gain rates of its own
+([the `aux/` README](./templates/aux/README.md#a-states-capital-gains)).
+Social Security is left out unless `state_social_security__XX.csv` says how
+the state taxes it: the federally taxable amount less an exclusion that can
+phase out with income. Two more are optional: `state_surcharge__XX.csv`, a
+surtax on high income (California's 1% over $1 million, Massachusetts's 4%),
+and `state_hsa__XX.csv`, for a state that taxes health savings accounts
+(California). A local income tax on the state's taxable income, such as a
+Maryland county's or New York City's, goes in a `state_local_tax` table
+written for your own county or city, named for it in `residence.csv`; one with a base of its own, or one
+only on wages, is left out. A state's retirement income exclusions, by age, kind of income
+and household income, go in another optional table,
+`state_retirement_exclusion__XX.csv`. A state's own deductions and credits (a renter's credit,
+personal exemptions, a deduction for federal tax paid) are rows of
+`state_adjustments__XX.csv`; California's ship. A rule that turns on the kind of
+pension or plan (a public pension, an employer plan but not an IRA) is a
+`state_adjustments` row on income from accounts you tag. Many states have rules
+this leaves out; the table says which matter most for a retired household, and
+[State income tax, state by state](./docs/guides/state-income-tax.md) lists each
+state's rules and the tables that express them. It reflects state law as of
+2026 (surveyed in November 2026); check the state's own revenue department
+before relying on a figure.
+
+| Status | Meaning |
+| --- | --- |
+| **Shipped** | The tables come with the simulator. |
+| **No tax** | No income tax: leave out the state rule. |
+| **Tables needed** | The model fits; write the state's tables ([which ones](./docs/guides/state-income-tax.md)). |
+| **Partial** | The tables work, but the rules listed are not modeled, so the estimate is rough. |
+| **Federal rule** | The territory's tax mirrors the federal one and is paid to the territory rather than the IRS; the federal tax stands in for it. |
+| **Not supported** | A tax system of its own that the model can't express. |
+
+For a shipped state, "Not modeled" lists what its shipped tables leave out:
+an issue to close, or a row you write yourself.
+
+| State | Status | Not modeled |
+| --- | --- | --- |
+| Alabama | Tables needed | |
+| Alaska | No tax | |
+| Arizona | Partial | Long-term gain subtraction limited to assets bought after 2011 |
+| Arkansas | Partial | Low-income tax tables |
+| California | Shipped | |
+| Colorado | Partial | Social Security sharing the pension subtraction's cap from 55 to 64, over the income |
+| Connecticut | Partial | Benefit recapture ([#549](https://github.com/BobKerns/analysis/issues/549)); personal tax credit; Social Security's 25% cap |
+| Delaware | Tables needed | |
+| District of Columbia | Shipped | Extra deduction when blind |
+| Florida | No tax | |
+| Georgia | Tables needed | |
+| Hawaii | Tables needed | |
+| Idaho | Shipped | Public pension deduction, reduced by Social Security (a row you write) |
+| Illinois | Tables needed | |
+| Indiana | Tables needed | |
+| Iowa | Partial | School district surtax (a share of state tax) |
+| Kansas | Shipped | Public pension exemption (a row you write); extra deduction when blind |
+| Kentucky | Tables needed | |
+| Louisiana | Tables needed | |
+| Maine | Partial | Standard deduction phase-out's width grows with inflation (the law's divisor is fixed) |
+| Maryland | Partial | Capital gains surtax above $350,000 of income |
+| Massachusetts | Tables needed | |
+| Michigan | Partial | City income taxes (a base of their own) |
+| Minnesota | Partial | Standard deduction phase-out's lower 3% band (approximated); 1% surtax on investment income over $1 million; Social Security subtraction's $4,000 steps (modeled as a straight line) |
+| Mississippi | Tables needed | |
+| Missouri | Tables needed | |
+| Montana | Tables needed | |
+| Nebraska | Shipped | |
+| Nevada | No tax | |
+| New Hampshire | No tax | |
+| New Jersey | Tables needed | |
+| New Mexico | Tables needed | |
+| New York | Partial | Benefit recapture ([#549](https://github.com/BobKerns/analysis/issues/549)); Yonkers surcharge (a share of state tax) |
+| North Carolina | Shipped | Exclusion for government pensions vested before August 1989 (a row you write) |
+| North Dakota | Tables needed | |
+| Ohio | Tables needed | |
+| Oklahoma | Tables needed | |
+| Oregon | Tables needed | |
+| Pennsylvania | Partial | Separate income classes; Philadelphia's tax on investment income |
+| Rhode Island | Tables needed | |
+| South Carolina | Tables needed | |
+| South Dakota | No tax | |
+| Tennessee | No tax | |
+| Texas | No tax | |
+| Utah | Tables needed | |
+| Vermont | Partial | Minimum tax of 3% of AGI over $150,000; capital gain exclusion's holding period |
+| Virginia | Tables needed | |
+| Washington | Shipped | Charitable and family-business deductions; credits for other states' taxes |
+| West Virginia | Tables needed | |
+| Wisconsin | Partial | Head of household's standard deduction switching to the single figure |
+| Wyoming | No tax | |
+
+| Territory | Status | Not modeled |
+| --- | --- | --- |
+| American Samoa | Not supported | Own tax code; local income exempt from federal tax ([#570](https://github.com/BobKerns/analysis/issues/570)) |
+| Guam | Federal rule | |
+| Northern Mariana Islands | Federal rule | Rebate of the tax on CNMI-source income; wage tax |
+| Puerto Rico | Not supported | Own tax code; local income exempt from federal tax ([#570](https://github.com/BobKerns/analysis/issues/570)) |
+| U.S. Virgin Islands | Federal rule | Economic Development Commission incentives |
 
 ## Directory Structure
 - `src/analysis/` — Core package code
@@ -19,7 +164,11 @@ To read a formatted `.md` file:
 This repository is a single top-level Python project. There are no nested repos or subprojects.
 
 ## Setup
-Run the setup script (idempotent — safe to re-run):
+To install without git knowledge, paste this into a terminal:
+```sh
+curl -fsSL https://raw.githubusercontent.com/BobKerns/analysis/main/scripts/install.sh | sh
+```
+In a clone, run the setup script (idempotent — safe to re-run):
 ```sh
 ./scripts/setup.sh
 ```
@@ -28,6 +177,8 @@ See [docs/SETUP.md](./docs/SETUP.md) for what it does and the manual steps.
 ## Usage
 - CLI tools: `python -m analysis ...`
 - Notebooks: Open and run notebooks in `notebooks/`
+- Videos: the guide videos linked above are made from
+  [docs/videos/README.md](./docs/videos/README.md) (Docker needed).
 
 Three CLI entry points are installed:
 
@@ -174,37 +325,55 @@ Persistent memory:
 
 ### Importing the Expense Baseline
 
+[Importing your data](docs/guides/importing-data.md) is the guide to
+`sim import`, for balances and spending both; this section is the reference
+for the spending files.
+
 The baseline importer combines canonicalized Quicken expenses with Amazon
 monthly summaries and replaces only rows it previously generated:
 
 ```sh
-sim scheduled import-baseline --scenario current --dry-run
-sim scheduled import-baseline --scenario current
+sim import transactions --from-account Asset_Checking --dry-run
+sim import transactions --from-account Asset_Checking
 ```
 
-Generated rows are tagged `generated:expense_baseline` and carry provenance in
-`meta_json`, so rerunning removes stale generated categories after the private
-category maps change while preserving manually authored scheduled rows.
+The dry run lists each generated rule's amount before and after, and whether
+it is added, changed, removed or unchanged. Generated rows are tagged
+`generated:expense_baseline` and carry provenance in `meta_json`, so rerunning
+removes stale generated categories after the private category maps change
+while preserving manually authored scheduled rows.
+A generated rule a parent scenario has, which a rerun in a derived scenario no
+longer produces, is listed as `kept`: it stays in force until it is ended
+there with `sim scheduled delete`.
 
-When `ANALYSIS_DATA_DIR` points to the simulator data directory, the command
-reads Quicken and Amazon inputs from sibling top-level data-repo directories:
-`../quicken/` and `../state/`. The command expects an optional
-`quicken/expense_account_map.csv` with columns
-`category,target_account`. If a canonical category already matches a scenario
-expense account, no map row is needed. Supply the funding account explicitly
-with `--from-account`. Invalid target accounts are warned about and skipped.
+The export to read is an argument (`sim import transactions export.csv`).
+With none, and `ANALYSIS_DATA_DIR` pointing to the simulator data directory,
+the command reads `../quicken/Transaction Export.csv` and the Amazon state in
+`../state/`, both at the data repo's top level.
 
-Two more optional files in `quicken/` hold household-specific choices, so none
-of them live in the code:
+The household's choices live in the data directory's `imports/` folder
+([ADR-003](docs/architecture/ADR-003-registries-and-csv-schemas.md) §4.17), so
+none of them live in the code:
 
-- `expense_category_split.csv`, columns `category,account,target_category`:
-  splits one canonical category by the Quicken account that paid. A row with a
-  blank `account` is that category's default, taking every expense no named
-  account claims, including Amazon summaries. For example, `Food,Alice
-  Checking,Alice Food` and `Food,,Bill Food` divide Food between two people.
-- `expense_excluded_payees.csv`, one column `payee_pattern`: case-insensitive
-  regular expressions for payees whose expenses the scenario models separately
-  (an insurer, HOA dues). Amazon and mortgage payees are always excluded.
+- `imports/quicken/categories.csv`, columns `outside_category,category`
+  (required): merges Quicken's categories into the baseline's. A blank or `-`
+  `category` excludes one; a category with no row becomes `Other`.
+- `imports/expense_accounts.csv`, columns `category,account`: the expense
+  account each category's rule pays into, or `-` for no rule. If a category
+  already matches a scenario expense account, no row is needed. At a terminal
+  a category with no account is asked for and the answer saved; otherwise it
+  is warned about and skipped. Supply the funding account explicitly with
+  `--from-account`.
+- `imports/quicken/splits.csv`, columns
+  `category,outside_account,target_category` (optional): splits one category
+  by the Quicken account that paid. A row with a blank `outside_account` is
+  that category's default, taking every expense no named account claims,
+  including Amazon summaries. For example, `Food,Alice Checking,Alice Food`
+  and `Food,,Bill Food` divide Food between two people.
+- `imports/quicken/excluded_payees.csv`, one column `payee_pattern`
+  (optional): case-insensitive regular expressions for payees whose expenses
+  the scenario models separately (an insurer, HOA dues). Amazon and mortgage
+  payees are always excluded.
 
 Amounts are monthly averages over the observed baseline months and use the
 scenario start date by default.

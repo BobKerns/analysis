@@ -1,0 +1,2 @@
+name,description,start,end,seed,parent_scenario,created_by,meta_json
+t_inflation_series,"Long-run inflation rates for every inflation series.",,,,t_inflation_factors,,{}

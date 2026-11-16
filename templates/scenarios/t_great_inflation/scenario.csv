@@ -1,0 +1,2 @@
+name,description,start,end,seed,parent_scenario,created_by,meta_json
+t_great_inflation,"A Great Inflation-style stretch on top of the long-run rates: years of high, persistent inflation, with stocks earning about inflation and bonds less.",,,,t_inflation_series:t_market_series,,{}

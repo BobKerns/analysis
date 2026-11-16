@@ -1,0 +1,3 @@
+symbol,as_of,asset_class,weight
+USSTK,,stock_us,100%
+BONDX,,bond,100%

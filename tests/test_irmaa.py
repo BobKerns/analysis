@@ -5,6 +5,7 @@ tier table and growth series, and its loader checks."""
 from __future__ import annotations
 
 import json
+from contextlib import closing
 import sqlite3
 from collections.abc import Callable
 from pathlib import Path
@@ -59,12 +60,13 @@ def _monthly(tier: int, year: int) -> int:
 @pytest.fixture
 def irmaa_run(
     retire_alice_csv: Callable[[str], Path], fund_asset_savings: Callable[..., None],
-    load_test_copy: Callable[[], LoadResult], runs_dir: Path,
+    load_test_copy: Callable[[], LoadResult], runs_dir: Path, add_tax: Callable[..., Path],
 ) -> Run:
-    """Run retire_alice with a federal tax rule, an irmaa rule for each of
+    """Run retire_alice with the federal tax, an irmaa rule for each of
     Alice and Bill from the start, and the given extra scheduled rows (each
     a dict of scheduled.csv columns). ``magi`` sets meta_json irmaa.magi."""
     fund_asset_savings("1000000.00")
+    add_tax()
     path = retire_alice_csv("scheduled.csv")
     scenario_path = retire_alice_csv("scenario.csv")
     blank = dict.fromkeys(SCHEDULED_CSV_HEADER, "")
@@ -75,13 +77,6 @@ def irmaa_run(
         scheduled = pd.read_csv(path, dtype=str, keep_default_na=False)
         scheduled = scheduled.reindex(columns=SCHEDULED_CSV_HEADER, fill_value="")
         rows = [{
-            **blank, "name": "tax_federal", "from_account": "Asset_Checking",
-            "to_account": "Expense_Taxes_Federal", "cadence": "annual",
-            "month_of_year": "4", "amount_rule_kind": "tax_accumulator",
-            "tax_character": "none", "start": "2027-04-30", "meta_json": "{}",
-            "params_json": '{"year":"previous","scope":"federal"}',
-        }]
-        rows += [{
             **blank, "name": f"irmaa_{person}", "from_account": "Asset_Checking",
             "to_account": "Expense_Healthcare", "cadence": "monthly",
             "amount_rule_kind": "irmaa", "person": person, "tax_character": "none",
@@ -113,7 +108,7 @@ def _bonus(year: int, amount: str) -> dict[str, str]:
 
 def _charges(run: Path) -> pd.DataFrame:
     """Each month's irmaa charge, by rule name, indexed by month."""
-    with sqlite3.connect(run) as con:
+    with closing(sqlite3.connect(run)) as con:
         frame = pd.read_sql_query(
             "SELECT te.date AS month, st.name, te.amount FROM transfer_event te "
             "JOIN scheduled_transaction st ON st.id = te.reason_id "
@@ -122,7 +117,7 @@ def _charges(run: Path) -> pd.DataFrame:
 
 
 def _summary(run: Path) -> pd.DataFrame:
-    with sqlite3.connect(run) as con:
+    with closing(sqlite3.connect(run)) as con:
         frame = pd.read_sql_query("SELECT year, bucket, amount FROM tax_year_summary", con)
     return frame.pivot_table(index="year", columns="bucket", values="amount", aggfunc="sum")
 
@@ -149,9 +144,19 @@ def test_a_premium_year_charges_the_tier_of_magi_two_years_earlier(irmaa_run: Ru
         assert summary.loc[year - 2, "federal_irmaa_tier"] == tier, year
 
 
-def test_magi_is_agi_while_tax_exempt_interest_is_not_modeled(irmaa_run: Run) -> None:
+def test_magi_is_agi_without_tax_exempt_interest(irmaa_run: Run) -> None:
     summary = _summary(irmaa_run())
-    assert (summary["federal_magi"] == summary["federal_adjusted_gross_income"]).all()
+    assert (summary["federal_magi"] == summary["federal_agi"]).all()
+
+
+@pytest.mark.usefixtures("muni_funds")
+def test_municipal_bond_interest_raises_magi_and_the_tier(irmaa_run: Run) -> None:
+    """Municipal bond interest (#265) is out of AGI but in MAGI, so a
+    household near a floor can cross it on its interest alone."""
+    summary = _summary(irmaa_run())
+    exempt = summary["federal_tax_exempt_interest"]
+    assert (exempt > 0).all()
+    assert (summary["federal_magi"] == summary["federal_agi"] + exempt).all()
 
 
 def test_years_before_the_run_read_magi_from_meta_json(irmaa_run: Run) -> None:
@@ -228,9 +233,9 @@ def _con_with_magi(**by_year: int) -> sqlite3.Connection:
 
 def test_a_floor_is_more_than_its_magi_floor() -> None:
     aux = {(registries.IRMAA_TIERS, None): _tiers(("MFJ", 1, 200_000_00, None))}
-    at, above = _con_with_magi(y2026=200_000_00), _con_with_magi(y2026=200_000_01)
-    assert _context(aux).charge(at, 2028, {}, 1) == 0
-    assert _context(aux).charge(above, 2028, {}, 1) == 110_00
+    with closing(_con_with_magi(y2026=200_000_00)) as at, closing(_con_with_magi(y2026=200_000_01)) as above:
+        assert _context(aux).charge(at, 2028, {}, 1) == 0
+        assert _context(aux).charge(above, 2028, {}, 1) == 110_00
 
 
 def test_a_blank_series_holds_a_figure_flat_and_a_named_one_grows_and_rounds() -> None:
@@ -251,12 +256,21 @@ def test_a_year_before_the_filing_status_table_takes_its_first_row() -> None:
     assert _context(aux).filing_status(2024, "filing_status", 1) == "MFJ"
 
 
+def test_a_death_after_a_return_before_the_table_leaves_that_return_joint() -> None:
+    # The 2024 return is joint though the table starts in 2026 and bill died
+    # in 2025: the death is judged against 2024, not the table's first year.
+    aux = {(registries.IRMAA_TIERS, None): _tiers(("MFJ", 1, 1, None))}
+    context = _context(aux, person_lifespan={"bill": "2025-06-30"}, taxpayers=("alice", "bill"))
+    assert context.filing_status(2024, "filing_status", 1) == "MFJ"
+    assert context.filing_status(2026, "filing_status", 1) == "Single"
+
+
 def test_a_missing_federal_magi_is_an_error() -> None:
     from analysis.sim.engine import EngineError
 
     aux = {(registries.IRMAA_TIERS, None): _tiers(("MFJ", 1, 1, None))}
-    with pytest.raises(EngineError, match="no federal MAGI for 2027"):
-        _context(aux).charge(_con_with_magi(), 2029, {}, 1)
+    with closing(_con_with_magi()) as con, pytest.raises(EngineError, match="no federal MAGI for 2027"):
+        _context(aux).charge(con, 2029, {}, 1)
 
 
 def test_the_first_premium_years_without_prior_magi_charge_nothing(irmaa_run: Run) -> None:
@@ -270,22 +284,17 @@ def test_the_first_premium_years_without_prior_magi_charge_nothing(irmaa_run: Ru
 @pytest.fixture
 def load_with(
     retire_alice_csv: Callable[[str], Path], load_test_copy: Callable[[], LoadResult],
+    add_tax: Callable[..., Path],
 ) -> Callable[..., LoadResult]:
     """Load retire_alice with an irmaa rule for Alice (cells over the
-    defaults) and, unless ``tax`` is false, a federal tax rule."""
+    defaults) and, unless ``tax`` is false, the federal tax."""
     def _load(*, tax: bool = True, meta: object = None, **cells: str) -> LoadResult:
         path = retire_alice_csv("scheduled.csv")
         scheduled = pd.read_csv(path, dtype=str, keep_default_na=False)
         scheduled = scheduled.reindex(columns=SCHEDULED_CSV_HEADER, fill_value="")
         blank = dict.fromkeys(SCHEDULED_CSV_HEADER, "")
         if tax:
-            scheduled.loc[len(scheduled)] = {
-                **blank, "name": "tax_federal", "from_account": "Asset_Checking",
-                "to_account": "Expense_Taxes_Federal", "cadence": "annual",
-                "month_of_year": "4", "amount_rule_kind": "tax_accumulator",
-                "tax_character": "none", "start": "2027-04-30", "meta_json": "{}",
-                "params_json": '{"year":"previous"}',
-            }
+            add_tax()
         scheduled.loc[len(scheduled)] = {
             **blank, "name": "irmaa_alice", "from_account": "Asset_Checking",
             "to_account": "Expense_Healthcare", "cadence": "monthly",
@@ -307,6 +316,7 @@ def load_with(
     ({"cadence": "annual", "month_of_year": "1"}, True, "irmaa needs cadence monthly"),
     ({"amount": "10.00"}, True, "irmaa takes no amount"),
     ({"params_json": '{"parts": "A"}'}, True, "parts must be one of"),
+    ({"params_json": '{"filing_status_aux": "nope"}'}, True, "filing_status_aux 'nope' has no aux table"),
     ({"params_json": '{"tiers": 1}'}, True, "unknown params_json key"),
     ({}, False, "there is none"),
 ])
@@ -334,6 +344,8 @@ def test_a_missing_prior_magi_year_is_a_warning(load_with: Callable[..., LoadRes
     ({"magi": {"24": "1.00"}}, "is not a four-digit year"),
     ({"magi": {"2024": 1.5}}, "invalid dollar value"),
     ({"prior": {}}, "unknown key 'prior'"),
+    ([2024], "must be a JSON object"),
+    ({"magi": []}, "magi must map years to dollars"),
 ])
 def test_the_loader_checks_irmaa_meta(
     load_with: Callable[..., LoadResult], meta: object, message: str,
@@ -381,12 +393,24 @@ def _conversion(year: int, **params: Any) -> dict[str, str]:
 
 
 def _converted(run: Path) -> int:
-    with sqlite3.connect(run) as con:
+    with closing(sqlite3.connect(run)) as con:
         return con.execute(
             "SELECT COALESCE(SUM(te.amount), 0) FROM transfer_event te "
             "JOIN scheduled_transaction st ON st.id = te.reason_id "
             "WHERE te.reason_kind = 'rule' AND st.amount_rule_kind = 'fill_bracket'",
         ).fetchone()[0]
+
+
+@pytest.mark.usefixtures("muni_funds")
+def test_irmaa_tier_counts_municipal_bond_interest(irmaa_run: Run) -> None:
+    """The cap is on MAGI (#265): AGI stops short of the floor by the
+    year's tax-exempt interest."""
+    run = irmaa_run(_conversion(2031, irmaa_tier=0))
+    year = _summary(run).loc[2031]
+    floor = _floor(MFJ_FLOORS[1], 2031)
+    assert floor - 100 <= year["federal_magi"] <= floor
+    assert year["federal_agi"] <= floor - year["federal_tax_exempt_interest"]
+    assert _converted(run) > 0
 
 
 def test_irmaa_tier_keeps_a_conversions_magi_within_the_tier(irmaa_run: Run) -> None:
@@ -402,6 +426,7 @@ def test_irmaa_tier_keeps_a_conversions_magi_within_the_tier(irmaa_run: Run) -> 
     assert _summary(run).loc[2031, "federal_irmaa_tier"] == 0
 
 
+@pytest.mark.usefixtures("without_template_aux")
 def test_irmaa_tier_needs_a_tier_table_and_a_whole_number(
     load_with: Callable[..., LoadResult], retire_alice_csv: Callable[[str], Path],
     test_data_dir: Path,
@@ -419,6 +444,39 @@ def test_irmaa_tier_needs_a_tier_table_and_a_whole_number(
     issues = "\n".join(error.value.issues)
     assert "irmaa_tier must be a whole number, 0 or more" in issues
     assert "irmaa_tier needs aux/irmaa_tiers.csv" in issues
+
+
+def test_irmaa_tier_at_the_top_tier_caps_nothing_and_is_refused(
+    load_with: Callable[..., LoadResult], retire_alice_csv: Callable[[str], Path],
+) -> None:
+    path = retire_alice_csv("scheduled.csv")
+    scheduled = pd.read_csv(path, dtype=str, keep_default_na=False)
+    scheduled = scheduled.reindex(columns=SCHEDULED_CSV_HEADER, fill_value="")
+    scheduled.loc[len(scheduled)] = {
+        **dict.fromkeys(SCHEDULED_CSV_HEADER, ""), "meta_json": "{}",
+        **_conversion(2031, irmaa_tier=5)}
+    scheduled.to_csv(path, index=False)
+    with pytest.raises(LoadError) as error:
+        load_with()
+    assert "irmaa_tier 5 is the top tier or above" in "\n".join(error.value.issues)
+
+
+def test_a_state_fill_bracket_watching_irmaa_needs_the_federal_tax(
+    load_with: Callable[..., LoadResult], retire_alice_csv: Callable[[str], Path],
+    add_tax: Callable[..., Path],
+) -> None:
+    path = retire_alice_csv("scheduled.csv")
+    scheduled = pd.read_csv(path, dtype=str, keep_default_na=False)
+    scheduled = scheduled.reindex(columns=SCHEDULED_CSV_HEADER, fill_value="")
+    scheduled.loc[len(scheduled)] = {
+        **dict.fromkeys(SCHEDULED_CSV_HEADER, ""), "meta_json": "{}",
+        **_conversion(2031, scope="state", irmaa_tier=0)}
+    scheduled.to_csv(path, index=False)
+    add_tax("state", destination="Expense_Taxes_Federal")
+    with pytest.raises(LoadError) as error:
+        load_with(tax=False)
+    assert "irmaa_tier measures MAGI with the federal tax, and there is none" in (
+        "\n".join(error.value.issues))
 
 
 def _flat_tax(rate: float) -> Callable[[int, int], int]:
@@ -468,5 +526,43 @@ def test_a_cliff_costs_a_years_surcharge_for_each_person_enrolled_two_years_on()
     gone[8] = "carol"  # dies before the conversion is decided
     context = _context(aux, rules=[both, part_b, late, gone],
                        person_lifespan={"carol": "2030-06-30"})
-    assert context.annual_cost(2031, 200_000_00, "MFJ", "2031-12-31", 1) == 0
-    assert context.annual_cost(2031, 200_000_01, "MFJ", "2031-12-31", 1) == 12 * (110_00 + 100_00)
+    assert context.annual_cost(2031, 200_000_00, "2031-12-31", 1) == 0
+    assert context.annual_cost(2031, 200_000_01, "2031-12-31", 1) == 12 * (110_00 + 100_00)
+
+
+def test_annual_cost_prices_each_rule_with_its_own_filing_status_table() -> None:
+    aux = {
+        (registries.IRMAA_TIERS, None): _tiers(
+            ("MFJ", 1, 200_000_00, None), ("Single", 1, 100_000_00, None)),
+        ("single_status", None): [("2026-01-31", {"filing_status": "Single"})],
+    }
+    rule = [None] * 23
+    joint, single = list(rule), list(rule)
+    for row, ext in ((joint, None), (single, '{"filing_status_aux": "single_status"}')):
+        row[8], row[13], row[16], row[17] = "alice", ext, "2030-01-31", None
+    context = _context(aux, rules=[joint, single])
+    # Over the single floor only: just the rule reading the Single table pays.
+    assert context.annual_cost(2031, 150_000_00, "2031-12-31", 1) == 12 * 110_00
+
+
+def test_annual_cost_counts_only_the_months_a_rule_charges() -> None:
+    aux = {(registries.IRMAA_TIERS, None): _tiers(("MFJ", 1, 200_000_00, None))}
+    rule = [None] * 23
+    late, early = list(rule), list(rule)
+    late[8], late[16], late[17] = "alice", "2033-12-31", None  # enrolls in December
+    early[8], early[16], early[17] = "bill", "2030-01-31", "2033-06-30"  # ends in June
+    context = _context(aux, rules=[late, early])
+    assert context.annual_cost(2031, 200_000_01, "2031-12-31", 1) == (1 + 6) * 110_00
+
+
+def test_irmaa_surcharges_are_itemized_medical_expenses(irmaa_run: Run) -> None:
+    """An irmaa rule's charges carry ``tax:medical`` (#542) though neither
+    the rule nor its account is tagged: they're Medicare premiums."""
+    run = irmaa_run(_bonus(2029, "400000.00"))
+    charges, summary = _charges(run), _summary(run)
+    year = 2031
+    paid = int(charges[[m.startswith(str(year)) for m in charges.index]].sum().sum())
+    # Nothing else in retire_alice is tagged tax:medical; 7.5% of AGI is the floor.
+    floor = int(summary.loc[year, "federal_agi"]) * 75_000 // 1_000_000
+    assert paid > floor
+    assert summary.loc[year, "federal_itemized_medical"] == paid - floor

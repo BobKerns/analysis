@@ -54,8 +54,8 @@ def scrollable(styled) -> widgets.Output:
 def show_chains(sc, **_):
     """
     The named chains from the scenario connection ``sc``, one row per step,
-    each chain a block under a rule, with its role and what uses it on its
-    first row (``sim chain list`` in table form).
+    each chain a block under a rule, with its role, what uses it and where it
+    is defined on its first row (``sim chain list`` in table form).
 
     A step's ``series`` is the inflation series (such as ``cpi``) that grows
     its ``maximum`` from the scenario's start, compounding at its ``cadence``.
@@ -82,7 +82,8 @@ def show_chains(sc, **_):
                                  {"selector": "", "props": [("border-collapse", "collapse")]}])
               .format({"maximum": "${:,.2f}", "percent": "{:,.2f}%",
                        "chain": _breakable, "draw_from": _breakable,
-                       "lot": _breakable, "series": _breakable, "used_by": used_by},
+                       "lot": _breakable, "series": _breakable, "used_by": used_by,
+                       "defined_in": _breakable},
                       na_rep="-"))
     return scrollable(_fit_to_width(styled, nowrap=["step", "maximum", "percent", "cadence"]))
 
@@ -203,13 +204,15 @@ def show_chain_flow(sc, chain: str | None = None, **_):
     return widgets.VBox([widgets.HBox([picker, depth, rules]), chart])
 
 
-SCHEDULED_OPTIONAL_COLUMNS = {"id": False, "name": True, "priority": False, "description": True}
+SCHEDULED_OPTIONAL_COLUMNS = {
+    "id": False, "name": True, "priority": False, "description": True, "defined_in": True,
+}
 """Scheduled-view columns a checkbox can hide, with whether each starts shown."""
 
 
 _SCHEDULED_TEXT_COLUMNS = [
     "name", "from_account", "from_lot", "to_account", "to_lot", "cadence",
-    "amount_rule_kind", "tax_character", "description",
+    "amount_rule_kind", "tax_character", "description", "defined_in",
 ]
 _SCHEDULED_NOWRAP_COLUMNS = ["id", "priority", "amount", "start", "end"]
 
@@ -233,7 +236,7 @@ def scheduled_styler(view: pd.DataFrame, hidden: Collection[str] = ()):
 def show_scheduled_view(sc, **_):
     """
     Show the scheduled items from the scenario connection `sc`, with a checkbox
-    for each optional column (id, name, priority, description) so the table can
+    for each optional column (id, name, priority, description, defined_in) so the table can
     be narrowed to fit a small screen. The table scrolls sideways if it is still
     too wide.
     """
@@ -269,7 +272,7 @@ def show_calendar_view(sc, **_):
     formats = {
         "date": truncate(7),
         **{c: _breakable for c in ("kind", "target", "account_1", "lot_1",
-                                   "account_2", "lot_2", "description")},
+                                   "account_2", "lot_2", "description", "defined_in")},
     }
     styled = view.style.hide(axis="index").format(formats, na_rep="-")
     styled = _fit_to_width(styled, nowrap=["date", "amount"])
@@ -277,3 +280,97 @@ def show_calendar_view(sc, **_):
     # Amounts are display text now (a rate or dollars, by kind): keep them
     # right-aligned like the numbers they are.
     return scrollable(styled.set_properties(subset=["amount"], **{"text-align": "right"}))
+
+
+def _none_message(text: str) -> Markdown:
+    return Markdown(f"*{text}*")
+
+
+def show_ytd_view(sc, **_):
+    """
+    The scenario's year-to-date rows from the scenario connection ``sc``
+    (``sim ytd list`` as a table): year_to_date.csv's rows, then the scheduled
+    rows with a ``ytd_amount`` or ``ytd_preroll``, each with where it is defined.
+    """
+    from analysis.sim.notebook_ui.scenario_view import ytd_view
+
+    view = ytd_view(sc)
+    if view.empty:
+        return _none_message(f"No year-to-date rows in {sc.ref.name}.")
+    # escape="html" escapes the authored text before _breakable adds its <wbr>.
+    styled = view.style.hide(axis="index").format(
+        {c: _breakable for c in ("name", "from", "to", "tax_character", "description", "defined_in")},
+        escape="html")
+    styled = _fit_to_width(styled, nowrap=["source", "amount", "year"])
+    return scrollable(styled.set_properties(subset=["amount"], **{"text-align": "right"}))
+
+
+def _dollars(value) -> str:
+    return "error" if pd.isna(value) else f"${value:,.2f}"
+
+
+def _escaped(frame: pd.DataFrame):
+    """``frame`` styled with its cells and column labels shown as text, not HTML."""
+    return (frame.style.hide(axis="index")
+            .format(escape="html").format_index(escape="html", axis=1))
+
+
+def show_itemizations(sc, **_):
+    """
+    The itemizations the scenario connection ``sc`` can reference, with their
+    totals (``sim itemization list``), and below, one picked itemization's rows,
+    total and the cells referencing it (``sim itemization show``).
+    """
+    from analysis.sim.notebook_ui.scenario_view import itemization_detail, itemizations_view
+
+    view = itemizations_view(sc)
+    if view.empty:
+        return _none_message(f"No itemizations for {sc.ref.name}.")
+    shown = view.drop(columns=["error"]) if not view["error"].any() else view
+    styled = shown.style.hide(axis="index").format(
+        {"total": _dollars, "name": _breakable, "defined_in": _breakable}, escape="html")
+    table = scrollable(_fit_to_width(styled, nowrap=["rows", "total", "refs"]))
+    picker = widgets.Dropdown(options=list(view["name"]), description="Itemization")
+    out = scrollable_output()
+
+    def _redraw(*_):
+        detail = itemization_detail(sc, picker.value)
+        out.clear_output(wait=True)
+        with out:
+            total = (f"cannot be computed: {detail.error}" if detail.total is None
+                     else _dollars(detail.total))
+            display(Markdown(f"**@{html.escape(detail.name)}** ({html.escape(detail.defined_in)}), "
+                             f"total {html.escape(total)}"))
+            # An itemization's columns beyond Value are free text (ADR-003 §4.1c).
+            display(_escaped(detail.rows))
+            if detail.references.empty:
+                display(_none_message("Referenced by nothing."))
+            else:
+                display(Markdown("Referenced by:"))
+                display(_escaped(detail.references))
+
+    picker.observe(_redraw, names="value")
+    _redraw()
+    return widgets.VBox([table, picker, out])
+
+
+def show_tags(sc, **_):
+    """
+    Every tag in the scenario connection ``sc``, with the accounts, scheduled
+    rules and calendar rows carrying it (``sim tags`` and ``sim tags items``).
+    A calendar row is named by its month and its name, or its kind.
+    """
+    from analysis.sim.notebook_ui.scenario_view import tags_view
+
+    view = tags_view(sc)
+    if view.empty:
+        return _none_message(f"No tags in {sc.ref.name}.")
+
+    def lines(text: str) -> str:
+        # Names come from the data, so escape them before adding markup.
+        return "<br>".join(_breakable(html.escape(line)) for line in text.split("\n"))
+
+    styled = (view.style.hide(axis="index")
+              .set_table_styles([{"selector": "td", "props": [("vertical-align", "top")]}])
+              .format({c: lines for c in ("tag", "accounts", "scheduled", "calendar")}))
+    return scrollable(_fit_to_width(styled, nowrap=[]))

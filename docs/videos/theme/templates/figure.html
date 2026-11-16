@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{#
+  A picture a command made, with the command above it. Fields: heading
+  (the command, shown as typed), image (a data: URI; the builder fills it
+  from demo_image, a file setup.sh made, relative to the demo root).
+#}
+{% block style %}
+.figure { position: absolute; left: 120px; right: 120px; top: 90px; bottom: 190px;
+          display: flex; flex-direction: column; }
+.command { margin-top: 18px; font-family: var(--font-mono); font-size: 44px; color: var(--ink); }
+.command::before { content: "$ "; color: var(--accent); }
+.panel { flex: 1; min-height: 0; margin-top: 30px; padding: 28px; border-radius: 22px;
+         background: white; box-shadow: 0 12px 40px rgb(0 0 0 / 0.35);
+         display: flex; align-items: center; justify-content: center; }
+.panel img { max-width: 100%; max-height: 100%; object-fit: contain; }
+{% endblock %}
+{% block body %}
+<div class="ground"></div>
+<div class="figure">
+  <div class="series">{{ series }}</div>
+  <div class="command">{{ heading }}</div>
+  <div class="panel">{% if image %}<img src="{{ image }}" alt="">{% endif %}</div>
+</div>
+{% endblock %}

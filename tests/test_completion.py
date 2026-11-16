@@ -57,8 +57,13 @@ def test_rules_rows_and_persons(data_dir: Path) -> None:
     assert "salary_alice" in names.scheduled_names(data_dir, "retire_alice")
     # base's latent factors, inherited.
     assert "core_inflation" in names.calendar_row_names(data_dir, "retire_alice")
-    assert "prior_ordinary_wages" in names.ytd_names(data_dir, "retire_alice")
+    assert "prior_wages_alice" in names.ytd_names(data_dir, "retire_alice")
     assert {"alice", "bill"} <= set(names.person_ids(data_dir))
+
+
+def test_guard_rail_names(test_child_scenario: Path, test_data_dir: Path) -> None:
+    assert names.guard_rail_names(test_data_dir, "child") == [
+        "budget", "four_percent", "gk_lower", "gk_upper"]
 
 
 def test_series_names_by_kind(data_dir: Path) -> None:
@@ -103,6 +108,11 @@ def test_a_year_to_date_row_completes(data_dir: Path) -> None:
     ]
 
 
+def test_a_guard_rail_completes(data_dir: Path) -> None:
+    assert _complete(data_dir, "guard-rail edit --scenario retire_alice gk_") == ["gk_lower", "gk_upper"]
+    assert _complete(data_dir, "report guard-rails --scenario retire_alice --rail bu") == ["budget"]
+
+
 def test_account_completes_in_the_current_scenario(test_data_dir: Path) -> None:
     (test_data_dir / ".current_scenario").write_text("retire_alice\n", encoding="utf-8")
     assert "Asset_Checking" in _complete(test_data_dir, "account edit ")
@@ -130,10 +140,27 @@ def test_series_follows_the_aux_kind(data_dir: Path) -> None:
     assert "cpi" in inflation and "stock" not in inflation
 
 
+
+def test_an_emptied_series_completes_only_for_revert(test_data_dir: Path) -> None:
+    # #471: an empty file hides the inherited series; only revert can drop it.
+    (test_data_dir / "scenarios" / "retire_alice" / "series" / "inflation__food.csv").write_text(
+        "effective_date,annual_rate\n")
+    assert "food" not in _complete(test_data_dir, "series edit --scenario retire_alice ")
+    assert _complete(test_data_dir, "series revert --scenario retire_alice ") == ["food"]
+    assert _complete(test_data_dir, "series revert --scenario retire_alice --kind rate ") == []
+
 def test_ensemble_commands_complete_only_ensembles(test_data_dir: Path,
                                                    test_ensemble_scenario: str) -> None:
-    assert _complete(test_data_dir, "ensemble summary ") == [test_ensemble_scenario]
+    # The template ensembles (#282) are offered too: they run like any other.
+    assert _complete(test_data_dir, "ensemble summary ") == sorted([
+        test_ensemble_scenario, "t_inflation_current", "t_inflation_ensemble",
+        "t_market_current", "t_market_ensemble",
+    ])
     assert test_ensemble_scenario in _complete(test_data_dir, "run ")
+    # #296: edit completes like rename, over ensembles only.
+    assert _complete(test_data_dir, "ensemble edit ") == _complete(test_data_dir, "ensemble rename ")
+    assert "retire_alice" not in _complete(test_data_dir, "ensemble edit ")
+    assert "retire_alice" in _complete(test_data_dir, "scenario edit ")
 
 
 def test_tags_complete(test_data_dir: Path) -> None:
@@ -163,11 +190,13 @@ _NAMING_PARAMS = {
     "lot", "from_lot", "to_lot", "basis_of_lot", "source_lot", "refill_lot", "overflow_lot",
     "refill_chain", "overflow_chain", "scheduled_name", "row", "person", "owner",
     "series", "source_series", "symbol", "symbols", "tag_token", "tag_tokens",
-    "vary_correlate_with", "correlate_with",
+    "vary_correlate_with", "correlate_with", "strategy", "strategy_name", "target_set",
+    "jurisdiction",
 }
 # ... except where the command makes a new one (by the command's function,
 # as `sim accounts` repeats `sim account`).
-_NEW_NAMES = {("lot_add", "lot"), ("invest_command", "lot"), ("symbol_add_command", "symbol")}
+_NEW_NAMES = {("lot_add", "lot"), ("invest_command", "lot"), ("symbol_add_command", "symbol"),
+              ("series_add", "series"), ("tax_add_command", "jurisdiction")}
 
 
 def _params(command: click.Command, path: str) -> list[tuple[str, click.Command, click.Parameter]]:
@@ -186,3 +215,19 @@ def test_every_naming_param_completes() -> None:
         and not isinstance(param.type, NameType)
     ]
     assert missing == []
+
+
+def test_parents_completes_the_name_after_the_last_colon(data_dir: Path) -> None:
+    # #259: the whole value is one word, so each name in it completes.
+    assert _complete(data_dir, "scenario edit retire_alice --parents ba") == ["base"]
+    assert _complete(data_dir, "scenario edit retire_alice --parents base:t_great") == [
+        "base:t_great_inflation"]
+    assert "base:base" not in _complete(data_dir, "scenario edit retire_alice --parents base:")
+
+
+def test_draws_pair_completes_each_node(data_dir: Path) -> None:
+    # #330: --pair A,B is one word; each node in it completes, not twice.
+    line = "ensemble draws retire_alice --pair "
+    assert _complete(data_dir, f"{line}apparel_f") == ["apparel_factor,"]
+    assert _complete(data_dir, f"{line}apparel_factor,core_inf") == ["apparel_factor,core_inflation"]
+    assert "apparel_factor,apparel_factor" not in _complete(data_dir, f"{line}apparel_factor,")

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+from contextlib import closing
 import shutil
 import sqlite3
 from collections.abc import Callable
@@ -81,7 +82,7 @@ def test_load_retire_alice(tmp_path: Path) -> None:
         tax_priors = con.execute(
             "SELECT name, amount, tax_character, year FROM year_to_date ORDER BY name"
         ).fetchall()
-        assert len(tax_priors) == 3
+        assert len(tax_priors) == 4
         assert (
             "prior_ltcg_loss_carryforward", -150000, "ltcg", 2025
         ) in [tuple(r) for r in tax_priors]
@@ -143,7 +144,7 @@ def test_scenario_csv_with_the_retired_account_model_column_still_loads(
         encoding="utf-8",
     )
     result = load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir, allow_dirty_data=True)
-    with sqlite3.connect(result.intent_path) as con:
+    with closing(sqlite3.connect(result.intent_path)) as con:
         assert con.execute('SELECT start, "end" FROM scenario').fetchone() == (
             "2026-05-31", "2040-12-31",
         )
@@ -177,8 +178,8 @@ def test_sparse_child_inherits_parent_rows(tmp_path: Path) -> None:
         "account", "account_lot", "scheduled_transaction",
         "calendar_event", "year_to_date",
     )
-    with sqlite3.connect(current.intent_path) as current_con, \
-            sqlite3.connect(tight.intent_path) as tight_con:
+    with closing(sqlite3.connect(current.intent_path)) as current_con, \
+            closing(sqlite3.connect(tight.intent_path)) as tight_con:
         for table in tables:
             current_count = current_con.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
             tight_count = tight_con.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
@@ -235,7 +236,7 @@ def test_scenario_ref_locates_paths_and_git_head(tmp_path: Path) -> None:
     ref.runs_dir.mkdir(parents=True)
     for name in ["2026-01-01T000000Z_retire_alice_abc1234.sqlite3",
                  "2026-06-01T000000Z_other_abc1234.sqlite3"]:
-        (ref.runs_dir / name).touch()
+        (ref.runs_dir / name).write_bytes(b"x")
 
     reloaded = resolve_scenario_name(repo, "retire_alice")
     assert reloaded.loaded
@@ -251,7 +252,7 @@ def test_scenario_ref_falls_back_to_ensemble_member_zero(tmp_path: Path) -> None
     repo = tmp_path / "data"
     shutil.copytree(PROTOTYPE, repo)
     ref = resolve_scenario_name(repo, "retire_alice")
-    batch_dir = ref.runs_dir / "retire_alice" / "2026-01-01T000000Z"
+    batch_dir = ref.runs_dir / "retire_alice" / "monte-carlo" / "2026-01-01T000000Z"
     batch_dir.mkdir(parents=True)
     (batch_dir / "member_0000.sqlite3").touch()
     (batch_dir / "member_0001.sqlite3").touch()
@@ -480,7 +481,7 @@ def test_each_retirement_lot_grows_from_its_own_shelter(
                 opening_balance="0.00")
     pd.concat([lots, pd.DataFrame([lot])]).to_csv(lots_path, index=False)
 
-    with sqlite3.connect(load_test_copy().intent_path) as con:
+    with closing(sqlite3.connect(load_test_copy().intent_path)) as con:
         rules = dict(con.execute(
             "SELECT s.name, c.name || ':' || s.tax_character FROM scheduled_transaction s "
             "JOIN chain c ON c.id = s.from_account WHERE s.name IN (?, ?)",
@@ -692,6 +693,7 @@ def _git_init_commit(repo: Path) -> None:
     r.git.add(A=True)
     with r.config_writer() as cw:
         cw.set_value("commit", "gpgsign", "false")
+        cw.set_value("tag", "gpgsign", "false")
     actor = git.Actor("t", "t@t")
     r.index.commit("init", author=actor, committer=actor)
 
@@ -2061,17 +2063,17 @@ def test_month_columns_accept_year_month_and_land_on_month_end(
     write_aux("inflation__cpi.csv", "effective_date,annual_rate\n2021-01,1.4%\n")
     result = load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir,
                            allow_dirty_data=True)
-    con = sqlite3.connect(result.intent_path)
-    assert con.execute('SELECT start, "end" FROM scenario').fetchone() == ("2026-05-31", "2040-12-31")
-    assert con.execute(
-        "SELECT start, base_date FROM scheduled_transaction WHERE name = 'salary_alice'"
-    ).fetchone() == ("2026-05-31", "2026-05-31")
-    assert ("2029-03-31",) in con.execute(
-        "SELECT date FROM calendar_event WHERE scheduled_name = 'salary_bill'"
-    ).fetchall()
-    assert con.execute(
-        "SELECT effective_date FROM aux_table WHERE kind = 'inflation' AND series = 'cpi'"
-    ).fetchall() == [("2021-01-31",)]
+    with closing(sqlite3.connect(result.intent_path)) as con:
+        assert con.execute('SELECT start, "end" FROM scenario').fetchone() == ("2026-05-31", "2040-12-31")
+        assert con.execute(
+            "SELECT start, base_date FROM scheduled_transaction WHERE name = 'salary_alice'"
+        ).fetchone() == ("2026-05-31", "2026-05-31")
+        assert ("2029-03-31",) in con.execute(
+            "SELECT date FROM calendar_event WHERE scheduled_name = 'salary_bill'"
+        ).fetchall()
+        assert con.execute(
+            "SELECT effective_date FROM aux_table WHERE kind = 'inflation' AND series = 'cpi'"
+        ).fetchall() == [("2021-01-31",)]
 
 
 def test_month_column_that_is_not_a_month_is_reported(
@@ -2096,11 +2098,11 @@ def test_vary_date_bounds_bare_month_spans_the_month_full_date_is_exact(
     )
     result = load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir,
                            allow_dirty_data=True)
-    con = sqlite3.connect(result.intent_path)
-    assert con.execute(
-        "SELECT date, vary_low, vary_mode, vary_high FROM calendar_event "
-        "WHERE name = 'retire_bill_vary'"
-    ).fetchone() == ("2029-06-30", "2029-01-01", "2029-06-15", "2029-12-10")
+    with closing(sqlite3.connect(result.intent_path)) as con:
+        assert con.execute(
+            "SELECT date, vary_low, vary_mode, vary_high FROM calendar_event "
+            "WHERE name = 'retire_bill_vary'"
+        ).fetchone() == ("2029-06-30", "2029-01-01", "2029-06-15", "2029-12-10")
 
 
 def test_malformed_month_is_a_load_error_not_a_crash(
@@ -2136,16 +2138,16 @@ def test_biweekly_dates_keep_their_day(
                    cadence="biweekly", start="2026-05-08", end="2030-06-12")
     result = load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir,
                            allow_dirty_data=True)
-    con = sqlite3.connect(result.intent_path)
-    assert dict(
-        (name, (start, end)) for name, start, end in con.execute(
-            'SELECT name, start, "end" FROM scheduled_transaction '
-            "WHERE name IN ('salary_alice', 'salary_bill')"
-        )
-    ) == {
-        "salary_alice": ("2026-05-15", "2030-06-30"),
-        "salary_bill": ("2026-05-08", "2030-06-12"),
-    }
+    with closing(sqlite3.connect(result.intent_path)) as con:
+        assert dict(
+            (name, (start, end)) for name, start, end in con.execute(
+                'SELECT name, start, "end" FROM scheduled_transaction '
+                "WHERE name IN ('salary_alice', 'salary_bill')"
+            )
+        ) == {
+            "salary_alice": ("2026-05-15", "2030-06-30"),
+            "salary_bill": ("2026-05-08", "2030-06-12"),
+        }
 
 
 def test_biweekly_start_needs_a_full_date(
@@ -2164,10 +2166,10 @@ def test_retire_scheduled_date_keeps_its_day(
     append_calendar_row(date="2029-03-12", kind="retire_scheduled", scheduled_name="salary_bill")
     result = load_scenario(test_data_dir, "retire_alice", intent_dir=intent_dir,
                            allow_dirty_data=True)
-    con = sqlite3.connect(result.intent_path)
-    assert ("2029-03-12",) in con.execute(
-        "SELECT date FROM calendar_event WHERE kind = 'retire_scheduled'"
-    ).fetchall()
+    with closing(sqlite3.connect(result.intent_path)) as con:
+        assert ("2029-03-12",) in con.execute(
+            "SELECT date FROM calendar_event WHERE kind = 'retire_scheduled'"
+        ).fetchall()
 
 
 def test_vary_date_bound_rejects_iso_week_date(
@@ -2225,3 +2227,57 @@ def test_an_account_defined_by_unrelated_scenarios_gets_a_hint(
                "default (scenarios/retire_alice/account_lots.csv line 4)" in i for i in issues)
     assert ("(Asset_Brokerage_Joint): the account is defined in both retire_alice and side, "
             "which doesn't build on retire_alice") in "\n".join(issues)
+
+
+@pytest.mark.parametrize(("cells", "message"), [
+    ("8500,,,90000,,,,,,", "phaseout_end need a phaseout_start"),
+    ("8500,5000,,,,,,,,", "floor need a phaseout_start"),
+    ("8500,,,,,500,,,,", "phaseout_step need a phaseout_start"),
+    ("8500,,80000,,,,,,,", "not both or neither"),
+    ("8500,,80000,90000,10%,,,,,", "not both or neither"),
+    ("8500,,80000,70000,,,,,,", "phaseout_end is below phaseout_start"),
+    ("8500,,80000,,0%,,,,,", "phaseout_rate must be more than 0%"),
+    ("8500,,80000,,10%,0,,,,", "phaseout_step must be more than 0, with a phaseout_rate"),
+    ("8500,9000,80000,,10%,,,,,", "floor is above amount"),
+    ("8500,-1,80000,,10%,,,,,", "floor must not be negative"),
+    ("8500,,,,,,federal,,,", "phaseout_agi need a phaseout_start"),
+    ("8500,,80000,,10%,,magi,,,", "phaseout_agi 'magi' must be one of state, federal"),
+    ("8500,,80000,90000,,,,cpi,,", "must name the same series, or both be blank"),
+    ("8500,,80000,90000,,,,cpi,other,", "must name the same series, or both be blank"),
+    ("8500,,80000,90000,,500,,,,", "phaseout_step must be more than 0, with a phaseout_rate"),
+    ("8500,,80000,,10%,,,,,5", "phaseout_steps must be a whole number of steps"),
+    ("8500,,80000,90000,,,,,,0", "phaseout_steps must be a whole number of steps"),
+    ("8500,,80000,90000,,,,,,2.5", "phaseout_steps must be a whole number of steps"),
+    ("8500,,,,,,,,,5", "phaseout_steps need a phaseout_start"),
+])
+def test_state_standard_deduction_phase_out_is_checked(
+    write_aux: Callable[[str, str], Path], load_test_copy: Callable[[], LoadResult],
+    cells: str, message: str,
+) -> None:
+    """A state_standard_deduction row shrinks with income one way (#578)."""
+    write_aux("state_standard_deduction__CA.csv",
+              "effective_date,filing_status,amount,floor,phaseout_start,phaseout_end,"
+              "phaseout_rate,phaseout_step,phaseout_agi,phaseout_start_series,"
+              f"phaseout_end_series,phaseout_steps\n2020-01-31,MFJ,{cells}\n")
+    with pytest.raises(LoadError, match=message):
+        load_test_copy()
+
+
+@pytest.mark.parametrize(("cells", "message"), [
+    ("150%,,,", "exclusion_percent must be 0% to 100%"),
+    ("100%,,90000,", "need a phaseout_start"),
+    ("100%,80000,,", "not both or neither"),
+    ("100%,80000,90000,10%", "not both or neither"),
+    ("100%,80000,70000,", "phaseout_end is below phaseout_start"),
+    ("100%,80000,,0%", "phaseout_rate must be more than 0%"),
+])
+def test_state_social_security_table_is_checked(
+    write_aux: Callable[[str, str], Path], load_test_copy: Callable[[], LoadResult],
+    cells: str, message: str,
+) -> None:
+    """A state_social_security row phases its exclusion out one way (#484)."""
+    write_aux("state_social_security__CA.csv",
+              "effective_date,filing_status,exclusion_percent,phaseout_start,phaseout_end,"
+              f"phaseout_rate\n2020-01-31,MFJ,{cells}\n")
+    with pytest.raises(LoadError, match=message):
+        load_test_copy()

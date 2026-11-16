@@ -8,17 +8,40 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 
+import matplotlib
 import pandas as pd
 from matplotlib.axes import Axes
+from matplotlib.dates import date2num
 from matplotlib.ticker import FuncFormatter
+
+from analysis.sim.types import Death
 
 FRAME_ALPHA = 0.8
 """Alpha transparency for legend frames."""
+
+# The ensemble-analysis charts' palette (sensitivity and draws), here so the
+# widget-free chart modules and the widgets share it.
+CATEGORICAL = ("#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300", "#4a3aa7", "#e34948")
+"""Validated categorical order (dataviz reference palette; CVD-checked)."""
+INK, MUTED, GRID = "#0b0b0b", "#898781", "#e1e0d9"
+"""Text and marks; secondary text and axes; gridlines."""
 
 
 def dollar_formatter() -> FuncFormatter:
     """A matplotlib tick formatter rendering values as ``$1,234``."""
     return FuncFormatter(lambda v, _: f"${v:,.0f}")
+
+
+def group_colors(count: int) -> list[str]:
+    """Colors for ``count`` groups that have no fixed color (accounts, tags):
+    matplotlib's cycle, or tab20 when there are more groups than it has, so a
+    long list doesn't repeat. One rule, so a group list gets the same colors
+    in every chart that draws it."""
+    cycle = matplotlib.rcParams["axes.prop_cycle"].by_key()["color"]
+    if count > len(cycle):
+        cmap = matplotlib.colormaps["tab20"]
+        cycle = [matplotlib.colors.to_hex(cmap(i)) for i in range(20)]
+    return [cycle[i % len(cycle)] for i in range(count)]
 
 
 def include_zero(ax: Axes, *, margin: float = 0.05) -> None:
@@ -48,6 +71,35 @@ def include_zero(ax: Axes, *, margin: float = 0.05) -> None:
         lo -= pad
         hi += pad
     ax.set_ylim(lo, hi)
+
+
+def mark_deaths(
+    ax: Axes, deaths: Sequence[Death], *, years: Sequence[object] | None = None,
+) -> None:
+    """A dashed red vertical line at each death (#255), at the end of the
+    final month; dashed because the date is an assumption, not a fact.
+    On a bar chart of years, ``years`` are the bars' labels in order, and a
+    death falls within its year's bar. A death outside the axis's range is
+    left out, and the limits stay where the data put them. The lines stay out
+    of the legend (Bob: a reminder of mortality in every legend is too much);
+    the docs explain them once."""
+    if not deaths:
+        return
+    xlim, ylim = ax.get_xlim(), ax.get_ylim()
+    keys = [str(y) for y in years] if years is not None else []
+    for death in deaths:
+        if years is None:
+            x = float(date2num(death.month))
+        elif str(death.month.year) in keys:
+            x = keys.index(str(death.month.year)) + (death.month.month - 6.5) / 12
+        else:
+            continue
+        if not min(xlim) <= x <= max(xlim):
+            continue
+        # No label: matplotlib's default one starts with "_", which a legend skips.
+        ax.axvline(x, color="red", linewidth=1.2, zorder=2.6, linestyle="--")
+    ax.set_xlim(xlim)
+    ax.set_ylim(ylim)
 
 
 def _new_axes() -> Axes:

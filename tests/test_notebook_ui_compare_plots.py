@@ -70,20 +70,6 @@ def test_net_worth_by_month_treats_a_scenario_without_rows_as_zero() -> None:
     assert summary.loc["variant", "break-even"] == "never"
 
 
-def test_breakeven_month_never_ahead_returns_none() -> None:
-    idx = pd.date_range("2026-01-31", periods=3, freq="ME")
-    series = pd.Series([-1.0, -2.0, -3.0], index=idx)
-
-    assert cp.breakeven_month(series) is None
-
-
-def test_breakeven_month_finds_first_month_that_stays_ahead() -> None:
-    idx = pd.date_range("2026-01-31", periods=4, freq="ME")
-    series = pd.Series([-1.0, 1.0, -1.0, 1.0], index=idx)
-
-    assert cp.breakeven_month(series) == idx[3]
-
-
 def test_breakeven_summary_reports_deficit_and_final_values() -> None:
     idx = pd.date_range("2026-01-31", periods=3, freq="ME")
     nw = pd.DataFrame({"base": [100.0, 100.0, 100.0], "variant": [90.0, 95.0, 105.0]}, index=idx)
@@ -94,45 +80,6 @@ def test_breakeven_summary_reports_deficit_and_final_values() -> None:
 
     assert summary.loc["variant", "final net worth"] == 105.0
     assert summary.loc["variant", "deepest deficit"] == -10.0
-
-
-def test_filter_comparisons_drops_pairs_with_missing_scenarios() -> None:
-    comparisons = {"group": {"a vs b": ("a", "b"), "a vs c": ("a", "c")}}
-
-    result = cp.filter_comparisons(comparisons, ["a", "b"])
-
-    assert result == {"group": {"a vs b": ("a", "b")}}
-
-
-def test_comparison_frame_computes_pairwise_differences() -> None:
-    idx = pd.date_range("2026-01-31", periods=2, freq="ME")
-    nw = pd.DataFrame({"a": [10.0, 20.0], "b": [4.0, 5.0]}, index=idx)
-    comparisons = {"group": {"a minus b": ("a", "b")}}
-
-    frame = cp.comparison_frame(nw, comparisons)
-
-    assert list(frame["a minus b"]) == [6.0, 15.0]
-
-
-def test_has_any_comparisons() -> None:
-    assert cp.has_any_comparisons({"group": {"label": ("a", "b")}})
-    assert not cp.has_any_comparisons({"group": {}})
-    assert not cp.has_any_comparisons({})
-
-
-def test_comparison_frame_keeps_index_when_no_comparisons_survive_filtering() -> None:
-    from analysis.sim.connection import year_end_values
-
-    idx = pd.date_range("2026-01-31", periods=2, freq="ME")
-    nw = pd.DataFrame({"a": [10.0, 20.0], "b": [4.0, 5.0]}, index=idx)
-    comparisons = cp.filter_comparisons({"group": {"a minus c": ("a", "c")}}, ["a", "b"])
-
-    frame = cp.comparison_frame(nw, comparisons)
-
-    assert not cp.has_any_comparisons(comparisons)
-    assert list(frame.columns) == []
-    assert list(frame.index) == list(idx)
-    year_end_values(frame)  # must not raise
 
 
 def test_warning_html_escapes_and_formats() -> None:
@@ -268,3 +215,82 @@ def test_account_balance_diffs_show_accounts_an_empty_scenario_lacks_as_zero(
             dollar_mode=dollar_mode,
         )
         dollar_mode.value = DollarMode.CPI_CONSTANT  # redraws; the empty run has no CPI rows
+
+
+def test_guard_rails_compare_widget_shows_each_rail_by_scenario(
+    retire_alice_run: RunConnection, variant_a_run: RunConnection, monkeypatch,
+) -> None:
+    """variant_a inherits retire_alice's rails: per rail a table of both
+    scenarios' margins and a Δ, then the summary, redrawn on each control."""
+    shown: list = []
+    monkeypatch.setattr(cp, "display", lambda *args, **kwargs: shown.extend(args))
+    container = MultiScenarioConnections(
+        connections={"retire_alice": retire_alice_run, "variant_a": variant_a_run},
+        baseline="retire_alice", variants=["variant_a"],
+        colors={"retire_alice": "C0", "variant_a": "C1"},
+    )
+    time_range = TimeRangePicker()
+    widget = cp.guard_rails_compare_widget(container, time_range=time_range)
+    controls, _output = widget.children
+    dollar_mode, picked = controls.children
+    assert picked is time_range and dollar_mode.value == DollarMode.CPI_CONSTANT
+    tables = [item.data for item in shown if hasattr(item, "data") and hasattr(item.data, "columns")]
+    assert list(tables[0].columns) == ["retire_alice", "variant_a", "Δ variant_a",
+                                       "retire_alice cum", "variant_a cum", "Δ variant_a cum"]
+    assert (tables[0]["Δ variant_a"].abs() < 0.01).all()
+    assert tables[-1]["scenario"].tolist()[:2] == ["retire_alice", "variant_a"]
+
+    from analysis.sim import guard_rails
+    evaluated: list[str] = []
+    real_evaluate = guard_rails.evaluate_run
+    monkeypatch.setattr(guard_rails, "evaluate_run",
+                        lambda rc, *args: evaluated.append(rc) or real_evaluate(rc, *args))
+    shown.clear()
+    time_range.value = (2035, 2036)
+    tables = [item.data for item in shown if hasattr(item, "data") and hasattr(item.data, "columns")]
+    assert list(tables[0].index) == [2035, 2036]
+    assert not evaluated  # the years only clip what was found
+    shown.clear()
+    dollar_mode.value = DollarMode.NOMINAL  # must not raise
+    assert shown
+    assert len(evaluated) == 2  # new dollars: each scenario's rails afresh
+
+
+def test_guard_rails_compare_takes_each_rails_sense_as_the_chart_does() -> None:
+    """Rails match by name; when a variant redefines one with the other
+    sense, the tables color by the baseline's, as the chart tints."""
+    from types import SimpleNamespace
+
+    def result(name: str, sense: str, applies: bool = True) -> SimpleNamespace:
+        return SimpleNamespace(rail=SimpleNamespace(name=name, sense=sense), applies=applies)
+
+    results = {
+        "base": [result("four_percent", "negative"), result("floor", "negative", applies=False)],
+        "variant": [result("four_percent", "positive"), result("floor", "positive"),
+                    result("own", "positive")],
+    }
+    assert cp._rail_senses(results, ["base", "variant"]) == {  # ty: ignore[invalid-argument-type]: stand-in results
+        "four_percent": "negative", "floor": "positive", "own": "positive"}
+
+
+def test_guard_rails_compare_past_color_leaves_deltas_plain() -> None:
+    assert cp._past_color(-1.0, "four_percent", "negative") == "color: #d03b3b"
+    assert cp._past_color(-1.0, "gk_lower cum", "positive") == "color: #2a78d6"
+    assert cp._past_color(-1.0, "Δ variant", "negative") == ""
+    assert cp._past_color(1.0, "four_percent", "negative") == ""
+
+
+def test_ss_and_tax_widgets_take_what_show_passes(
+    retire_alice_run: RunConnection, variant_a_run: RunConnection,
+) -> None:
+    """#335, #336: shown with ``CONNECTIONS.show``, a widget gets the
+    container's context keywords (baseline, connections, member, ...) as
+    well as the notebook's shared controls."""
+    container = _two_runs(retire_alice_run, variant_a_run)
+    dollar_mode, time_range = DollarModePicker(), TimeRangePicker()
+    for widget in (cp.ss_gross_widget, cp.tax_impact_widget):
+        assert container._invoke(widget, member=None, dollar_mode=dollar_mode,
+                                 time_range=time_range) is not None
+    dollar_mode.value = DollarMode.CPI_CONSTANT  # redraws both; must not raise
+    years = run_years(*container.connections.values())
+    time_range.value = (years[0], years[0])

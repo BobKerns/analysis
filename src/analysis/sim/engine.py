@@ -23,19 +23,22 @@ end -- see ``_settle_accounts``.
 from __future__ import annotations
 
 import calendar
-import functools
 import json
+import bisect
+import itertools
 import warnings
-from collections import Counter
-from dataclasses import dataclass
-from collections.abc import Callable, Collection, Mapping, Sequence
+from collections import defaultdict
+from contextvars import ContextVar
+from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any, NamedTuple
 
-from analysis.sim import registries, units
+from analysis.sim import ownership, registries, strategy_api, tax_api, tax_code, units
+from analysis.sim.dates import add_month_ends
 from analysis.sim.runs import finalize_run, open_run_file
 from analysis.sim.schema import inserted_id
+from analysis.sim.strategy_runtime import StrategyRuntime
 
 __all__ = ["run_scenario", "EngineError"]
 
@@ -46,7 +49,7 @@ class EngineError(RuntimeError):
 
 SUPPORTED_RULE_KINDS = frozenset(
     {"fixed_amount", "percent_of_balance",
-    "mortgage_payment", "ss_benefit", "rmd", "tax_accumulator", "on_death", "fill_bracket", "irmaa"}
+    "mortgage_payment", "ss_benefit", "rmd", "on_death", "fill_bracket", "irmaa"}
 )
 
 SUPPORTED_CALENDAR_KINDS = frozenset(
@@ -72,13 +75,17 @@ def run_scenario(
     allow_dirty_code: bool = False,
     run_args: dict[str, Any] | None = None,
     engine_options: dict[str, Any] | None = None,
+    reserved: bool = False,
 ) -> Path:
     con = open_run_file(
         run_path, intent_path,
         run_by=run_by,
         allow_dirty_data=allow_dirty_data, allow_dirty_code=allow_dirty_code,
-        run_args=run_args, engine_options=engine_options,
+        run_args=run_args, engine_options=engine_options, reserved=reserved,
     )
+    strategy_runtime: StrategyRuntime | None = None
+    tax_kinds: tax_code.TaxKinds | None = None
+    kinds_token = None
     try:
         scenario = con.execute(
             'SELECT start, "end" FROM scenario'
@@ -109,7 +116,6 @@ def run_scenario(
         account_kinds: dict[int, str] = {r[0]: r[4] for r in lots}
         account_subkind: dict[int, str] = {r[0]: r[5] for r in lots}
         account_tax_treatment: dict[int, str | None] = {r[0]: r[6] for r in lots}
-        account_owner: dict[int, str | None] = {r[0]: r[7] for r in lots}
         quantities: dict[int, int | None] = {r[0]: r[8] for r in lots}
         # A lot declared up front for a future purchase starts with no basis.
         for r in lots:
@@ -126,7 +132,17 @@ def run_scenario(
         for lot_id, owner in lot_account_name.items():
             lots_by_account.setdefault(owner, []).append(lot_id)
         growth_names = {c.name for c in registries.GROWTH_COUNTERPARTY_ACCOUNTS.values()}
-        growth_sources = frozenset(r[0] for r in lots if r[9] in growth_names)
+        # An untaxed lot's payouts (#547) are growth for its basis, though
+        # they buy shares.
+        sheltered_names = {c.name for c in registries.SHELTERED_PAYOUT_ACCOUNTS.values()}
+        share_sources = frozenset(r[0] for r in lots if r[9] in sheltered_names)
+        growth_sources = frozenset(r[0] for r in lots if r[9] in growth_names) | share_sources
+        # A strategy's view of a lot's return counts the dividends and
+        # interest it reinvests (#468) as well as its appreciation.
+        payout_names = {c.name for c in (*registries.PAYOUT_ACCOUNTS.values(),
+                                         *registries.MUNI_PAYOUT_ACCOUNTS.values(),
+                                         *registries.HSA_PAYOUT_ACCOUNTS.values())}
+        return_sources = growth_sources | frozenset(r[0] for r in lots if r[9] in payout_names)
         account_id_by_name: dict[str, int] = {
             r[0]: r[1] for r in con.execute(
                 "SELECT name, lot_id FROM chain WHERE lot_id IS NOT NULL"
@@ -143,6 +159,7 @@ def run_scenario(
                 "SELECT person, final_month FROM person_lifespan"
             )
         }
+        rule_lifespan = _rule_lifespans(con, person_lifespan)
         # A pseudo-person such as `joint` may have no birthdate (#217).
         person_birthdates: dict[str, date] = {
             r[0]: _parse_date(r[1])
@@ -154,26 +171,31 @@ def run_scenario(
         } or set(person_birthdates)
         txns: list[list[Any]] = [
             list(r) for r in con.execute(
-                'SELECT id, name, from_account, to_account, cadence, month_of_year, '
-                '       amount_rule_kind, interest_account, person, series, '
-                '       rate_micros, claim_age, amount_cents, params_json, '
-                '       tax_character, tax_year, start, "end", priority, base_date, '
-                '       ytd_amount, ytd_preroll, inflation_cadence '
-                'FROM scheduled_transaction '
-                'ORDER BY priority, id'
+                f"SELECT {', '.join(f'"{c}"' for c in Txn._fields)} "
+                "FROM scheduled_transaction ORDER BY priority, id"
             ).fetchall()
         ]
-        # A fill_bracket conversion runs after everything else in its month
-        # (#252): the year's RMD has to come out first (an RMD can't be
-        # converted), and its target needs the year's whole income.
-        txns.sort(key=lambda r: r[6] == "fill_bracket")
+        # A month posts in registries.MONTH_PHASES order: its rules (by
+        # priority among themselves), the tax settlement (None here), then
+        # fill_bracket's conversions.
+        month_steps: list[list[Any] | None] = [
+            step for phase in registries.MONTH_PHASES
+            for step in ([None] if phase == "tax_settlement"
+                         else [t for t in txns if _month_phase(t) == phase])
+        ]
         txn_by_name: dict[str, list[Any]] = {
             r[1]: r for r in txns
         }
-        tax_rules: list[tuple[str, dict[str, Any]]] = [
-            (r[1], json.loads(r[13]) if r[13] else {}) for r in txns
-            if r[6] == "tax_accumulator"
-        ]
+        jurisdictions = _tax_jurisdictions(con)
+        tax_rules: Jurisdictions = {j.name: TaxRule(j.kind, j.params, j.id) for j in jurisdictions}
+        # The data repo's calculators (#510), a fresh copy for this run, so
+        # nothing a module keeps carries into the next run or member.
+        tax_sources = tax_code.read_snapshot(con)
+        if tax_sources:
+            tax_kinds = tax_code.TaxKinds(tax_sources, fresh=True)
+            if tax_kinds.problems:
+                raise EngineError("\n".join(tax_kinds.problems))
+        kinds_token = _RUN_TAX_KINDS.set(tax_kinds.kinds if tax_kinds is not None else None)
 
         year_to_date_rows = con.execute(
             "SELECT id, from_lot_id, to_lot_id, amount, tax_character, year "
@@ -186,12 +208,13 @@ def run_scenario(
         # outside the scenario's range or of an unsupported kind can't slip
         # through unnoticed.
         unresolved = con.execute(
-            "SELECT id, name FROM calendar_event WHERE vary_distribution IS NOT NULL"
+            "SELECT id, name FROM calendar_event "
+            "WHERE vary_distribution IS NOT NULL OR vary_resume IS NOT NULL"
         ).fetchall()
         if unresolved:
             names = ", ".join(repr(name or f"id={ev_id}") for ev_id, name in unresolved)
             raise EngineError(
-                f"calendar_event(s) still have vary_distribution set: {names} -- "
+                f"calendar_event(s) still have vary_distribution or vary_resume set: {names} -- "
                 "an ensemble recipe must be resolved (the 'vary' step) before it can be run"
             )
 
@@ -211,21 +234,55 @@ def run_scenario(
             chain_graph, aux, _parse_date(start_s), inflation_factor_cache,
             account_tax_treatment, account_subkind, account_name, cost_bases,
             quantities, growth_sources, acquired,
+            share_sources=share_sources,
             chain_name=dict(con.execute("SELECT id, name FROM chain").fetchall()),
             roth=_roth_lots(con, person_birthdates),
+            hsa=frozenset(lot for lot, subkind in account_subkind.items()
+                          if subkind == "hsa" and account_kinds[lot] == "asset"),
         )
+        # Each tax year's tax with more income on top, by (scope, year): the
+        # after-tax drawdown is priced against the years after it once the run
+        # has them (#404).
+        drawdown_pricing: dict[tuple[str, int], DrawdownPricing] = {}
         # A Roth lot tracks its basis (contributions and conversions), which
         # comes out tax-free whatever the clock says. A blank opening basis
         # takes the whole opening balance as basis.
-        for lot_id in refill_ctx.roth:
+        # So does an HSA lot (#497): contributions and reinvested payouts,
+        # which a state that doesn't recognize HSAs has taxed already. A
+        # blank opening basis takes the opening balance, as that state never
+        # taxed the growth before the run either.
+        for lot_id in (*refill_ctx.roth, *refill_ctx.hsa):
             if cost_bases.get(lot_id) is None:
                 cost_bases[lot_id] = balances.get(lot_id, 0)
+        roth = refill_ctx.roth
+        txn_by_id = {r[0]: r for r in txns}
+        strategy_runtime = StrategyRuntime(
+            con, balances=balances, cost_bases=cost_bases,
+            minimum_of=chain_graph.minimum_of, leaf_lot=chain_graph.leaf_lot,
+            members=chain_graph.members,
+            roth_qualified=lambda lot, on: _roth_qualified(roth[lot], on) if lot in roth else None,
+            end=months[-1],
+            rule_budget=lambda tid, on: _rule_year_budget(
+                Txn._make(txn_by_id[tid]), on, aux, inflation_factor_cache, rule_lifespan, months[-1],
+            ),
+            growth_sources=return_sources, opening_balances=balances, first_month=months[0],
+            acquired=acquired, roth_lots=roth,
+        )
+        refill_ctx.strategies = strategy_runtime or None
 
         irmaa = IrmaaContext(
             aux, inflation_factor_cache, start_year=_parse_date(start_s).year,
             prior_magi=_prior_magi(con), person_lifespan=person_lifespan,
             taxpayers=taxpayers, rules=[r for r in txns if r[6] == "irmaa"],
         )
+        if strategy_runtime:
+            # ctx.tax (#421): the estimator the settlement uses, as fill_bracket does.
+            strategy_runtime.tax = _StrategyTax(
+                con, [(j.id, j.name, j.kind, j.params) for j in jurisdictions], tax_rules,
+                aux=aux, person_lifespan=person_lifespan, taxpayers=taxpayers, irmaa=irmaa,
+            )
+
+        step_ups = _basis_step_ups(con)
 
         skipped_counts: dict[str, int] = {}
         applied_event_ids: set[int] = set()
@@ -256,9 +313,10 @@ def run_scenario(
                     continue
                 if not (month_start_s <= ev_date <= month_s):
                     continue
-                if ev_kind == registries.LATENT_FACTOR_KIND:
-                    # ADR-008: a correlation anchor for the ensemble's draws,
-                    # with no effect of its own -- not an unsupported kind.
+                if ev_kind in registries.INERT_CALENDAR_KINDS:
+                    # A correlation anchor (ADR-008) or a date marker (#281):
+                    # read by the ensemble step and the loader, with no effect
+                    # of its own -- not an unsupported kind.
                     applied_event_ids.add(ev_id)
                     continue
                 if ev_kind not in SUPPORTED_CALENDAR_KINDS:
@@ -290,10 +348,46 @@ def run_scenario(
             _advance_inflation_indexes(
                 con, step_id, month_s, aux, inflation_indexes,
             )
+            if strategy_runtime:
+                def post_move(move, frm, to, cents, in_kind, decision_id, s=step_id, m=month_s):
+                    return _post_strategy_move(
+                        con, balances, account_kinds, s, m, refill_ctx, move, frm, to, cents,
+                        in_kind=in_kind, decision_id=decision_id,
+                    )
+
+                strategy_runtime.note_cpi(month, inflation_indexes.get("cpi"))
+                # Triggered rails are judged on the year just ended, and a
+                # strategy answers before year_start, so what it sets in
+                # memory steers the year (#441).
+                strategy_runtime.breaches(con, step_id, month, post_move)
+                # A spending strategy sets the year's course before any rule posts (#387).
+                strategy_runtime.year_start(con, step_id, month)
+                strategy_runtime.month_start(con, step_id, month, post_move)
 
             opening_balances = dict(balances)
 
-            for txn in txns:
+            def settle_taxes(step_id=step_id, month_s=month_s, month=month) -> None:
+                shared: _SharedPrepares = {}
+                for j in jurisdictions:
+                    if _tax_settles(j, month):
+                        _settle_tax(
+                            con, balances, account_kinds, step_id, month_s, month,
+                            j.params, kind=j.kind, jurisdictions=tax_rules,
+                            from_id=chain_graph.leaf_lot.get(j.source_chain),
+                            to_id=_tax_destination(chain_graph, j), aux=aux,
+                            tax_char="none", tid=j.id, graph=chain_graph,
+                            source_chain_id=j.source_chain,
+                            account_tax_treatment=account_tax_treatment,
+                            account_subkind=account_subkind, account_name=account_name,
+                            person_lifespan=person_lifespan, taxpayers=taxpayers,
+                            refill_ctx=refill_ctx, drawdown_pricing=drawdown_pricing,
+                            shared=shared,
+                        )
+
+            for txn in month_steps:
+                if txn is None:
+                    settle_taxes()
+                    continue
                 (tid, _name, frm, to_chain, cadence, moy, rule_kind,
                  p_interest_acct, p_person, p_series, p_rate_micros,
                  p_claim_age, p_amount_cents, ext_json,
@@ -311,27 +405,10 @@ def run_scenario(
                         f"scheduled_transaction id={tid}: interior chain destination "
                         "is only supported for fixed_amount rules"
                     )
-                if month_s < t_start:
-                    continue
-                if t_end is not None and month_s > t_end:
-                    continue
-                # percent_of_balance is asset growth (ADR-003 §2.2: "an asset
-                # account's growth is a property of the account"), never a
-                # personal service tied to the living owner -- an IRA/checking
-                # balance keeps earning interest/appreciating after its owner's
-                # death, so it's exempt from lifespan gating. on_death is the
-                # rule kind that FIRES on the death transition itself, so it
-                # must not be suppressed by the very gating it triggers.
-                if (
-                    person_lifespan and rule_kind not in ("percent_of_balance", "on_death")
-                    and _past_person_lifespan(
-                        month_s, p_person, from_account or frm, to, account_owner, person_lifespan,
-                    )
-                ):
-                    continue
-                fire_count = _cadence_count(
-                    cadence, moy, month,
-                    rule_start, rule_end,
+                fire_count = _rule_fire_count(
+                    month, rule_kind=rule_kind, cadence=cadence, month_of_year=moy,
+                    person=p_person, start=t_start, end=t_end,
+                    rule_start=rule_start, rule_end=rule_end, rule_lifespan=rule_lifespan,
                 )
                 if fire_count == 0:
                     continue
@@ -361,28 +438,24 @@ def run_scenario(
 
                 match rule_kind:
                     case "fixed_amount":
-                        if p_amount_cents is None:
-                            raise EngineError(
-                                f"scheduled_transaction id={tid} fixed_amount missing amount"
+                        amount = _fixed_amount_at(
+                            Txn._make(txn), month, aux, inflation_factor_cache,
+                        ) * fire_count
+                        owner = strategy_runtime.rule_owner(tid, month_s) if strategy_runtime else None
+                        if owner is not None:
+                            # The rule's amount is the budget; its owner says what
+                            # is spent, and the baseline keeps both (#387).
+                            assert strategy_runtime is not None
+                            amount = strategy_runtime.scale(
+                                con, owner, tid, amount, step_id=step_id, month=month,
                             )
-                        amount = p_amount_cents
-                        if p_series and p_series != "fixed":
-                            if not t_base_date:
-                                raise EngineError(
-                                    f"scheduled_transaction id={tid}: series set "
-                                    "without base_date"
-                                )
-                            factor = _cumulative_inflation_factor(
-                                aux, p_series, _parse_date(t_base_date), month,
-                                inflation_factor_cache,
-                                cadence=t_inflation_cadence or "monthly",
+                        if owner is None or amount > 0:
+                            _post_fixed_amount(
+                                con, balances, account_kinds, step_id, month_s, refill_ctx,
+                                frm, to_chain, amount, tax_char, tid,
+                                tax_year=tax_year,
+                                what=f"scheduled_transaction id={tid} ({_name!r})",
                             )
-                            amount = amount * factor // 1_000_000
-                        _post_fixed_amount(
-                            con, balances, account_kinds, step_id, month_s, refill_ctx,
-                            frm, to_chain, amount * fire_count, tax_char, tid,
-                            tax_year=tax_year, what=f"scheduled_transaction id={tid} ({_name!r})",
-                        )
                     case "percent_of_balance":
                         assert to is not None  # only fixed_amount may target an interior chain
                         if from_account is None:
@@ -470,25 +543,8 @@ def run_scenario(
                     case "on_death":
                         _apply_on_death(
                             con, balances, account_kinds, step_id, month_s,
-                            params, from_account, to, person_lifespan,
+                            params, from_account, to, rule_lifespan,
                             tax_char, tid, refill_ctx=refill_ctx,
-                        )
-                    case "tax_accumulator":
-                        if cadence != "annual":
-                            raise EngineError(
-                                f"tax_accumulator id={tid}: cadence must be 'annual'"
-                            )
-                        assert to is not None  # only fixed_amount may target an interior chain
-                        _apply_tax_accumulator(
-                            con, balances, account_kinds, step_id, month_s, month,
-                            params, from_id=from_account, to_id=to, aux=aux,
-                            tax_char=tax_char, tid=tid, graph=chain_graph,
-                            source_chain_id=frm,
-                            account_tax_treatment=account_tax_treatment,
-                            account_subkind=account_subkind, account_name=account_name,
-                            tax_year=tax_year,
-                            person_lifespan=person_lifespan, taxpayers=taxpayers,
-                            refill_ctx=refill_ctx,
                         )
                     case "fill_bracket":
                         if from_account is None or to is None:
@@ -511,12 +567,22 @@ def run_scenario(
                     case _:  # pragma: no cover
                         raise EngineError(f"supported but unhandled rule_kind: {rule_kind}")
 
+            if strategy_runtime and month.month == 12:
+                # Year-end actions see the year's income complete (#421): every
+                # rule has posted, fill_bracket's conversion included.
+                strategy_runtime.year_end(con, step_id, month, post_move)
+
             _settle_accounts(
                 con, balances, account_kinds, account_subkind, account_tax_treatment,
                 account_name, step_id, month_s, chain_graph, settle_order,
                 aux=aux, chain_base_date=_parse_date(start_s),
                 inflation_factor_cache=inflation_factor_cache, refill_ctx=refill_ctx,
             )
+
+            if month_s in step_ups:
+                _step_up_basis(
+                    con, step_id, month_s, step_ups[month_s], balances, cost_bases, acquired,
+                )
 
             con.executemany(
                 "INSERT INTO lot_state(step_id, lot_id, balance, cost_basis, "
@@ -529,7 +595,7 @@ def run_scenario(
 
         # Tax tail: the scenario's declared end year deserves a correct
         # reconciliation too, but that only fires the following April. Run
-        # tax_accumulator rules one extra year past scenario.end purely to
+        # the tax settlements one extra year past scenario.end purely to
         # compute tax_year_summary for the final year -- no simulation_step,
         # account_state, or transfer_event rows are written, so "simulation
         # data" queries stay bounded to <= scenario.end as usual.
@@ -538,45 +604,20 @@ def run_scenario(
         for tail_month in _month_ends(
             date(end_date.year + 1, 1, 1), date(end_date.year + 1, 12, 31),
         ):
-            tail_month_s = tail_month.isoformat()
-            for txn in txns:
-                (tid, _name, frm, to_chain, cadence, moy, rule_kind,
-                 _p_interest_acct, _p_person, _p_series, _p_rate_micros,
-                 _p_claim_age, _p_amount_cents, ext_json,
-                 tax_char, _tax_year, t_start, t_end, _prio, _t_base_date,
-                 _t_ytd_amount, _t_ytd_preroll, _t_inflation_cadence) = txn
-                rule_start = _parse_scheduled_date(t_start, tid, _name, "start")
-                rule_end = (
-                    _parse_scheduled_date(t_end, tid, _name, "end")
-                    if t_end is not None else None
-                )
-                if rule_kind != "tax_accumulator":
+            for j in jurisdictions:
+                if not _tax_settles(j, tail_month):
                     continue
-                tail_to = chain_graph.leaf_lot.get(to_chain)
-                if tail_to is None:
-                    raise EngineError(
-                        f"tax_accumulator id={tid}: tax settlement destination must "
-                        "resolve to a concrete account"
-                    )
-                if tail_month_s < t_start:
-                    continue
-                if t_end is not None and tail_month_s > t_end:
-                    continue
-                fire_count = _cadence_count(
-                    cadence, moy, tail_month,
-                    rule_start, rule_end,
-                )
-                if fire_count == 0:
-                    continue
-                params = json.loads(ext_json) if ext_json else {}
-                _apply_tax_accumulator(
+                _settle_tax(
                     con, balances, account_kinds, tail_last_step_id,
-                    tail_month_s, tail_month,
-                    params, from_id=None, to_id=tail_to, aux=aux,
-                    tax_char=tax_char, tid=tid, post_transfer=False,
-                    tax_year=_tax_year,
-                    person_lifespan=person_lifespan,
+                    tail_month.isoformat(), tail_month,
+                    j.params, kind=j.kind, jurisdictions=tax_rules,
+                    from_id=None, to_id=_tax_destination(chain_graph, j),
+                    aux=aux,
+                    tax_char="none", tid=j.id, post_transfer=False,
+                    person_lifespan=person_lifespan, taxpayers=taxpayers,
+                    drawdown_pricing=drawdown_pricing,
                 )
+        _record_drawdown_taxes(con, drawdown_pricing)
 
         if skipped_counts:
             con.execute(
@@ -596,6 +637,12 @@ def run_scenario(
         finalize_run(con, status="failed", failure_reason=f"{type(e).__name__}: {e}")
         raise
     finally:
+        if strategy_runtime is not None:
+            strategy_runtime.close()
+        if kinds_token is not None:
+            _RUN_TAX_KINDS.reset(kinds_token)
+        if tax_kinds is not None:
+            tax_kinds.unload()
         con.close()
     return Path(run_path)
 
@@ -613,6 +660,17 @@ class RothLot(NamedTuple):
     clock_start: date | None
     """Jan 1 of the five-year clock's first year; None means it has run."""
     birthdate: date | None
+    """Whose 59½ the distribution waits for; None means no age test, as
+    after the owner's death (#256)."""
+    then: tuple[date, RothLot] | None = None
+    """From this date on, the lot follows these rules instead: a death
+    changes the clock or the age test (#256)."""
+
+
+def _earlier_clock(*clocks: date | None) -> date | None:
+    """The earliest of several five-year clocks, where None (a clock that
+    has run) is earliest of all."""
+    return None if None in clocks else min(c for c in clocks if c is not None)
 
 
 def _roth_lots(con, birthdates: Mapping[str, date]) -> dict[int, RothLot]:
@@ -621,7 +679,17 @@ def _roth_lots(con, birthdates: Mapping[str, date]) -> dict[int, RothLot]:
     A Roth IRA's clock is the owner's, across all their Roth IRA lots; a Roth
     401k's is the plan's, across that account's Roth lots. It starts on Jan 1
     of the year of the earliest of those lots' ``acquired`` dates, or of the
-    account's ``opened`` when a lot has none. With neither, it has run."""
+    account's ``opened`` when a lot has none. With neither, it has run.
+
+    A death changes the rules from the month after the final month (#256).
+    The two ``primary`` persons are spouses. Under the default
+    ``roth_survivor`` election, ``own``, a surviving spouse treats the
+    decedent's Roth IRAs as their own (Treas. Reg. §1.408A-6 Q&A-7(b)): those
+    lots and the survivor's own Roth IRA lots take the earlier of the two
+    clocks and the survivor's 59½. Otherwise, as for a Roth 401k or a
+    decedent with no surviving spouse, the decedent's lots keep the
+    decedent's clock with no age test, since a distribution after death
+    needs only the five years."""
     rows = con.execute(
         "SELECT m.id, m.subkind, m.acquired, a.opened, a.owner, a.id FROM account_lot m "
         "JOIN account a ON a.id = m.account_id WHERE m.subkind IN ('roth_ira', 'roth_401k')"
@@ -639,22 +707,165 @@ def _roth_lots(con, birthdates: Mapping[str, date]) -> dict[int, RothLot]:
             years.setdefault(key, []).append(int(dated[:4]))
         else:
             undated.add(key)
+    clocks: dict[tuple[str, object], date | None] = {
+        key: None if key in undated else date(min(years[key]), 1, 1)
+        for key in years.keys() | undated
+    }
+
+    # The first day each person is dead: the month after their final month.
+    deaths = {
+        person: _parse_date(final_month) + timedelta(days=1)
+        for person, final_month in con.execute("SELECT person, final_month FROM person_lifespan")
+    }
+    primaries = [r[0] for r in con.execute("SELECT id FROM person WHERE role = 'primary' ORDER BY id")]
+    spouses = dict([primaries, primaries[::-1]]) if len(primaries) == 2 else {}
+    meta = json.loads(con.execute("SELECT meta_json FROM scenario").fetchone()[0] or "{}")
+    treat_as_own = meta.get("roth_survivor", "own") == "own"
+
+    def survives(person: str | None, dies: date) -> bool:
+        return person is not None and (person not in deaths or deaths[person] > dies)
+
+    def phases(subkind: str, owner: str | None, clock: date | None) -> list[tuple[date, date | None, date | None]]:
+        """The lot's rules after each death: (from, clock_start, birthdate)."""
+        born = birthdates.get(owner) if owner else None
+        if owner is None or owner not in deaths and spouses.get(owner) not in deaths:
+            return []
+        spouse = spouses.get(owner) if subkind == "roth_ira" and treat_as_own else None
+        spouse_clock = clocks.get(("ira", spouse), clock) if spouse else clock
+        steps = []
+        if spouse in deaths and survives(owner, deaths[spouse]):
+            # The owner survives and treats the spouse's Roth IRAs as their own.
+            clock = _earlier_clock(clock, spouse_clock)
+            steps.append((deaths[spouse], clock, born))
+        if owner in deaths:
+            dies = deaths[owner]
+            if survives(spouse, dies):
+                clock = _earlier_clock(clock, spouse_clock)
+                steps.append((dies, clock, birthdates.get(spouse)))
+                if spouse in deaths:
+                    steps.append((deaths[spouse], clock, None))
+            else:
+                steps.append((dies, clock, None))
+        return steps
+
     lots: dict[int, RothLot] = {}
     for lot, subkind, _acquired, _opened, owner, account_id in rows:
-        key = clock_key(subkind, owner, account_id)
-        year = None if key in undated else min(years[key])
+        clock = clocks[clock_key(subkind, owner, account_id)]
+        then: tuple[date, RothLot] | None = None
+        for start, step_clock, step_born in reversed(phases(subkind, owner, clock)):
+            then = (start, RothLot(subkind == "roth_ira", step_clock, step_born, then))
         lots[lot] = RothLot(
             basis_first=subkind == "roth_ira",
-            clock_start=None if year is None else date(year, 1, 1),
+            clock_start=clock,
             birthdate=birthdates.get(owner) if owner else None,
+            then=then,
         )
     return lots
+
+
+class StepUp(NamedTuple):
+    """One lot's basis step-up at a death (#255): the lot, whose death it
+    is, the share of its gain or loss that resets: all of it (1) or half (2),
+    and the rule that decided it, one of ``step_ups.RULES`` (#434)."""
+    lot_id: int
+    person: str
+    share: int
+    rule: str
+
+
+def _household(con) -> ownership.Household:
+    """The household (``ownership.Household``): the ``primary`` persons, or
+    everyone with a role if none is marked, and their final months."""
+    return ownership.Household.of(
+        con.execute("SELECT id, role FROM person"),
+        dict(con.execute("SELECT person, final_month FROM person_lifespan").fetchall()))
+
+
+def _rule_lifespans(con, person_lifespan: Mapping[str, str]) -> dict[str, str]:
+    """The final month each rule ``person`` stops at: a person's own, and for
+    ``joint`` the household's last death, so shared costs end with the second
+    death. ``joint`` gets one only when every household member has a lifespan;
+    while anyone may live on, a joint rule runs to the end."""
+    lifespans = dict(person_lifespan)
+    household = _household(con).members
+    if "joint" not in lifespans and household and all(p in lifespans for p in household):
+        lifespans["joint"] = max(lifespans[p] for p in household)
+    return lifespans
+
+
+def _basis_step_ups(con) -> dict[str, list[StepUp]]:
+    """The basis step-ups each final month brings (IRC §1014), by month.
+
+    Only a non-cash asset lot that tracks a basis steps up (an investment, a
+    home): retirement money and an HSA never do. A lot its account's ``owner`` held alone steps up in full at their
+    death, and again at the death of the spouse who inherited it. A joint
+    lot (owner blank or ``joint``) is the household's: the ``primary``
+    persons, or everyone with a role if none is marked. At one of
+    their deaths it steps up in full if no one else in the household is
+    left alive, or under ``community_property`` (§1014(b)(6): both halves of
+    community property step up). Otherwise only the decedent's half does
+    (§2040(b)). ``ownership.Household.decedent_part`` decides, as it does
+    for the end of a decedent's loss carryovers (#277)."""
+    household = _household(con)
+    deaths = household.final_months
+    if not deaths:
+        return {}
+    meta = json.loads(con.execute("SELECT meta_json FROM scenario").fetchone()[0] or "{}")
+    community = bool(meta.get("community_property", False))
+    no_step_up = sorted(registries.CASH_SUBKINDS | {registries.RETIREMENT_SUBKIND, "hsa"})
+    lots = con.execute(
+        "SELECT m.id, a.owner FROM account_lot m JOIN account a ON a.id = m.account_id "
+        "WHERE a.kind = 'asset' AND COALESCE(m.tax_treatment, 'none') IN ('taxable', 'none') "
+        f"AND a.subkind NOT IN ({','.join('?' * len(no_step_up))}) ORDER BY m.id",
+        no_step_up,
+    ).fetchall()
+
+    plan: dict[str, list[StepUp]] = {}
+    for person, month in sorted(deaths.items(), key=lambda d: (d[1], d[0])):
+        stepped = {s.lot_id for s in plan.get(month, ())}
+        for lot_id, owner in lots:
+            if lot_id in stepped:
+                continue  # two deaths in one month: the first stepped it up in full
+            part = household.decedent_part(person, owner, community=community)
+            if part is not None:
+                plan.setdefault(month, []).append(StepUp(lot_id, person, *part))
+    return plan
+
+
+def _step_up_basis(
+    con, step_id: int, month_s: str, step_ups: Sequence[StepUp],
+    balances: Mapping[int, int], cost_bases: dict[int, int | None],
+    acquired: dict[int, date | None],
+) -> None:
+    """Reset each lot's basis at a death to its value at the end of the final
+    month, the whole of it or ``1/share`` of the gain or loss, down as well as
+    up (IRC §1014). Inherited property is long-term from then on (§1223(9)).
+    Each step-up is recorded in ``basis_step_up``."""
+    rows = []
+    for lot_id, person, share, rule in step_ups:
+        before = cost_bases.get(lot_id)
+        if before is None:
+            continue  # not tracking a basis
+        value = max(0, balances.get(lot_id, 0))
+        after = before + (value - before) // share
+        cost_bases[lot_id] = after
+        acquired[lot_id] = None
+        rows.append((step_id, month_s, lot_id, person, value, before, after, rule))
+    con.executemany(
+        "INSERT INTO basis_step_up(step_id, date, lot_id, person, balance, "
+        "                          basis_before, basis_after, rule) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        rows,
+    )
 
 
 def _roth_qualified(roth: RothLot, on: date) -> bool:
     """Whether a distribution on ``on`` is qualified: five tax years since the
     clock started, and the owner 59½. The loader requires a Roth owner's
-    birthdate; with none (a hand-built ``RothLot``) the age test passes."""
+    birthdate; with none (a hand-built ``RothLot``, or a lot whose owner has
+    died) the age test passes."""
+    while roth.then is not None and on >= roth.then[0]:
+        roth = roth.then[1]
     if roth.clock_start is not None and on < roth.clock_start.replace(year=roth.clock_start.year + 5):
         return False
     if roth.birthdate is None:
@@ -720,9 +931,9 @@ class RefillContext:
 
     __slots__ = ("graph", "aux", "chain_base_date", "inflation_factor_cache",
                  "account_tax_treatment", "account_subkind", "account_name",
-                 "cost_bases", "quantities", "growth_sources", "acquired",
+                 "cost_bases", "quantities", "growth_sources", "share_sources", "acquired",
                  "chain_name", "refilling", "last_refill", "negative_since",
-                 "negative_events", "roth")
+                 "negative_events", "roth", "hsa", "strategies")
 
     def __init__(
         self, graph: ChainGraph, aux, chain_base_date: date,
@@ -735,6 +946,8 @@ class RefillContext:
         acquired: dict[int, date | None] | None = None,
         chain_name: dict[int, str] | None = None,
         roth: dict[int, RothLot] | None = None,
+        share_sources: frozenset[int] = frozenset(),
+        hsa: frozenset[int] = frozenset(),
     ) -> None:
         self.graph = graph
         self.aux = aux
@@ -746,13 +959,19 @@ class RefillContext:
         self.cost_bases = cost_bases
         self.quantities = quantities if quantities is not None else {}
         self.growth_sources = growth_sources
+        self.share_sources = share_sources
         self.acquired = acquired if acquired is not None else {}
         self.chain_name = chain_name if chain_name is not None else {}
         self.roth = roth if roth is not None else {}
+        # HSA lots (#497): their basis is what a state that doesn't
+        # recognize HSAs taxes a withdrawal's gain over.
+        self.hsa = hsa
         self.refilling: set[int] = set()  # reentrancy guard against refill cycles
         self.last_refill: dict[int, RefillAttempt] = {}
         self.negative_since: dict[int, bool] = {}
         self.negative_events: list[dict[str, Any]] = []
+        # The run's strategies (#326), when it has any: asked at the chains they own.
+        self.strategies: StrategyRuntime | None = None
 
 
 def _ensure_min_balance(
@@ -961,36 +1180,78 @@ def _post_transfer(
         (step_id, month_s, from_id, to_id, from_id, to_id, amount, requested,
          remainder, tax_char, tax_year, reason_kind, reason_id, parent_event_id),
     )
+    realized = None
     if track is not None:
-        _track_lots(track, account_kinds, balances, from_id, to_id, amount, _parse_date(month_s))
+        realized = _track_lots(track, account_kinds, balances, from_id, to_id, amount, _parse_date(month_s))
     balances[from_id] = balances.get(from_id, 0) + _delta(account_kinds[from_id], -amount)
     balances[to_id] = balances.get(to_id, 0) + _delta(account_kinds[to_id], +amount)
     if track is not None:
         _warn_if_negative(track, account_kinds, from_id, balances, month_s)
     event_id = inserted_id(cur)
+    if realized:
+        assert track is not None
+        _record_hsa_gain(con, track, step_id, month_s, from_id, realized,
+                         tax_year=tax_year, reason_kind=reason_kind, reason_id=reason_id)
     _link_refills(con, refill_mark, event_id)
     return event_id
+
+
+def _record_hsa_gain(
+    con, ctx: RefillContext, step_id: int, month_s: str, lot_id: int, gain: int,
+    *, tax_year: int | None, reason_kind: str, reason_id: int | None,
+) -> None:
+    """An HSA withdrawal's gain over its basis (a loss negative), which only
+    a state that doesn't recognize HSAs taxes (#497): no money is its own,
+    so it is an ``hsa_gain`` row, not a transfer_event leg, and the federal
+    return never sees it, whatever the withdrawal's own character."""
+    long_term = _is_long_term(ctx.acquired.get(lot_id), _parse_date(month_s))
+    con.execute(
+        "INSERT INTO hsa_gain(step_id, date, lot_id, amount, tax_character, "
+        "tax_year, reason_kind, reason_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (step_id, month_s, lot_id, gain, "ltcg" if long_term else "stcg",
+         tax_year, reason_kind, reason_id),
+    )
 
 
 def _track_lots(
     ctx: RefillContext, account_kinds: dict[int, str], balances: dict[int, int],
     from_id: int, to_id: int, amount: int, on: date,
-) -> None:
+) -> int | None:
     """Shares leave ``from_id`` in proportion to the value withdrawn, and
     ``to_id`` records a purchase. Call before ``balances`` moves.
 
     Money out of a Roth lot takes its basis with it (``_roth_basis_out``).
     Rolled into another Roth lot, it carries that basis, or all of it as
     basis when the draw would have been qualified, as a qualified Roth 401k
-    rollover into a Roth IRA does."""
-    if amount <= 0:
-        return
+    rollover into a Roth IRA does.
+
+    Money out of an HSA lot takes its pro-rata share of the lot's basis
+    (#497); moved into another HSA lot it carries that basis. Otherwise the
+    rest, the withdrawal's gain over its basis (a loss negative), is
+    returned, for a state that taxes an HSA; None when there is none."""
+    if amount <= 0 or to_id in ctx.growth_sources:
+        # A month of negative growth posts back to its counterparty: the lot
+        # lost value, which sells no shares and spends no basis.
+        return None
     carried = amount
+    realized = None
     if from_id in ctx.roth:
         basis_out = _roth_basis_out(ctx, balances, from_id, amount)
         ctx.cost_bases[from_id] = (ctx.cost_bases.get(from_id) or 0) - basis_out
         if to_id in ctx.roth and not _roth_qualified(ctx.roth[from_id], on):
             carried = basis_out
+    elif from_id in ctx.hsa:
+        # Only what the lot holds can be gain: money drawn past its balance
+        # (an overdrawn HSA, which the run allows) had no growth.
+        basis = ctx.cost_bases.get(from_id) or 0
+        prior = balances.get(from_id, 0)
+        covered = min(amount, max(0, prior))
+        basis_out = _pro_rata_basis(basis, prior, covered)
+        ctx.cost_bases[from_id] = basis - basis_out
+        if to_id in ctx.hsa:
+            carried = basis_out
+        else:
+            realized = covered - basis_out
     if account_kinds[from_id] == "asset":
         quantity = ctx.quantities.get(from_id)
         prior_balance = balances.get(from_id, 0)
@@ -1000,8 +1261,11 @@ def _track_lots(
             )
     if account_kinds[to_id] == "asset":
         _record_purchase(ctx, balances, from_id, to_id, amount)
-        if carried < amount and (to_basis := ctx.cost_bases.get(to_id)) is not None:
+        # The purchase added the amount; the basis carried may be less (a
+        # Roth's earnings) or more (an HSA moved at a loss).
+        if carried != amount and (to_basis := ctx.cost_bases.get(to_id)) is not None:
             ctx.cost_bases[to_id] = to_basis - (amount - carried)
+    return realized
 
 
 def _post_fixed_amount(
@@ -1062,27 +1326,30 @@ def _record_purchase(
     """Money moved into a lot that tracks cost basis buys into it: a purchase, an
     inheritance, proceeds from another taxable lot. Its basis rises by the amount
     and, if shares are tracked, they rise at the lot's implied price. Growth
-    from the built-in counterparties is appreciation and changes neither.
+    from the built-in counterparties is appreciation and changes neither. An
+    untaxed lot's reinvested payout (#547) buys shares but, like growth, adds
+    no basis.
     """
+    if from_id in ctx.share_sources:
+        _buy_shares(ctx, balances, to_id, amount)
+        return
     basis = ctx.cost_bases.get(to_id)
     if basis is None or from_id in ctx.growth_sources:
         return
     ctx.cost_bases[to_id] = basis + amount
+    _buy_shares(ctx, balances, to_id, amount)
+
+
+def _buy_shares(ctx: RefillContext, balances: dict[int, int], to_id: int, amount: int) -> None:
+    """Shares ``amount`` buys in ``to_id``, if it tracks them, at its implied price."""
     quantity, prior = ctx.quantities.get(to_id), balances.get(to_id, 0)
     if quantity and prior > 0:
         ctx.quantities[to_id] = quantity + quantity * amount // prior
 
 
 def _is_long_term(acquired: date | None, sale: date) -> bool:
-    """Held more than a year (IRC §1222): the sale falls after the first
-    anniversary of the acquisition. A lot with no acquisition date is long-term."""
-    if acquired is None:
-        return True
-    try:
-        anniversary = acquired.replace(year=acquired.year + 1)
-    except ValueError:  # Feb 29
-        anniversary = date(acquired.year + 1, 2, 28)
-    return sale > anniversary
+    """Held more than a year (IRC §1222); shared with strategies' views."""
+    return strategy_api.is_long_term(acquired, sale)
 
 
 def _delta(kind: str, raw: int) -> int:
@@ -1153,10 +1420,34 @@ def _first_chain_leaf_lot(graph: ChainGraph, chain_id: int) -> int | None:
     return None
 
 
+def _chain_leaf_lots(graph: ChainGraph | None, chain_id: int | None) -> Iterator[int]:
+    """A chain's lots, depth first through its steps, in the order it draws."""
+    if graph is None or chain_id is None:
+        return
+    if (lot := graph.leaf_lot.get(chain_id)) is not None:
+        yield lot
+        return
+    for next_chain_id, *_allocation in graph.members.get(chain_id, []):
+        yield from _chain_leaf_lots(graph, next_chain_id)
+
+
 def _mortgage_interest(outstanding: int, annual_micros: int) -> int:
     """One month's interest on ``outstanding``, as ``_apply_mortgage_payment``
     charges it."""
     return (outstanding * annual_micros) // (12 * 1_000_000)
+
+
+def _record_mortgage_balances(
+    con, step_id: int, tid: int, posted: str, months: Sequence[tuple[str, int, int]],
+) -> None:
+    """Record the balance each month's interest of mortgage rule ``tid``
+    was figured on (#542), ``(YYYY-MM, balance, interest)``, as posted on
+    ``posted``: the itemized deduction's debt limit reads it rather than
+    inferring the debt from the interest."""
+    con.executemany(
+        "INSERT INTO mortgage_balance(step_id, rule_id, posted, month, balance, interest) "
+        "VALUES (?,?,?,?,?,?)",
+        [(step_id, tid, posted, month, balance, interest) for month, balance, interest in months])
 
 
 def _mortgage_payments_split(
@@ -1294,7 +1585,8 @@ def _post_mortgage_ytd(
     (tid, _name, _frm, _to, _cadence, _moy, _kind,
      interest_acct, _p_person, _p_series, rate_micros,
      _p_claim_age, amount_cents, _ext_json,
-     tax_char, *_rest, ytd_amount, _ytd_preroll, _inflation_cadence) = txn
+     tax_char, _tax_year, rule_start, rule_end, *_rest,
+     ytd_amount, _ytd_preroll, _inflation_cadence) = txn
     if account_id_by_name is None or balances is None:
         raise EngineError(
             f"scheduled_transaction id={tid}: mortgage YTD requires account context"
@@ -1323,8 +1615,25 @@ def _post_mortgage_ytd(
     if jan_1 is None:
         jan_1 = _mortgage_balance_before(balances.get(to_account, 0), payments, rate)
     split = _mortgage_payments_split(payments, rate, jan_1)
+    # Each replayed month's balance, for the debt limit: a ytd_amount's
+    # months run from January, or the rule's start that year, all posted at
+    # once (more payments than months stay in the last month the rule ran
+    # that year); a preroll's are its own.
+    year = posts[0][0][:4]
+    first = int(rule_start[5:7]) if rule_start and rule_start[:4] == year else 1
+    last = int(rule_end[5:7]) if rule_end and rule_end[:4] == year else 12
+    balance, months = jan_1, []
+    for k, (interest, principal) in enumerate(split):
+        month = (f"{year}-{max(first, min(first + k, last)):02d}" if ytd_amount is not None
+                 else posts[k][0][:7])
+        months.append((month, balance, interest))
+        balance -= principal
     if ytd_amount is not None:
         split = [(sum(i for i, _p in split), sum(p for _i, p in split))]
+        _record_mortgage_balances(con, step_id, tid, posts[0][0], months)
+    else:
+        for (date_s, _amount), month in zip(posts, months, strict=False):
+            _record_mortgage_balances(con, step_id, tid, date_s, [month])
     for (date_s, _amount), (interest, principal) in zip(posts, split, strict=False):
         parent_event_id = _post_ytd_transfer(
             con, step_id, date_s, from_account, interest_id, interest,
@@ -1368,25 +1677,126 @@ def _post_ytd_chain(
         remaining -= allocation
 
 
-def _past_person_lifespan(
-    month_s: str,
-    p_person: str | None,
-    from_id: int,
-    to_id: int | None,
-    account_owner: dict[int, str | None],
-    person_lifespan: dict[str, str],
-) -> bool:
-    """True if this rule is associated with a person whose final_month has
-    passed (ADR-003 §4.9): the rule's explicit ``person`` param, or the
-    owner of either leg's account.
-    """
-    associated = {p_person, account_owner.get(from_id), account_owner.get(to_id)}
-    associated.discard(None)
-    return any(
-        month_s > person_lifespan[person]
-        for person in associated
-        if person in person_lifespan
+class Txn(NamedTuple):
+    """A ``scheduled_transaction`` row as the engine reads it; the SELECT is
+    built from these fields, so the two can't drift apart."""
+
+    id: int
+    name: str
+    from_account: int
+    to_account: int
+    cadence: str
+    month_of_year: int | None
+    amount_rule_kind: str
+    interest_account: str | None
+    person: str | None
+    series: str | None
+    rate_micros: int | None
+    claim_age: int | None
+    amount_cents: int | None
+    params_json: str | None
+    tax_character: str
+    tax_year: int | None
+    start: str
+    end: str | None
+    priority: int
+    base_date: str | None
+    ytd_amount: int | None
+    ytd_preroll: int
+    inflation_cadence: str | None
+
+
+_SCHED_RULE_KIND = Txn._fields.index("amount_rule_kind")
+
+
+def _month_phase(txn: Sequence[Any]) -> str:
+    """The ``registries.MONTH_PHASES`` phase a scheduled rule posts in."""
+    return "fill_bracket" if txn[_SCHED_RULE_KIND] == "fill_bracket" else "rules"
+
+
+def _rule_fire_count(
+    month: date, *, rule_kind: str, cadence: str, month_of_year: int | None,
+    person: str | None, start: str, end: str | None, rule_start: date, rule_end: date | None,
+    rule_lifespan: Mapping[str, str],
+) -> int:
+    """How many times a rule posts in ``month``: 0 outside its start and end,
+    after its person's death, or in a month its cadence skips."""
+    month_s = month.isoformat()
+    if month_s < start or (end is not None and month_s > end):
+        return 0
+    # Only a rule's own `person` stops it at a death (#256).
+    # percent_of_balance is asset growth (ADR-003 §2.2: "an asset
+    # account's growth is a property of the account"), never a
+    # personal service tied to the living owner, so it's exempt
+    # even with a person. on_death is the
+    # rule kind that FIRES on the death transition itself, so it
+    # must not be suppressed by the very gating it triggers.
+    # A `joint` rule stops at the household's last death.
+    if (
+        rule_lifespan and rule_kind not in ("percent_of_balance", "on_death")
+        and _past_person_lifespan(month_s, person, rule_lifespan)
+    ):
+        return 0
+    return _cadence_count(cadence, month_of_year, month, rule_start, rule_end)
+
+
+def _fixed_amount_at(
+    txn: Txn, month: date,
+    aux: dict[tuple[str, str | None], list[tuple[str, dict[str, Any]]]],
+    cache: dict[tuple[str, date, date, str], int],
+) -> int:
+    """A ``fixed_amount`` rule's amount for one posting in ``month``,
+    indexed by its series from its base date."""
+    if txn.amount_cents is None:
+        raise EngineError(f"scheduled_transaction id={txn.id} fixed_amount missing amount")
+    amount = txn.amount_cents
+    if txn.series and txn.series != "fixed":
+        if not txn.base_date:
+            raise EngineError(f"scheduled_transaction id={txn.id}: series set without base_date")
+        factor = _cumulative_inflation_factor(
+            aux, txn.series, _parse_date(txn.base_date), month, cache,
+            cadence=txn.inflation_cadence or "monthly",
+        )
+        amount = amount * factor // 1_000_000
+    return amount
+
+
+def _rule_year_budget(
+    txn: Txn, month: date,
+    aux: dict[tuple[str, str | None], list[tuple[str, dict[str, Any]]]],
+    cache: dict[tuple[str, date, date, str], int],
+    rule_lifespan: Mapping[str, str], run_end: date,
+) -> int:
+    """A ``fixed_amount`` rule's spending over the twelve months from
+    ``month``, at ``month``'s prices (``ctx.budget``, #387): its amount indexed
+    to now, times the times it posts then, gated as the posting loop gates
+    it. Twelve months rather than the calendar year, so a run that starts in
+    May still sees a whole year's plan; cut at ``run_end``, so a run ending
+    mid-year doesn't budget months it never posts."""
+    if txn.amount_rule_kind != "fixed_amount":
+        return 0
+    rule_start = _parse_scheduled_date(txn.start, txn.id, txn.name, "start")
+    rule_end = (_parse_scheduled_date(txn.end, txn.id, txn.name, "end")
+                if txn.end is not None else None)
+    last = min(date(month.year + 1, month.month, 1) - timedelta(days=1), run_end)
+    fires = sum(
+        _rule_fire_count(
+            m, rule_kind=txn.amount_rule_kind, cadence=txn.cadence,
+            month_of_year=txn.month_of_year, person=txn.person, start=txn.start, end=txn.end,
+            rule_start=rule_start, rule_end=rule_end, rule_lifespan=rule_lifespan,
+        )
+        for m in _month_ends(month, last)
     )
+    return _fixed_amount_at(txn, month, aux, cache) * fires if fires else 0
+
+
+def _past_person_lifespan(
+    month_s: str, p_person: str | None, person_lifespan: Mapping[str, str],
+) -> bool:
+    """True if this rule's ``person`` has died by ``month_s`` (ADR-003 §4.9).
+    Only the rule's own ``person`` column counts, not its accounts' owner: a
+    survivor keeps paying from, and into, a decedent's accounts (#256)."""
+    return p_person is not None and p_person in person_lifespan and month_s > person_lifespan[p_person]
 
 
 def _build_cal_payload(
@@ -1428,18 +1838,39 @@ def _amount_percent_of_balance(
     base = (opening_balances if basis == "opening" else current_balances).get(to_id, 0)
     if base <= 0:
         return 0
-    if blend := params.get("blend"):
+    if params.get("payout"):
+        # A dividend or interest payout (#468) is never negative: a yield
+        # below zero, even one slice of a blend, is a fall in value, left to
+        # the growth rule.
+        return _percent_of(base, params, rate_kind, aux, month_s, tid, payout=True)
+    # A taxable lot's payouts are their own rules; what's left of the total
+    # return is the appreciation, which waits for a sale. A cash lot's is
+    # zero unless its rate goes negative.
+    total = _percent_of(base, params, rate_kind, aux, month_s, tid)
+    for spec in params.get("less") or ():
+        total -= _percent_of(base, spec, rate_kind, aux, month_s, tid, payout=True)
+    return total
+
+
+def _percent_of(
+    base: int, spec: dict[str, Any], rate_kind: str,
+    aux: dict[tuple[str, str | None], list[tuple[str, dict[str, Any]]]],
+    month_s: str, tid: int, *, payout: bool = False,
+) -> int:
+    """A month of ``base`` at the annual rate of ``spec``: its ``blend`` or
+    its ``series``. A ``payout`` counts each rate below zero as zero."""
+    def rate(series: str | None) -> int:
+        annual = _annual_rate_micros(aux, rate_kind, series, month_s, tid)
+        return max(annual, 0) if payout else annual
+
+    if blend := spec.get("blend"):
         # A fund's allocation blend (#78): sum weight x each slice's rate, read
         # now rather than at load, since a set_rate event can move any slice.
         # Kept in micros-squared so the blend itself never rounds.
-        weighted = sum(
-            weight * _annual_rate_micros(aux, rate_kind, slice_series, month_s, tid)
-            for slice_series, weight in _blend_slices_at(blend, month_s)
-        )
+        weighted = sum(weight * rate(slice_series) for slice_series, weight in _blend_slices_at(blend, month_s))
         return (base * weighted) // (12 * 1_000_000 * 1_000_000)
-    annual_micros = _annual_rate_micros(aux, rate_kind, params.get("series"), month_s, tid)
     # monthly_rate = annual_micros / 12 / 1_000_000; amount = base * monthly_rate
-    return (base * annual_micros) // (12 * 1_000_000)
+    return (base * rate(spec.get("series"))) // (12 * 1_000_000)
 
 
 def _blend_slices_at(blend: list[list[Any]], month_s: str) -> list[list[Any]]:
@@ -1512,6 +1943,7 @@ def _apply_mortgage_payment(
         )
     if principal > outstanding:
         principal = outstanding
+    _record_mortgage_balances(con, step_id, tid, month_s, [(month_s[:7], outstanding, interest)])
     if from_id is not None:
         interest_event_id = _post_transfer(
             con, balances, account_kinds, step_id, month_s,
@@ -1797,7 +2229,7 @@ def _lookup_energy_credit(
     credit available," not as a default rate. Returns the raw payload
     (``rate_micros``, ``cap`` in cents); it's up to the caller to apply it
     to whatever project cost is being credited. Not wired to a call site
-    yet -- see ADR note on where credits should apply (tax_accumulator
+    yet -- see ADR note on where credits should apply (the tax settlement
     reduction vs. a standalone income-like leg).
     """
     return _lookup_by_series_key(aux, "energy_credits", "category", category, month_s)
@@ -2002,7 +2434,7 @@ def _post_withdrawal(
         # A refill into the account is a purchase that raised its basis.
         basis = cost_bases[from_id] or 0
     prior_balance = balances.get(from_id, 0)
-    basis_out = 0 if prior_balance <= 0 else min(basis, basis * amount // prior_balance)
+    basis_out = _pro_rata_basis(basis, prior_balance, amount)
     gain = amount - basis_out
     if refill_ctx is not None:
         _track_lots(refill_ctx, account_kinds, balances, from_id, to_id, amount, _parse_date(month_s))
@@ -2201,6 +2633,38 @@ def _chain_draw(
         )
         return take
     total = 0
+    decision_id = None
+    strategies = refill_ctx.strategies if refill_ctx is not None else None
+    owned = strategies.owner(chain_id, month_s) if strategies is not None else None
+    if owned is not None:
+        assert strategies is not None
+        answer = strategies.decide(owned, "draw", chain_id, amount_needed, _parse_date(month_s))
+        if answer is not None:
+            decision, moves = answer
+            decision_id = strategies.record(
+                con, owned, "draw", step_id=step_id, chain_id=chain_id,
+                asked=amount_needed, decision=decision,
+            )
+            for lot_id, amount in moves:
+                amount = min(amount, amount_needed - total)
+                if amount <= 0:
+                    break
+                mark = _last_event_id(con)
+                total += _chain_draw(
+                    con, balances, account_kinds, account_tax_treatment, account_subkind,
+                    account_name, step_id, month_s, graph,
+                    strategies.leaf_chain_of[lot_id], amount, target_account_id,
+                    refill_ctx=refill_ctx, reason_kind=reason_kind,
+                    reason_id=reason_id, tax_year=tax_year,
+                    aux=aux, chain_base_date=chain_base_date,
+                    inflation_factor_cache=inflation_factor_cache,
+                    _progress=_progress, _fallback=True,
+                )
+                strategies.link_legs(
+                    con, decision_id, mark=mark, from_lot=lot_id, to_lot=target_account_id,
+                )
+    chosen = total
+    # What the strategy left unpaid falls through to the chain's own steps (#326).
     members = graph.members.get(chain_id, [])
     for number, (draw_from_id, step_maximum, step_percent, step_series, step_cadence, *_tax) in (
             enumerate(members, 1)):
@@ -2228,7 +2692,14 @@ def _chain_draw(
             inflation_factor_cache=inflation_factor_cache,
             _progress=_progress, _fallback=fallback,
         )
+    if decision_id is not None:
+        assert strategies is not None
+        strategies.finish(con, decision_id, chosen=chosen, fallback=total - chosen)
     return total
+
+
+def _last_event_id(con) -> int:
+    return con.execute("SELECT COALESCE(MAX(id), 0) FROM transfer_event").fetchone()[0]
 
 
 class _SaleBasis:
@@ -2253,6 +2724,15 @@ def _has_basis_step(graph: ChainGraph, chain_id: int, lot_id: int) -> bool:
     return False
 
 
+def _pro_rata_basis(basis: int, prior: int, amount: int) -> int:
+    """The share of a lot's ``basis`` that ``amount`` drawn from its ``prior``
+    balance takes: none from an empty or overdrawn lot, all of it when the
+    draw empties the lot."""
+    if prior <= 0 or amount <= 0:
+        return 0
+    return basis if amount >= prior else basis * amount // prior
+
+
 def _sale_basis(
     refill_ctx: RefillContext | None, balances: dict[int, int], lot_id: int, amount: int,
 ) -> _SaleBasis:
@@ -2267,7 +2747,8 @@ def _sale_basis(
             "set opening_cost_basis in account_lots.csv"
         )
     prior = balances.get(lot_id, 0)
-    return _SaleBasis(basis if prior <= amount else basis * amount // prior)
+    # A sale past an empty or overdrawn lot still carries its whole basis.
+    return _SaleBasis(basis if prior <= amount else _pro_rata_basis(basis, prior, amount))
 
 
 def _chain_sweep(
@@ -2366,6 +2847,40 @@ def _chain_sweep(
         )
         return put
     total = 0
+    decision_id = None
+    strategies = refill_ctx.strategies if refill_ctx is not None else None
+    owned = (
+        strategies.owner(chain_id, month_s) if strategies is not None and _sale is None else None
+    )
+    if owned is not None:
+        assert strategies is not None
+        answer = strategies.decide(owned, "place", chain_id, amount_available, _parse_date(month_s))
+        if answer is not None:
+            decision, moves = answer
+            decision_id = strategies.record(
+                con, owned, "place", step_id=step_id, chain_id=chain_id,
+                asked=amount_available, decision=decision,
+            )
+            for lot_id, amount in moves:
+                amount = min(amount, amount_available - total)
+                if amount <= 0:
+                    break
+                mark = _last_event_id(con)
+                total += _chain_sweep(
+                    con, balances, account_kinds, account_tax_treatment, account_subkind,
+                    account_name, step_id, month_s, graph,
+                    strategies.leaf_chain_of[lot_id], amount, source_account_id,
+                    aux=aux, chain_base_date=chain_base_date,
+                    inflation_factor_cache=inflation_factor_cache,
+                    source_tax_character=source_tax_character,
+                    source_tax_year=source_tax_year, refill_ctx=refill_ctx,
+                    reason_kind=reason_kind, reason_id=reason_id,
+                    _progress=_progress,
+                )
+                strategies.link_legs(
+                    con, decision_id, mark=mark, from_lot=source_account_id, to_lot=lot_id,
+                )
+    chosen = total
     character = source_tax_character
     # Money out of a basis-tracked lot keeps _post_withdrawal's pro-rata
     # split unless a basis step for that lot says how much is basis; a
@@ -2423,6 +2938,9 @@ def _chain_sweep(
             )
         elif basis_of is not None and placed > 0:
             _add_basis(refill_ctx, account_name, basis_of, placed)
+    if decision_id is not None:
+        assert strategies is not None
+        strategies.finish(con, decision_id, chosen=chosen, fallback=total - chosen)
     return total
 
 
@@ -2503,243 +3021,547 @@ def _settle_accounts(
                 )
 
 
-@dataclass(frozen=True)
-class _TaxEstimate:
-    """One tax year's income tax as ``tax_accumulator`` computes it, from
-    the transfers posted so far, with ways to ask what more income would do
-    (#251's after-tax drawdown, #252's fill_bracket)."""
-    scope: str
-    filing_status: str
-    brackets: list[tuple[int, int]]
-    ordinary_income: int
-    ltcg_income: int
-    ss_income: int
-    taxable_ss: int
-    business: Any
-    capital: Any
-    standard_deduction: int
-    itemized_deduction: int
-    deduction: int
-    nol_in: int
-    nol_used: int
-    nol_new: int
-    taxable_income: int
-    tax_liability: int
-    tax_with: Callable[[int, int], int]
-    """The year's tax with more ordinary income and long-term gain on top."""
-    taxable_with: Callable[[int, int], tuple[int, int]]
-    """The year's taxable income, and the ordinary part of it, with more
-    ordinary income and long-term gain on top."""
-    agi_with: Callable[[int, int], int]
-    """The year's AGI (and so IRMAA's MAGI, #253) with more ordinary income
-    and long-term gain on top."""
+class _TaxLedger(NamedTuple):
+    """What a tax year reads from the run, shared by the jurisdictions one
+    prepare builds on (#508)."""
+    items: list[tax_api.IncomeItem]
+    losses: list[tax_api.CapitalLoss]
+    persons: list[tax_api.Person]
+    spending: list[tax_api.SpendingItem] = []
+    hsa_gains: list[tax_api.HsaGain] = []
+    mortgages: list[tax_api.Mortgage] = []
+    taxes_paid: list[tax_api.TaxPaid] = []
 
 
-def _year_tax_estimate(
-    con, params: dict[str, Any], *,
+class TaxRule(NamedTuple):
+    """A tax jurisdiction as :func:`_prepare_tax` prepares it: its
+    calculator kind, its params and its ``tax_jurisdiction`` id, which its
+    errors name."""
+    kind: str
+    params: Mapping[str, Any]
+    id: int
+
+
+Jurisdictions = Mapping[str, TaxRule]
+"""The scenario's tax jurisdictions by name, for :func:`_prepare_tax` to
+find the ones a calculator builds on."""
+
+
+def _rule_tags(con) -> tuple[dict[int, frozenset[str]], dict[int, str]]:
+    """Each scheduled rule's tags, a calendar row's for the rule it fires
+    through (#510), and each rule's ``person``; only the rules that have
+    some."""
+    tags: dict[int, set[str]] = defaultdict(set)
+    for tid, role, name in con.execute(
+            "SELECT x.scheduled_transaction_id, t.role, t.name FROM scheduled_transaction_tag x "
+            "JOIN tag t ON t.id = x.tag_id"):
+        tags[tid].add(f"{role}:{name}")
+    for tid, role, name in con.execute(
+            "SELECT s.id, t.role, t.name FROM scheduled_transaction s "
+            "JOIN calendar_event_tag x ON x.calendar_event_id = s.created_by_event_id "
+            "JOIN tag t ON t.id = x.tag_id"):
+        tags[tid].add(f"{role}:{name}")
+    persons = dict(con.execute(
+        "SELECT id, person FROM scheduled_transaction WHERE person IS NOT NULL AND person <> ''"))
+    return {tid: frozenset(t) for tid, t in tags.items()}, persons
+
+
+def _implied_rules(con) -> tuple[dict[int, str], dict[int, int]]:
+    """The rules whose kind implies a tag (#542), with the tag; and each
+    home mortgage's interest account, with the rule that pays it. Only a
+    ``mortgage_payment`` on a liability of the ``mortgage`` subkind is a
+    home mortgage: one amortizing a car loan, a credit card or a HELOC
+    implies nothing."""
+    implied: dict[int, str] = {}
+    interest_accounts: dict[int, int] = {}
+    for tid, kind, subkind, interest in con.execute(
+            "SELECT s.id, s.amount_rule_kind, a.subkind, i.id FROM scheduled_transaction s "
+            "LEFT JOIN chain c ON c.id = s.to_account LEFT JOIN account a ON a.id = c.account_id "
+            "LEFT JOIN account i ON i.name = s.interest_account "
+            f"WHERE s.amount_rule_kind IN ({', '.join(repr(k) for k in registries.IMPLIED_TAX_TAGS)}) "
+            "ORDER BY s.id"):
+        if kind == "mortgage_payment" and subkind != "mortgage":
+            continue
+        implied[int(tid)] = registries.IMPLIED_TAX_TAGS[kind]
+        if kind == "mortgage_payment" and interest is not None:
+            interest_accounts.setdefault(int(interest), int(tid))
+    return implied, interest_accounts
+
+
+def _implied_tags(
+    rule_tags: frozenset[str], payee: tax_api.Account, character: str, implied: str | None,
+) -> frozenset[str]:
+    """The rule kind's ``implied`` tag, when the item would otherwise carry
+    no itemized tag (``registries.ITEMIZED_TAGS``) or ``tax:rental``;
+    another ``tax:`` tag, one for a report, doesn't stop it. Spending into a
+    ``taxes_property`` account is property tax (#586), ``tax:property``,
+    the same way. It goes beside the item's own tags, not into the rule's,
+    which would hide the expense account's ``tax:`` tag. A business expense
+    (the business_expense character) gets none: it's deducted on Schedule
+    C, not itemized."""
+    if implied is None and payee.subkind == registries.PROPERTY_TAX_SUBKIND:
+        implied = registries.ITEMIZED_TAGS["property_tax"]
+    if implied is None or character == registries.BUSINESS_EXPENSE \
+            or tax_api.itemizing(tax_api.spending_tags(rule_tags, payee.tags)):
+        return frozenset()
+    return frozenset({implied})
+
+
+_TAX_YEAR_OF = "COALESCE(tax_year, CAST(substr(date, 1, 4) AS INTEGER))"
+"""The tax year a transfer counts in: its own ``tax_year`` (a payment made
+for the year before), else the year it was made."""
+
+
+def _spending_tags(
+    rule_tags: frozenset[str], payee: tax_api.Account, character: str, implied: str | None,
+) -> frozenset[str]:
+    """A spending item's tags, as ``SpendingItem.tags`` reads them: the
+    rule's, its expense account's in roles the rule has none of, and the
+    rule kind's ``implied`` tag (#542)."""
+    return tax_api.spending_tags(rule_tags, payee.tags) | _implied_tags(
+        rule_tags, payee, character, implied)
+
+
+def _mortgage_months(
+    con, tax_year: int, rule_tags: Mapping[int, frozenset[str]],
+    account: Callable[[int], tax_api.Account], expense_ids: Sequence[int],
+    implied: Mapping[int, str], interest_accounts: Mapping[int, int],
+) -> list[tax_api.Mortgage]:
+    """Each home mortgage's interest and balance by month of ``tax_year``
+    (#542), one per liability account: a refinance or a rate change that
+    starts another rule pays down the same debt. A month's balance is the
+    one its interest was figured on (``mortgage_balance``); two rules
+    posting for one debt in a month (an overlap at a rate change) share it,
+    so the larger is taken rather than the sum. A ``ytd_amount`` catch-up's
+    interest, posted at once, is spread over the months it replays by each
+    month's interest. A year_to_date.csv row into a home mortgage's
+    interest account, which no rule figured, is spread evenly over the
+    months to its own (from the rule's start that year), and each month's
+    balance is all such interest of the debt that month over the monthly
+    rate. A debt both a business (``business_expense``) and the household
+    pay in a month has a month for each, which takes its share of the
+    balance by its interest. ``implied`` and ``interest_accounts`` are
+    ``_implied_rules``'."""
+    if not expense_ids:
+        return []
+    rules = {
+        tid: (int(liability), int(rate), start or "") for tid, liability, rate, start in con.execute(
+            "SELECT s.id, c.account_id, s.rate_micros, s.start FROM scheduled_transaction s "
+            "JOIN chain c ON c.id = s.to_account "
+            "WHERE s.amount_rule_kind = 'mortgage_payment' AND s.rate_micros > 0")
+        if tid in implied
+    }
+    if not rules:
+        return []
+    ytd_into = {aid: tid for aid, tid in interest_accounts.items() if tid in rules}
+    # (rule, posted) -> [(year, month, balance, interest)]: the months a
+    # posting's interest covers.
+    covers: dict[tuple[int, str], list[tuple[int, int, int | None, int]]] = defaultdict(list)
+    for tid, posted, month, balance, interest in con.execute(
+            "SELECT rule_id, posted, month, balance, interest FROM mortgage_balance "
+            f"WHERE rule_id IN ({', '.join(map(str, rules))}) AND substr(month, 1, 4) = ? "
+            "ORDER BY rule_id, posted, month", (f"{tax_year:04d}",)):
+        covers[(int(tid), str(posted))].append(
+            (int(month[:4]), int(month[5:7]), int(balance), int(interest)))
+    # (year, month, liability, a business's) -> interest, and tags. The
+    # character says whether it's the household's own (common.personal),
+    # so a business's mortgage stays out of the debt limit's months.
+    Key = tuple[int, int, int, bool]
+    interest: dict[Key, int] = defaultdict(int)
+    tags: dict[Key, frozenset[str]] = defaultdict(frozenset)
+    debt: dict[tuple[int, int, int], int] = {}
+    unrecorded: dict[tuple[int, int, int], int] = defaultdict(int)
+    for kind, posted, tid, to, character, amount in con.execute(
+            "SELECT reason_kind, date, reason_id, to_account, tax_character, SUM(amount) "
+            "FROM transfer_event "
+            f"WHERE ((reason_kind IN ('rule', 'ytd_rule') AND reason_id IN ({', '.join(map(str, rules))})) "
+            f"OR (reason_kind = 'ytd' AND to_account IN ({', '.join(map(str, ytd_into)) or 'NULL'}))) "
+            f"AND to_account IN ({', '.join(map(str, expense_ids))}) AND {_TAX_YEAR_OF} = ? "
+            "GROUP BY reason_kind, date, reason_id, to_account, tax_character",
+            (tax_year,)):
+        tid = ytd_into[to] if kind == "ytd" else int(tid)
+        liability, rate, start = rules[tid]
+        amount = int(amount)
+        business = character == registries.BUSINESS_EXPENSE
+        found = _spending_tags(rule_tags.get(tid, frozenset()), account(to), str(character),
+                               registries.IMPLIED_TAX_TAGS["mortgage_payment"])
+        months = covers.get((tid, str(posted))) if kind != "ytd" else None
+        if not months:
+            # Interest no rule figured says nothing of its months or its
+            # balance: the months to its own, evenly.
+            year, last = int(posted[:4]), int(posted[5:7])
+            first = min(last, int(start[5:7])) if start[:4] == posted[:4] else 1
+            months = [(year, month, None, 1) for month in range(first, last + 1)]
+        weight = sum(part for *_x, part in months) or 1
+        left = amount
+        for n, (year, month, balance, part) in enumerate(months):
+            # The last month takes what rounding leaves.
+            share = left if n == len(months) - 1 else amount * part // weight
+            left -= share
+            key = (year, month, liability, business)
+            interest[key] += share
+            tags[key] |= found
+            at = (year, month, liability)
+            if balance is None:
+                unrecorded[at] += share * 12 * 1_000_000 // rate
+            else:
+                debt[at] = max(debt.get(at, 0), balance)
+    for at, balance in unrecorded.items():
+        debt[at] = max(debt.get(at, 0), balance)
+    totals: dict[tuple[int, int, int], int] = defaultdict(int)
+    for (year, month, liability, _business), paid in interest.items():
+        totals[(year, month, liability)] += paid
+    return [
+        tax_api.Mortgage(
+            year, month, account(liability).name, paid,
+            debt.get((year, month, liability), 0) * paid // total
+            if (total := totals[(year, month, liability)]) else 0,
+            tags[(year, month, liability, business)],
+            registries.BUSINESS_EXPENSE if business else "none")
+        for (year, month, liability, business), paid in sorted(interest.items())
+    ]
+
+
+def _taxes_paid(con, tax_year: int) -> list[tax_api.TaxPaid]:
+    """The state and local income tax paid in calendar ``tax_year`` and the
+    year before (#542), the SALT deduction's income taxes on a cash basis:
+    everything paid into each such jurisdiction's destination in the year.
+    The destination is the jurisdiction's own account, and only its income
+    tax payments go in (the loader, #586), so nothing there needs telling
+    apart. A refund (a settlement out of the destination, #568) is never
+    netted against them: the settlement posts it the April after, for the
+    year before, and the federal return recaptures it as that year's income
+    to the extent the deduction saved tax (#593), from the year before's
+    return and payments: the TaxYear gets this year's rows as
+    ``taxes_paid`` and the year before's as ``prior_taxes_paid``."""
+    return [
+        tax_api.TaxPaid(int(year), str(name), int(into), int(out))
+        for year, name, into, out in con.execute(
+            "SELECT CAST(substr(e.date, 1, 4) AS INTEGER) AS y, j.name, "
+            "       SUM(CASE WHEN e.to_account = c.account_id THEN e.amount ELSE 0 END), "
+            "       SUM(CASE WHEN e.from_account = c.account_id AND e.reason_kind = 'tax' "
+            "                THEN e.amount ELSE 0 END) "
+            # An OR, not IN, and CROSS JOINs to keep the jurisdiction first:
+            # SQLite then reads only the destination's events, through the
+            # two account indexes, not every event in the two years.
+            "FROM tax_jurisdiction j "
+            "CROSS JOIN chain c ON c.id = j.destination_chain_id "
+            "CROSS JOIN transfer_event e "
+            "  ON (e.to_account = c.account_id OR e.from_account = c.account_id) "
+            "WHERE j.name != 'federal' AND e.date >= ? AND e.date < ? "
+            "AND e.reason_kind != 'initial' GROUP BY y, j.name ORDER BY y, j.name",
+            (f"{tax_year - 1:04d}-01-01", f"{tax_year + 1:04d}-01-01"))
+    ]
+
+
+def _tax_ledger(con, tax_year: int) -> _TaxLedger:
+    """The income items, spending items, capital losses and people up to
+    ``tax_year``, from the transfers posted so far."""
+    account_tags: dict[int, set[str]] = defaultdict(set)
+    for aid, role, name in con.execute(
+            "SELECT x.account_id, t.role, t.name FROM account_tag x JOIN tag t ON t.id = x.tag_id"):
+        account_tags[aid].add(f"{role}:{name}")
+    accounts = {
+        aid: tax_api.Account(name, kind, subkind or "", owner,
+                             json.loads(meta or "{}").get("hobby") is True,
+                             frozenset(account_tags.get(aid, ())))
+        for aid, name, kind, subkind, owner, meta in con.execute(
+            "SELECT id, name, kind, subkind, owner, meta_json FROM account")
+    }
+
+    def account(aid: int) -> tax_api.Account:
+        # Every transfer names a real account; a unit test's ledger may not.
+        return accounts.get(aid) or tax_api.Account(f"#{aid}", "", "", None)
+
+    rule_tags, rule_person = _rule_tags(con)
+    implied, interest_accounts = _implied_rules(con)
+    # A rule with tags or a person is its own item; every other rule's
+    # transfers sum together, which keeps a tax year quick to build. A
+    # rule kind that implies a tag is its own too (#542), and a
+    # year_to_date.csv row into a home mortgage's interest account counts
+    # as that mortgage rule's, with its tags and person.
+    keyed = sorted(set(rule_tags) | set(rule_person) | set(implied))
+    cases = [f"WHEN reason_kind = 'ytd' AND to_account = {int(aid)} THEN {int(tid)}"
+             for aid, tid in interest_accounts.items()]
+    if keyed:
+        cases.append(f"WHEN reason_kind IN ('rule', 'ytd_rule') AND reason_id IN "
+                     f"({', '.join(str(int(tid)) for tid in keyed)}) THEN reason_id")
+    rule = f"CASE {' '.join(cases)} END" if cases else "NULL"
+    year_of = _TAX_YEAR_OF
+    items = [
+        tax_api.IncomeItem(int(year), character, account(frm), account(to), int(amount),
+                           rule_tags.get(tid, frozenset()) if tid is not None else frozenset())
+        for year, character, frm, to, tid, amount in con.execute(
+            f"SELECT {year_of} AS y, tax_character, from_account, to_account, {rule} AS r, SUM(amount) "
+            # A transfer of character none is never income; leaving those out
+            # (most of the ledger) keeps a tax year quick to build.
+            "FROM transfer_event WHERE tax_character <> 'none' AND y <= ? "
+            "GROUP BY y, tax_character, from_account, to_account, r",
+            (tax_year,),
+        )
+    ]
+    expense_ids = [aid for aid, a in accounts.items() if a.kind == "expense"]
+    spending = [
+        tax_api.SpendingItem(
+            int(year), character, account(frm), account(to), int(amount),
+            rule_tags.get(tid, frozenset()) if tid is not None else frozenset(),
+            rule_person.get(tid) if tid is not None else None,
+            _implied_tags(rule_tags.get(tid, frozenset()) if tid is not None else frozenset(),
+                          account(to), character, implied.get(tid) if tid is not None else None))
+        for year, character, frm, to, tid, amount in con.execute(
+            f"SELECT {year_of} AS y, tax_character, from_account, to_account, {rule} AS r, SUM(amount) "
+            f"FROM transfer_event WHERE to_account IN ({', '.join(map(str, expense_ids))}) AND y <= ? "
+            "GROUP BY y, tax_character, from_account, to_account, r",
+            (tax_year,),
+        )
+    ] if expense_ids else []
+    losses = [
+        tax_api.CapitalLoss(int(year), character, owner, int(amount), subkind)
+        for year, character, owner, subkind, amount in con.execute(
+            f"SELECT COALESCE(cl.tax_year, CAST(substr(cl.date, 1, 4) AS INTEGER)) AS y, "
+            "       cl.tax_character, a.owner, a.subkind, SUM(cl.amount) "
+            "FROM capital_loss cl LEFT JOIN account_lot l ON l.id = cl.lot_id "
+            "LEFT JOIN account a ON a.id = l.account_id WHERE y <= ? "
+            "GROUP BY y, cl.tax_character, a.owner, a.subkind",
+            (tax_year,),
+        )
+    ]
+    hsa_gains = [
+        tax_api.HsaGain(int(year), character, owner, int(amount))
+        for year, character, owner, amount in con.execute(
+            f"SELECT COALESCE(g.tax_year, CAST(substr(g.date, 1, 4) AS INTEGER)) AS y, "
+            "       g.tax_character, a.owner, SUM(g.amount) "
+            "FROM hsa_gain g LEFT JOIN account_lot l ON l.id = g.lot_id "
+            "LEFT JOIN account a ON a.id = l.account_id WHERE y <= ? GROUP BY y, g.tax_character, a.owner",
+            (tax_year,),
+        )
+    ]
+    persons = [tax_api.Person(pid, born or None, role or "", final or None)
+               for pid, born, role, final in con.execute(
+                   "SELECT p.id, p.birthdate, p.role, l.final_month FROM person p "
+                   "LEFT JOIN person_lifespan l ON l.person = p.id")]
+    return _TaxLedger(items, losses, persons, spending, hsa_gains,
+                      _mortgage_months(con, tax_year, rule_tags, account, expense_ids,
+                                       implied, interest_accounts),
+                      _taxes_paid(con, tax_year))
+
+
+def _tax_year(
+    con, params: Mapping[str, Any], *,
     aux: dict[tuple[str, str | None], list[tuple[str, dict[str, Any]]]],
     tax_year: int, tid: int,
     person_lifespan: dict[str, str] | None = None,
     taxpayers: Collection[str] = (),
-) -> _TaxEstimate:
-    """``tax_year``'s tax for a ``tax_accumulator`` rule's ``params`` (see
-    ``_apply_tax_accumulator``), from the transfers posted so far. When
-    ``tax_with``/``taxable_with`` add income, they work out again how much of
-    a carried-in net operating loss it can use under the rule's limit, and
-    how much more Social Security becomes taxable."""
+    ledger: _TaxLedger | None = None,
+    upstream: Callable[[str], tax_api.Prepared] | None = None,
+    growth_cache: dict[tuple[str, date, date, str], int] | None = None,
+    params_class: type[Any] | None = None,
+) -> tax_api.TaxYear:
+    """``tax_year`` as a calculator sees it (#507), from the transfers
+    posted so far: its income and spending items and those of every year
+    before it, the capital losses, the people, the aux tables, and the
+    jurisdictions it builds on (``upstream``). ``growth_cache`` is the run's
+    inflation factors, which indexing the tables reads. ``params_class`` is
+    the calculator's ``Params``, which ``params`` (checked at load, #510)
+    fill."""
     scope = str(params.get("scope", "federal"))
     filing_status_aux = str(params.get("filing_status_aux", "filing_status"))
-    standard_deduction_aux = str(params.get(
-        "standard_deduction_aux",
-        "standard_deduction" if scope == "federal" else registries.STATE_STANDARD_DEDUCTION,
-    ))
-    ss_threshold_aux = str(params.get("ss_threshold_aux", "ss_taxation_thresholds"))
-    ltcg_bracket_aux = str(params.get("ltcg_bracket_aux", "ltcg_brackets"))
-    bracket_aux = str(
-        params.get(
-            "bracket_aux",
-            "federal_brackets" if scope == "federal" else "state_brackets",
-        )
-    )
-    bracket_series = params.get("bracket_series")
+    if growth_cache is None:
+        growth_cache = {}
+    items, losses, persons, spending, hsa_gains, mortgages, taxes_paid = (
+        ledger or _tax_ledger(con, tax_year))
+    given = {k: v for k, v in params.items() if k != "scope"}
+    try:
+        typed = params_class(**given) if params_class is not None else given
+    except TypeError as e:
+        raise tax_api.TaxError(f"taxes/{scope}.csv: params_json: {e}") from None
 
-    as_of = f"{tax_year}-12-31"
-    filing_status = _active_filing_status(
-        aux, filing_status_aux, tax_year, tid,
-        person_lifespan=person_lifespan, taxpayers=taxpayers,
-    )
-
-    if bracket_aux == "state_brackets" and bracket_series is None:
-        # If exactly one state bracket series exists, default to it.
-        state_series = sorted(
-            series for (kind, series) in aux if kind == "state_brackets" and series is not None
-        )
-        if len(state_series) == 1:
-            bracket_series = state_series[0]
-        elif len(state_series) > 1:
-            raise EngineError(
-                f"tax_accumulator id={tid}: bracket_series required for state_brackets"
-            )
-
-    def loss_limit(year: int) -> int:
-        # A carryover from a year before the filing_status table starts (a
-        # year-to-date loss) is limited as if filed with this year's status.
-        status = filing_status if year == tax_year or not _active_aux_rows(
-            aux, filing_status_aux, None, f"{year}-12-31",
-        ) else _active_filing_status(
+    def filing_status_in(year: int) -> str:
+        return _active_filing_status(
             aux, filing_status_aux, year, tid,
             person_lifespan=person_lifespan, taxpayers=taxpayers,
         )
-        row = _lookup_by_series_key(
-            aux, "capital_loss_limit", "filing_status", status, f"{year}-12-31",
-        )
-        if row is None:
-            raise EngineError(
-                f"tax_accumulator id={tid}: {year} has a net capital loss, but no "
-                f"capital_loss_limit row for filing_status={status!r} effective on "
-                f"or before {year}-12-31 (aux/capital_loss_limit.csv)"
-            )
-        return int(row["amount"])
 
-    other_ordinary, ss_income = _tax_year_income_buckets(con, tax_year=tax_year)
-    business = _business_result(con, tax_year=tax_year)
-    capital = _capital_gains(con, tax_year=tax_year, loss_limit=loss_limit)
-    # A Schedule C loss offsets the year's other income (#231).
-    ordinary_income = other_ordinary + business.net + capital.stcg - capital.loss_deduction
-    ltcg_income = capital.ltcg
-
-    ss_tiers: tuple[int, int] | None = None
-    if scope == "federal" and ss_income > 0:
-        thresholds = _active_aux_rows(aux, ss_threshold_aux, None, as_of)
-        thresholds = [r for r in thresholds if r.get("filing_status") == filing_status]
-        if not thresholds:
-            raise EngineError(
-                f"tax_accumulator id={tid}: missing ss thresholds for filing_status={filing_status!r}"
-            )
-        ss_tiers = (int(thresholds[0]["tier1_floor"]), int(thresholds[0]["tier2_floor"]))
-
-    # A state's standard deduction is keyed by state, like its brackets
-    # (state_standard_deduction__CA.csv), so it follows bracket_series.
-    deduction_series = (
-        bracket_series if standard_deduction_aux == registries.STATE_STANDARD_DEDUCTION
-        else None
-    )
-    if deduction_series is not None and not aux.get((standard_deduction_aux, deduction_series)):
-        # The loader warned: the federal figure stands in for the state's.
-        standard_deduction_aux, deduction_series = "standard_deduction", None
-    deduction_rows = _active_aux_rows(aux, standard_deduction_aux, deduction_series, as_of)
-    deduction_rows = [r for r in deduction_rows if r.get("filing_status") == filing_status]
-    if not deduction_rows:
-        raise EngineError(
-            f"tax_accumulator id={tid}: missing standard deduction for filing_status={filing_status!r}"
-        )
-    standard_deduction = int(deduction_rows[0]["amount"])
-
-    # Itemized deductions (optional): a dated total, no filing_status split.
-    # state_deductions falls back to federal_deductions when the scenario has
-    # no state_deductions rows at all -- most states don't need their own file.
-    itemized_deduction_aux = str(params.get(
-        "itemized_deduction_aux",
-        "federal_deductions" if scope == "federal" else "state_deductions",
-    ))
-    if scope == "state" and not aux.get((itemized_deduction_aux, None)):
-        itemized_deduction_aux = "federal_deductions"
-    itemized_rows = _active_aux_rows(aux, itemized_deduction_aux, None, as_of)
-    itemized_deduction = int(itemized_rows[0]["amount"]) if itemized_rows else 0
-    deduction = max(standard_deduction, itemized_deduction)
-
-    bracket_rows = _active_aux_rows(aux, bracket_aux, bracket_series, as_of)
-    bracket_rows = [r for r in bracket_rows if r.get("filing_status") == filing_status]
-    if not bracket_rows:
-        raise EngineError(
-            f"tax_accumulator id={tid}: missing brackets kind={bracket_aux!r} "
-            f"series={bracket_series!r} filing_status={filing_status!r}"
-        )
-    brackets: list[tuple[int, int]] = sorted(
-        (int(r["floor"]), int(r["marginal_rate_micros"]))
-        for r in bracket_rows
-    )
-    ltcg_rows = [
-        r for r in _active_aux_rows(aux, ltcg_bracket_aux, None, as_of)
-        if r.get("filing_status") == filing_status
-    ] if scope == "federal" else []
-    ltcg_brackets = sorted(
-        (int(r["floor"]), int(r["marginal_rate_micros"])) for r in ltcg_rows
-    )
-
-    def taxable_ss_for(ordinary: int, ltcg: int) -> int:
-        if ss_tiers is None:
-            return 0
-        return _taxable_social_security_cents(
-            ordinary_income=ordinary, ltcg_income=ltcg, ss_income=ss_income,
-            tier1=ss_tiers[0], tier2=ss_tiers[1],
-        )
-
-    def tax_on(taxable: int, ltcg: int) -> int:
-        """The brackets' tax on ``taxable`` income, ``ltcg`` of it long-term gain."""
-        if not (ltcg_brackets and ltcg > 0):
-            return _progressive_tax_cents(taxable, brackets)
-        # Long-term gains sit on top of ordinary taxable income and are taxed at
-        # the preferential rates for the band each part lands in.
-        gain_taxable = min(ltcg, taxable)
-        ordinary_taxable = taxable - gain_taxable
-        return (
-            _progressive_tax_cents(ordinary_taxable, brackets)
-            + _progressive_tax_cents(taxable, ltcg_brackets)
-            - _progressive_tax_cents(ordinary_taxable, ltcg_brackets)
-        )
-
-    taxable_ss = taxable_ss_for(ordinary_income, ltcg_income)
-    income_before_nol = ordinary_income + ltcg_income + taxable_ss - deduction
-    # A net operating loss carried in offsets part of this year's taxable
-    # income (#231). It doesn't lower AGI first, as the NOL deduction really
-    # does, so taxable Social Security can come out a little high in a year
-    # that uses one.
-    nol_limit_percent = int(params.get("nol_limit_percent", 80 if scope == "federal" else 100))
-    if not 0 <= nol_limit_percent <= 100:
-        raise EngineError(
-            f"tax_accumulator nol_limit_percent must be 0 to 100, got {nol_limit_percent}"
-        )
-    nol_in = _summary_amount(con, tax_year - 1, f"{scope}_nol_carryover")
-    nol_used = min(nol_in, max(0, income_before_nol) * nol_limit_percent // 100)
-    taxable_income = max(0, income_before_nol - nol_used)
-    # The loss that carries: the business loss less the income it absorbed.
-    # The deduction never adds to it (a nonbusiness deduction offsets only
-    # nonbusiness income, §172(d)(4)), nor does the capital-loss deduction.
-    nonbusiness_income = other_ordinary + capital.stcg + ltcg_income + taxable_ss
-    nol_new = max(0, -business.net - max(0, nonbusiness_income - deduction))
-    tax_liability = tax_on(taxable_income, ltcg_income)
-
-    def taxable_with(extra_ordinary: int, extra_ltcg: int) -> tuple[int, int]:
-        """This year's taxable income, and its ordinary part, with more
-        ordinary income and long-term gain on top. More income can use more
-        of a carried-in NOL under its limit, so that is worked out again."""
-        ordinary, ltcg = ordinary_income + extra_ordinary, ltcg_income + extra_ltcg
-        before_nol = ordinary + ltcg + taxable_ss_for(ordinary, ltcg) - deduction
-        used = min(nol_in, max(0, before_nol) * nol_limit_percent // 100)
-        taxable = max(0, before_nol - used)
-        return taxable, taxable - min(ltcg, taxable)
-
-    def tax_with(extra_ordinary: int, extra_ltcg: int) -> int:
-        """This year's tax with more ordinary income and long-term gain on top."""
-        return tax_on(taxable_with(extra_ordinary, extra_ltcg)[0], ltcg_income + extra_ltcg)
-
-    def agi_with(extra_ordinary: int, extra_ltcg: int) -> int:
-        ordinary, ltcg = ordinary_income + extra_ordinary, ltcg_income + extra_ltcg
-        return ordinary + ltcg + taxable_ss_for(ordinary, ltcg)
-
-    return _TaxEstimate(
-        scope=scope, filing_status=filing_status, brackets=brackets,
-        ordinary_income=ordinary_income, ltcg_income=ltcg_income, ss_income=ss_income,
-        taxable_ss=taxable_ss, business=business, capital=capital,
-        standard_deduction=standard_deduction, itemized_deduction=itemized_deduction,
-        deduction=deduction, nol_in=nol_in, nol_used=nol_used, nol_new=nol_new,
-        taxable_income=taxable_income, tax_liability=tax_liability,
-        tax_with=tax_with, taxable_with=taxable_with, agi_with=agi_with,
+    return tax_api.TaxYear(
+        year=tax_year, jurisdiction=scope, params=typed,
+        items=items, losses=losses, persons=persons, spending=spending, hsa_gains=hsa_gains,
+        mortgages=mortgages,
+        taxes_paid=[t for t in taxes_paid if t.year == tax_year],
+        prior_taxes_paid=[t for t in taxes_paid if t.year == tax_year - 1],
+        _table=lambda kind, series, year: _active_aux_rows(aux, kind, series, f"{year}-12-31"),
+        _indexed=lambda kind, series: _indexed_tax_rows(aux, kind, series, tax_year, growth_cache),
+        _dated=lambda kind, series=None: aux.get((kind, series)) or [],
+        _keyed=lambda kind, column, value, year: _lookup_by_series_key(
+            aux, kind, column, value, f"{year}-12-31"),
+        _filing_status_in=filing_status_in,
+        _prior=lambda line: _summary_amount(con, tax_year - 1, f"{scope}_{line}"),
+        _line_in=lambda line, year: _summary_amount(con, year, f"{scope}_{line}"),
+        _series_of=lambda kind: sorted(
+            series for (k, series) in aux if k == kind and series is not None),
+        _residences=_residences(con),
+        _grown=lambda amount, series, since: _grown_amount(
+            aux, amount, series, since, tax_year, growth_cache),
+        **({"_upstream": upstream} if upstream is not None else {}),
     )
 
 
-def _apply_tax_accumulator(
+class _Remembered(tax_api.Prepared):
+    """A prepared year that keeps its returns by extra income. A what-if
+    asks the same year many times over (a state's estimate computes the
+    federal year, and a local tax the state's, which a state's
+    ``max_marginal_rate`` also computes), and ``compute`` depends only on
+    the extra income."""
+
+    _KEPT = 1_024
+    """Returns kept at most; past it, they start again."""
+
+    def __init__(self, inner: tax_api.Prepared) -> None:
+        self._inner = inner
+        self._returns: dict[tax_api.Extra, tax_api.Return] = {}
+        self.filing_status = inner.filing_status
+        self.brackets = inner.brackets
+        self.ltcg_brackets = inner.ltcg_brackets
+
+    def __getattr__(self, name: str) -> Any:
+        # Anything else a calculator's year carries, for code that reads it.
+        return getattr(self._inner, name)
+
+    def compute(self, extra: tax_api.Extra = tax_api.NO_EXTRA) -> tax_api.Return:
+        ret = self._returns.get(extra)
+        if ret is None:
+            if len(self._returns) >= self._KEPT:
+                self._returns.clear()
+            ret = self._returns[extra] = self._inner.compute(extra)
+        return ret
+
+
+_SharedPrepares = dict[tuple[str, int], tuple["_TaxLedger", str, tax_api.Prepared]]
+"""Prepared tax years by (jurisdiction, year), with the ledger and kind
+each was prepared from (:func:`_prepare_tax`)."""
+
+
+_RUN_TAX_KINDS: ContextVar[Mapping[str, type[tax_api.TaxCalculator]] | None] = ContextVar(
+    "_RUN_TAX_KINDS", default=None)
+"""The running scenario's calculator kinds, the data repo's included
+(#510); None when it uses only the built-ins."""
+
+
+def _calculator(kind: str) -> tax_api.TaxCalculator:
+    """The calculator a jurisdiction's ``kind`` names, in the running scenario."""
+    kinds = _RUN_TAX_KINDS.get()
+    if kinds is not None and kind in kinds:
+        return kinds[kind]()
+    return tax_api.calculator(kind)
+
+
+def _prepare_tax(
+    con, params: Mapping[str, Any], *,
+    aux: dict[tuple[str, str | None], list[tuple[str, dict[str, Any]]]],
+    tax_year: int, tid: int, kind: str,
+    jurisdictions: Jurisdictions | None = None,
+    person_lifespan: dict[str, str] | None = None,
+    taxpayers: Collection[str] = (),
+    ledger: _TaxLedger | None = None,
+    growth_cache: dict[tuple[str, date, date, str], int] | None = None,
+    shared: _SharedPrepares | None = None,
+) -> tax_api.Prepared:
+    """``tax_year``'s tax for a jurisdiction (#507): the calculator its
+    ``kind`` names, prepared on the year so far, ready to :meth:`compute`.
+    A jurisdiction it builds on (#508) is found in ``jurisdictions`` and
+    prepared on the same ledger when the calculator first asks for it.
+
+    ``shared`` lends prepared jurisdictions between calls in one month, so
+    a state reuses the federal year its settlement just prepared: one is
+    taken only when its ledger is the same, so nothing posted since."""
+    scope = str(params.get("scope", "federal"))
+    ledger = ledger or _tax_ledger(con, tax_year)
+    if shared is None:
+        shared = {}
+    lent = shared.get((scope, tax_year))
+    if lent is not None and lent[0] == ledger and lent[1] == kind:
+        return lent[2]
+    try:
+        calc = _calculator(kind)
+
+        def upstream(name: str) -> tax_api.Prepared:
+            if name not in calc.upstream:
+                raise tax_api.TaxError(
+                    f"taxes/{scope}.csv: its {kind} calculator doesn't build on {name!r}")
+            found = (jurisdictions or {}).get(name)
+            if found is None:
+                raise tax_api.TaxError(
+                    f"taxes/{scope}.csv builds on the {name} tax, and the scenario "
+                    f"has none (taxes/{name}.csv)")
+            # Prepared under its own id, which its errors name.
+            return _prepare_tax(
+                con, found.params, aux=aux, tax_year=tax_year, tid=found.id,
+                kind=found.kind, jurisdictions=jurisdictions, person_lifespan=person_lifespan,
+                taxpayers=taxpayers, ledger=ledger, growth_cache=growth_cache, shared=shared)
+
+        prepared = _Remembered(calc.prepare(_tax_year(
+            con, params, aux=aux, tax_year=tax_year, tid=tid,
+            person_lifespan=person_lifespan, taxpayers=taxpayers,
+            ledger=ledger, upstream=upstream, growth_cache=growth_cache,
+            params_class=type(calc).Params,
+        )))
+        shared[(scope, tax_year)] = (ledger, kind, prepared)
+        return prepared
+    except tax_api.TaxError as exc:
+        raise EngineError(str(exc)) from exc
+
+
+def _summary_amount(con, year: int, bucket: str) -> int:
+    """A ``tax_year_summary`` amount, 0 if that year wasn't computed."""
+    row = con.execute(
+        "SELECT amount FROM tax_year_summary WHERE year = ? AND bucket = ?", (year, bucket),
+    ).fetchone()
+    return int(row[0]) if row else 0
+
+
+class TaxJurisdiction(NamedTuple):
+    """A ``tax_jurisdiction`` row (#507) as the engine reads it."""
+    id: int
+    name: str
+    kind: str
+    source_chain: int
+    destination_chain: int
+    schedule: str
+    start: str
+    end: str | None
+    params: dict[str, Any]
+    """The calculator's params, with ``scope``: the jurisdiction's name."""
+
+
+def _tax_jurisdictions(con) -> list[TaxJurisdiction]:
+    """The scenario's tax jurisdictions, in the order they settle."""
+    order = {name: i for i, name in enumerate(registries.TAX_JURISDICTIONS)}
+    rows = [
+        TaxJurisdiction(
+            jid, name, kind, source, destination, schedule, start, end,
+            {**json.loads(params or "{}"), "scope": name},
+        )
+        for jid, name, kind, source, destination, schedule, start, end, params in con.execute(
+            'SELECT id, name, kind, source_chain_id, destination_chain_id, schedule, start, '
+            '"end", params_json FROM tax_jurisdiction')
+    ]
+    return sorted(rows, key=lambda j: (order.get(j.name, len(order)), j.name))
+
+
+def _tax_settles(j: TaxJurisdiction, month: date) -> bool:
+    """Whether jurisdiction ``j`` settles in ``month``: each April
+    (``schedule`` april) from its start to its end."""
+    month_s = month.isoformat()
+    return month.month == 4 and j.start <= month_s and (j.end is None or month_s <= j.end)
+
+
+def _tax_destination(graph: ChainGraph, j: TaxJurisdiction) -> int:
+    lot = graph.leaf_lot.get(j.destination_chain)
+    if lot is None:
+        raise EngineError(f"taxes/{j.name}.csv: the destination must be an account")
+    return lot
+
+
+def _settle_tax(
     con,
     balances: dict[int, int],
     account_kinds: dict[int, str],
@@ -2748,6 +3570,8 @@ def _apply_tax_accumulator(
     month: date,
     params: dict[str, Any],
     *,
+    kind: str,
+    jurisdictions: Jurisdictions | None = None,
     from_id: int | None,
     to_id: int,
     aux: dict[tuple[str, str | None], list[tuple[str, dict[str, Any]]]],
@@ -2755,28 +3579,50 @@ def _apply_tax_accumulator(
     tid: int,
     post_transfer: bool = True,
     graph=None, source_chain_id=None, account_tax_treatment=None,
-    account_subkind=None, account_name=None, tax_year=None,
+    account_subkind=None, account_name=None,
     person_lifespan: dict[str, str] | None = None,
     taxpayers: Collection[str] = (),
     refill_ctx: RefillContext | None = None,
+    drawdown_pricing: dict[tuple[str, int], DrawdownPricing] | None = None,
+    shared: _SharedPrepares | None = None,
 ) -> None:
-    """Compute and optionally pay forecasted income tax for a target year.
+    """Compute and optionally pay a tax jurisdiction's income tax for the
+    year before ``month`` (#507: ``taxes/<jurisdiction>.csv``, settled each
+    April). ``tid`` is the jurisdiction's id, the payment's ``reason_id``
+    (``reason_kind`` ``tax``).
 
-    Supported params:
-    - year: "previous" (default), "current", or explicit year integer
-    - scope: "federal" (default) or "state"
+    Supported params (the built-in calculators'; a local tax reads none: its
+    bands are the county's, or the state's, where the household lives that
+    year, #509). A state's tables are those of the state it lives in:
+    - scope: the jurisdiction, "federal", "state" or "local" (its file's name)
     - filing_status_aux: defaults to "filing_status"
     - bracket_aux: defaults to "federal_brackets" for federal, "state_brackets" for state
-    - bracket_series: optional, required when state_brackets has multiple series
+    - bracket_series: federal only, the series of its brackets, if any
     - standard_deduction_aux: defaults to "standard_deduction" (federal) or
-      "state_standard_deduction" (state), whose series is bracket_series's
+      "state_standard_deduction" (state), keyed by the state
       (state_standard_deduction__CA.csv); with no such file the state falls
       back to "standard_deduction"
     - itemized_deduction_aux: defaults to "federal_deductions" (federal) or
-      "state_deductions" (state); the greater of it and the standard deduction
-      is used. "state_deductions" falls back to "federal_deductions" when the
-      scenario has no "state_deductions" rows at all.
-    - ss_threshold_aux: defaults to "ss_taxation_thresholds" (federal only)
+      "state_deductions" (state), a hand-typed itemized total added to the
+      lines figured from spending; the greater of the itemized total and the
+      standard deduction is used. "state_deductions" falls back to
+      "federal_deductions" when the scenario has no "state_deductions" rows at all.
+    - itemized_limits_aux (#542): defaults to "itemized_limits" (federal) or
+      "state_itemized_limits" (state, keyed by the state; a state without
+      its own table figures no lines, and none does without the federal
+      table); without the table, itemized deductions are only the
+      hand-typed total
+    - ss_threshold_aux: defaults to "ss_taxation_thresholds"; read by a
+      federal rule, and by a state rule whose state has a
+      "state_social_security" table (#484), which starts from the federally
+      taxable amount. Without that table a state taxes no Social Security.
+    - ltcg_bracket_aux: defaults to "ltcg_brackets" (federal) or
+      "state_ltcg_brackets" (state, keyed by the state); without
+      such a table long-term gain is taxed as ordinary income
+    - stcg_bracket_aux, ltcg_exclusion_aux (#485): a state's own short-term
+      gain rates and long-term gain exclusion, defaulting to
+      "state_stcg_brackets" and "state_ltcg_exclusion", keyed by the state
+      (state only)
     - nol_limit_percent: how much of a year's taxable income a carried net
       operating loss may offset (#231); defaults to 80 (federal, IRC §172) or
       100 (state; California, for one, has no 80% limit)
@@ -2785,48 +3631,46 @@ def _apply_tax_accumulator(
     ``run_scenario``) computes and writes ``tax_year_summary`` as normal but
     skips actually moving money -- the tail exists only to let the final
     scenario year's reconciliation compute, not to simulate a real month.
+
+    ``drawdown_pricing`` collects, by (scope, year), the year's tax with
+    more income on top, for ``_record_drawdown_taxes`` to price the after-tax
+    drawdown once the run ends.
     """
-    year_mode = str(params.get("year", "previous"))
     scope = str(params.get("scope", "federal"))
-    if scope not in {"federal", "state"}:
+    if scope not in registries.TAX_JURISDICTIONS:
         raise EngineError(
-            f"tax_accumulator id={tid}: scope must be 'federal' or 'state' (got {scope!r})"
+            f"tax jurisdiction id={tid}: must be one of "
+            f"{', '.join(registries.TAX_JURISDICTIONS)} (got {scope!r})"
         )
+    tax_year = month.year - 1
 
-    if year_mode == "previous":
-        tax_year = month.year - 1
-    elif year_mode == "current":
-        tax_year = month.year
-    else:
-        try:
-            tax_year = int(year_mode)
-        except ValueError as e:
-            raise EngineError(
-                f"tax_accumulator id={tid}: invalid year={year_mode!r}"
-            ) from e
-
-    est = _year_tax_estimate(
-        con, params, aux=aux, tax_year=tax_year, tid=tid,
+    prepared = _prepare_tax(
+        con, params, aux=aux, tax_year=tax_year, tid=tid, kind=kind, jurisdictions=jurisdictions,
         person_lifespan=person_lifespan, taxpayers=taxpayers,
+        growth_cache=refill_ctx.inflation_factor_cache if refill_ctx is not None else None,
+        shared=shared,
     )
-    ordinary_income = est.ordinary_income
-    ltcg_income = est.ltcg_income
-    ss_income = est.ss_income
-    taxable_ss = est.taxable_ss
-    business = est.business
-    capital = est.capital
-    standard_deduction = est.standard_deduction
-    itemized_deduction = est.itemized_deduction
-    deduction = est.deduction
-    nol_in = est.nol_in
-    nol_used = est.nol_used
-    nol_new = est.nol_new
-    taxable_income = est.taxable_income
-    tax_liability = est.tax_liability
-    tax_with = est.tax_with
+    ret = prepared.compute()
+    tax_liability = ret.tax
+    if drawdown_pricing is not None:
+        # A later year's share replaces what that year already drew from the
+        # same money (an RMD, a sale at a gain), so price it on the rest of
+        # the year's income, or the drawdown taxes those dollars twice.
+        drawn = ret.memo.get("drawn_ordinary", 0)
+        realized = ret.memo.get("drawn_gain", 0)
+        # A home sold this year is in the realized gain the share replaces,
+        # so its part comes off the share's real estate too (#489).
+        realized_home = ret.memo.get("drawn_real_estate_gain", 0)
+        drawdown_pricing[(scope, tax_year)] = DrawdownPricing(
+            lambda ordinary, gains, real_estate=0, prepared=prepared, drawn=drawn,
+            realized=realized, realized_home=realized_home:
+            prepared.compute(tax_api.Extra(
+                ordinary - drawn, gains - realized, real_estate - realized_home)).tax,
+            hsa_taxed=bool(ret.memo.get("hsa_taxed", 0)))
 
-    drawdown_base, drawdown_tax = _drawdown_tax(con, tax_year, tax_with)
-
+    # What was paid toward the year: everything into the destination for
+    # it. The destination is the jurisdiction's own account, of its own
+    # subkind, and only its tax payments go in (the loader, #586).
     paid_transfers = con.execute(
         "SELECT COALESCE(SUM(amount), 0) "
         "FROM transfer_event "
@@ -2844,7 +3688,7 @@ def _apply_tax_accumulator(
             _post_transfer(
                 con, balances, account_kinds, step_id, month_s,
                 from_id, to_id, tax_due, tax_char, tid, tax_year=tax_year,
-                refill_ctx=refill_ctx,
+                refill_ctx=refill_ctx, reason_kind="tax",
             )
         else:
             # The engine passes these with every chain source.
@@ -2853,40 +3697,39 @@ def _apply_tax_accumulator(
             _chain_draw(
                 con, balances, account_kinds, account_tax_treatment,
                 account_subkind, account_name, step_id, month_s, graph,
-                source_chain_id, tax_due, to_id, reason_kind="rule", reason_id=tid,
+                source_chain_id, tax_due, to_id, reason_kind="tax", reason_id=tid,
                 tax_year=tax_year, refill_ctx=refill_ctx,
             )
+    elif post_transfer and tax_overpaid > 0:
+        # More was paid than the year owes (withholding past the tax, or a
+        # refundable credit taking it below zero, #568): the jurisdiction
+        # pays it back, into the account the tax is paid from.
+        # It goes into cash: a deposit into a retirement, HSA or brokerage
+        # lot would be a contribution nobody made, and a liability caps it.
+        assert step_id is not None and account_subkind is not None
+        refund_to = next((lot for lot in (
+            [from_id] if from_id is not None else _chain_leaf_lots(graph, source_chain_id))
+            if account_kinds.get(lot) == "asset"
+            and account_subkind.get(lot) in registries.CASH_SUBKINDS), None)
+        if refund_to is None:
+            raise EngineError(
+                f"tax jurisdiction id={tid}: the {tax_year} refund is paid back into "
+                "the first cash account its source draws from, and it has none")
+        _post_transfer(
+            con, balances, account_kinds, step_id, month_s,
+            to_id, refund_to, tax_overpaid, tax_char, tid, tax_year=tax_year,
+            refill_ctx=refill_ctx, reason_kind="tax",
+        )
 
     computed_at = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     summary_rows = {
-        f"{scope}_ordinary_income": ordinary_income,
-        f"{scope}_schedule_c_net": business.net,
-        f"{scope}_hobby_expense_disallowed": business.disallowed,
-        f"{scope}_nol_used": nol_used,
-        f"{scope}_nol_carryover": nol_in - nol_used + nol_new,
-        f"{scope}_ltcg_income": ltcg_income,
-        f"{scope}_capital_loss_deduction": capital.loss_deduction,
-        f"{scope}_capital_loss_carryover": capital.carryover_st + capital.carryover_lt,
-        f"{scope}_ss_income": ss_income,
-        f"{scope}_taxable_ss": taxable_ss,
-        f"{scope}_adjusted_gross_income": ordinary_income + ltcg_income + taxable_ss,
-        f"{scope}_standard_deduction": standard_deduction,
-        f"{scope}_itemized_deduction": itemized_deduction,
-        f"{scope}_deduction_used": deduction,
-        f"{scope}_taxable_income": taxable_income,
-        f"{scope}_tax_liability": tax_liability,
+        f"{scope}_{line}": amount for line, amount in ret.lines.items()
+    }
+    summary_rows.update({
         f"{scope}_tax_paid": already_paid,
         f"{scope}_tax_due": tax_due,
         f"{scope}_tax_overpaid": tax_overpaid,
-    }
-    if scope == "federal":
-        # IRMAA's MAGI (#253): AGI plus tax-exempt interest, which the model
-        # has no character for yet (#265), so it is AGI.
-        summary_rows["federal_magi"] = summary_rows["federal_adjusted_gross_income"]
-    if drawdown_base is not None:
-        summary_rows[f"{scope}_drawdown_base"] = drawdown_base
-        summary_rows[f"{scope}_drawdown_tax"] = drawdown_tax
-
+    })
     for bucket, amount in summary_rows.items():
         con.execute(
             "INSERT OR REPLACE INTO tax_year_summary(year, bucket, amount, computed_at) "
@@ -2901,22 +3744,85 @@ $100 converted. Small enough to stop near a bracket edge, large enough that
 a whole IRA takes a few thousand steps at most."""
 
 
-def _fill_bracket_tax_rule(
-    tax_rules: Sequence[tuple[str, dict[str, Any]]], params: Mapping[str, Any],
-    tid: int, name: str,
-) -> dict[str, Any]:
-    """The ``tax_accumulator`` rule whose settings a fill_bracket measures
-    with: ``tax_rule`` by name, or the one rule of its scope."""
-    scope = str(params.get("scope", "federal"))
-    wanted = params.get("tax_rule")
-    matches = [rule for rule_name, rule in tax_rules
-               if str(rule.get("scope", "federal")) == scope and (rule_name == wanted or not wanted)]
-    if len(matches) != 1:
-        raise EngineError(
-            f"fill_bracket id={tid} ({name!r}): needs one {scope} tax_accumulator rule "
-            f"to measure with (found {len(matches)}); name it with tax_rule in params_json"
+class _StrategyTax:
+    """What ``ctx.tax`` reads (#421): a tax year's estimate by scope, from
+    the scope's tax jurisdiction (#507); income so far by character;
+    the settled summary of a year; IRMAA's tier floors."""
+
+    def __init__(
+        self, con, rules: Sequence[tuple[int, str, str, dict[str, Any]]],
+        jurisdictions: Jurisdictions | None = None, *,
+        aux: dict[tuple[str, str | None], list[tuple[str, dict[str, Any]]]],
+        person_lifespan: dict[str, str], taxpayers: Collection[str], irmaa: IrmaaContext,
+    ) -> None:
+        self.con = con
+        self.rules = rules
+        self.jurisdictions = jurisdictions
+        self.aux = aux
+        self.person_lifespan = person_lifespan
+        self.taxpayers = taxpayers
+        self.irmaa = irmaa
+
+    def estimate(self, scope: str, year: int) -> tax_api.Prepared:
+        matches = [(tid, kind, params) for tid, _name, kind, params in self.rules
+                   if str(params.get("scope", "federal")) == scope]
+        if not matches:
+            raise strategy_api.StrategyError(
+                f"ctx.tax needs the {scope} tax (taxes/{scope}.csv), and the scenario has none")
+        tid, kind, params = matches[0]
+        return _prepare_tax(
+            self.con, {**params, "scope": scope}, aux=self.aux, tax_year=year, tid=tid, kind=kind,
+            jurisdictions=self.jurisdictions,
+            person_lifespan=self.person_lifespan, taxpayers=self.taxpayers,
+            growth_cache=self.irmaa.inflation_factor_cache,
         )
-    return {**matches[0], "scope": scope}
+
+    def has_scope(self, scope: str) -> bool:
+        return any(str(params.get("scope", "federal")) == scope for _t, _n, _k, params in self.rules)
+
+    def ytd(self, year: int) -> dict[str, int]:
+        return {
+            character: int(total) for character, total in self.con.execute(
+                "SELECT tax_character, SUM(amount) FROM transfer_event "
+                "WHERE COALESCE(tax_year, CAST(substr(date, 1, 4) AS INTEGER)) = ? "
+                "AND reason_kind != 'initial' GROUP BY tax_character ORDER BY tax_character",
+                (year,),
+            )
+        }
+
+    def summary(self, year: int) -> dict[str, int] | None:
+        rows = self.con.execute(
+            "SELECT bucket, amount FROM tax_year_summary WHERE year = ? ORDER BY bucket", (year,),
+        ).fetchall()
+        return {bucket: int(amount) for bucket, amount in rows} or None
+
+    def irmaa_floors(self, year: int, filing_status: str) -> tuple[int, ...]:
+        if (registries.IRMAA_TIERS, None) not in self.irmaa.aux:
+            return ()  # the table is optional; without it there are no floors
+        return tuple(t.floor for t in self.irmaa.tiers(year, filing_status, 0))
+
+
+def _fill_bracket_tax_rule(
+    tax_rules: Jurisdictions, params: Mapping[str, Any],
+    tid: int, name: str,
+) -> TaxRule:
+    """The tax jurisdiction a fill_bracket measures with: the one its
+    ``scope`` names."""
+    scope = str(params.get("scope", "federal"))
+    if scope in tax_rules:
+        return tax_rules[scope]
+    raise EngineError(
+        f"fill_bracket id={tid} ({name!r}): measures with the {scope} tax, "
+        f"and the scenario has none (taxes/{scope}.csv)"
+    )
+
+
+def _rate_counts(tax_rules: Jurisdictions, scope: str) -> list[TaxRule]:
+    """Each of the scenario's jurisdictions whose tax a marginal rate in
+    ``scope`` counts too (``registries.TAX_RATE_COUNTS``), in settlement
+    order."""
+    return [tax_rules[name] for name in registries.TAX_JURISDICTIONS
+            if name in tax_rules and registries.TAX_RATE_COUNTS.get(name) == scope]
 
 
 def _largest_within(measure: Callable[[int], int], target: int, cap: int) -> int:
@@ -2947,31 +3853,42 @@ def _within_marginal_rate(
     later (#253), jumps at a tier floor, so a step that crosses one isn't
     judged alone: the span from here to where stepping would stop without
     another floor is, cliff included. Crossing pays when its average cost is
-    within the limit; otherwise the conversion stops at the floor."""
+    within the limit; otherwise the conversion stops at the floor.
+
+    The steps are taken by :func:`_gallop`, many at a time where the rate
+    doesn't change."""
+    taxes: dict[int, int] = {}
+
+    def tax(x: int) -> int:
+        if x not in taxes:
+            taxes[x] = tax_with(x, 0)
+        return taxes[x]
+
     def cost(x: int) -> int:
-        return tax_with(x, 0) + (cliff(x) if cliff else 0)
+        return tax(x) + (cliff(x) if cliff else 0)
 
     def tax_step_ok(x: int, step: int) -> bool:
-        return (tax_with(x + step, 0) - tax_with(x, 0)) * 1_000_000 <= limit * step
+        return (tax(x + step) - tax(x)) * 1_000_000 <= limit * step
+
+    def crosses(x: int, y: int) -> bool:
+        # The surcharge never falls as MAGI grows: the same at both ends,
+        # it is the same between them.
+        return cliff is not None and cliff(y) != cliff(x)
 
     taken = 0
     while taken < amount:
+        taken = _gallop(taken, amount, tax, tax_step_ok, crosses, limit)
         step = min(FILL_BRACKET_STEP, amount - taken)
-        if not tax_step_ok(taken, step):
+        if taken >= amount or not tax_step_ok(taken, step):
             break
-        if cliff is None or cliff(taken + step) == cliff(taken):
-            taken += step
-            continue
+        assert cliff is not None
         # The step crosses a floor: the last amount still under it, then how
         # far the tax alone would let the conversion go before the next floor.
         below = _largest_within(cliff, cliff(taken), taken + step)
-        end, crossing = below, True
-        while end < amount:
-            next_step = min(FILL_BRACKET_STEP, amount - end)
-            if not tax_step_ok(end, next_step) or (
-                    not crossing and cliff(end + next_step) != cliff(end)):
-                break
-            end, crossing = end + next_step, False
+        end = below
+        first = min(FILL_BRACKET_STEP, amount - below)
+        if below < amount and tax_step_ok(below, first):
+            end = _gallop(below + first, amount, tax, tax_step_ok, crosses, limit)
         if (cost(end) - cost(below)) * 1_000_000 <= limit * (end - below):
             taken = end
         else:
@@ -2979,12 +3896,67 @@ def _within_marginal_rate(
     return taken
 
 
+def _gallop(
+    x: int, amount: int, tax: Callable[[int], int],
+    step_ok: Callable[[int, int], bool], crosses: Callable[[int, int], bool],
+    limit: int,
+) -> int:
+    """Where stepping from ``x`` by ``FILL_BRACKET_STEP`` (the last step
+    short, to ``amount``) stops: before the first step that isn't
+    ``step_ok`` or that ``crosses``.
+
+    It doesn't step through a run where every step costs what the first
+    does: a span is taken whole when its last step is ok and each of its
+    four quarters costs what as many first steps would, give or take the
+    first step's headroom under ``limit`` (exactly, at the limit). A step
+    that costs more than that, a jump (a state exclusion lost at an income
+    limit) or a higher rate, shows in its quarter, however long the span.
+    The span doubles while that holds and halves back when not, down to
+    one step. Only a rise and a fall that cancel within one quarter could
+    hide."""
+    step = FILL_BRACKET_STEP
+
+    def flat(a: int, steps: int) -> bool:
+        quarter = steps // 4 * step
+        b = a + 4 * quarter
+        if crosses(a, b) or not step_ok(b - step, step):
+            return False
+        first = tax(a + step) - tax(a)
+        # How far a quarter may cost more than its share at the first
+        # step's rate: what one step may cost more and still be ok.
+        slack = (limit * step - first * 1_000_000) // 1_000_000
+        share = first * (quarter // step)
+        return all(abs(tax(a + (k + 1) * quarter) - tax(a + k * quarter) - share) <= slack
+                   for k in range(4))
+
+    # The span in steps; after a span of four fails, single steps for a
+    # while (longer each time), so a rate that rounds unevenly from step to
+    # step costs little more than stepping did.
+    span, wait, backoff = 4, 0, 4
+    while x < amount:
+        first = min(step, amount - x)
+        if not step_ok(x, first) or crosses(x, x + first):
+            return x
+        steps = min(span, (amount - x) // step) // 4 * 4
+        if not wait and steps >= 4:
+            if flat(x, steps):
+                x, span, backoff = x + steps * step, span * 2, 4
+                continue
+            if steps > 4:
+                span = steps // 2
+                continue
+            wait, backoff = backoff, backoff * 2
+        x += first
+        wait = max(0, wait - 1)
+    return x
+
+
 def _apply_fill_bracket(
     con, balances: dict[int, int], account_kinds: dict[int, str],
     step_id: int, month_s: str, month: date, params: dict[str, Any],
     from_lot: int, to_lot: int, tax_char: str, tid: int, name: str, *,
     aux: dict[tuple[str, str | None], list[tuple[str, dict[str, Any]]]],
-    tax_rules: Sequence[tuple[str, dict[str, Any]]],
+    tax_rules: Jurisdictions,
     inflation: tuple[str, date, str] | None,
     inflation_factor_cache: dict[tuple[str, date, date, str], int],
     person_lifespan: dict[str, str], taxpayers: Collection[str],
@@ -2998,14 +3970,21 @@ def _apply_fill_bracket(
     conversion grows (more of it can make more Social Security taxable), so
     the largest amount under the target is found by bisection. Then
     ``max_amount`` and the lot's balance cap it, and ``max_marginal_rate``
-    stops it where the next $100's tax would cost more than that rate.
+    stops it where the next $100's tax would cost more than that rate; a
+    state's counts the local tax built on it too (#508).
     ``irmaa_tier`` keeps the year's MAGI within that IRMAA tier (#253), and
     ``max_marginal_rate`` counts the surcharge a tier floor adds two years
     later, spread over the money converted past it."""
     tax_year = month.year
-    est = _year_tax_estimate(
-        con, _fill_bracket_tax_rule(tax_rules, params, tid, name), aux=aux,
-        tax_year=tax_year, tid=tid, person_lifespan=person_lifespan, taxpayers=taxpayers,
+    scope = str(params.get("scope", "federal"))
+    rule = _fill_bracket_tax_rule(tax_rules, params, tid, name)
+    # Every estimate here reads the same ledger, so they share their years.
+    ledger, shared = _tax_ledger(con, tax_year), {}
+    est = _prepare_tax(
+        con, rule.params, aux=aux, tax_year=tax_year, tid=rule.id, kind=rule.kind,
+        jurisdictions=tax_rules,
+        person_lifespan=person_lifespan, taxpayers=taxpayers, growth_cache=inflation_factor_cache,
+        ledger=ledger, shared=shared,
     )
     rate = params.get("rate_micros")
     if rate is not None:
@@ -3014,7 +3993,7 @@ def _apply_fill_bracket(
         if not above:
             rates = ", ".join(units.micros_to_percent(r) for _, r in est.brackets[:-1])
             raise EngineError(
-                f"fill_bracket id={tid} ({name!r}): no {est.scope} {tax_year} bracket for "
+                f"fill_bracket id={tid} ({name!r}): no {scope} {tax_year} bracket for "
                 f"{est.filing_status} is taxed at {units.micros_to_percent(rate)} below the "
                 f"top one (brackets with a top: {rates})"
             )
@@ -3028,8 +4007,8 @@ def _apply_fill_bracket(
             ) // 1_000_000
 
     def measured(amount: int) -> int:
-        taxable, ordinary = est.taxable_with(amount, 0)
-        return ordinary if ordinary_only else taxable
+        ret = est.compute(tax_api.Extra(amount))
+        return ret.ordinary_taxable if ordinary_only else ret.taxable_income
 
     cap = max(0, balances.get(from_lot, 0))
     if (max_amount := params.get("max_amount")) is not None:
@@ -3043,23 +4022,43 @@ def _apply_fill_bracket(
     if irmaa is not None and ("irmaa_tier" in params or (
             "max_marginal_rate" in params and irmaa.rules)):
         # MAGI is federal whatever scope the target is measured in.
-        magi_est = est if est.scope == "federal" else _year_tax_estimate(
-            con, _fill_bracket_tax_rule(tax_rules, {"scope": "federal"}, tid, name), aux=aux,
-            tax_year=tax_year, tid=tid, person_lifespan=person_lifespan, taxpayers=taxpayers,
-        )
+        if scope == "federal":
+            magi_est = est
+        else:
+            rule = _fill_bracket_tax_rule(tax_rules, {"scope": "federal"}, tid, name)
+            magi_est = _prepare_tax(
+                con, rule.params, aux=aux, tax_year=tax_year, tid=rule.id, kind=rule.kind,
+                jurisdictions=tax_rules,
+                person_lifespan=person_lifespan, taxpayers=taxpayers,
+                growth_cache=inflation_factor_cache, ledger=ledger, shared=shared,
+            )
     if "irmaa_tier" in params and irmaa is not None and magi_est is not None:
         floors = [t.floor for t in irmaa.tiers(tax_year, magi_est.filing_status, tid)
                   if t.tier > int(params["irmaa_tier"])]
         if floors:
             amount = _largest_within(
-                lambda x, e=magi_est: e.agi_with(x, 0), min(floors), amount)
+                lambda x, e=magi_est: e.compute(tax_api.Extra(x)).magi, min(floors), amount)
     if (max_rate := params.get("max_marginal_rate")) is not None:
         limit = units.percent_to_micros(str(max_rate))
         cliff = None
         if magi_est is not None and irmaa is not None:
-            def cliff(x: int, e: _TaxEstimate = magi_est) -> int:
-                return irmaa.annual_cost(tax_year, e.agi_with(x, 0), e.filing_status, month_s, tid)
-        amount = _within_marginal_rate(est.tax_with, cliff, amount, limit)
+            def cliff(x: int, e: tax_api.Prepared = magi_est) -> int:
+                return irmaa.annual_cost(tax_year, e.compute(tax_api.Extra(x)).magi, month_s, tid)
+        # A state's rate counts the local tax (#508): its bands sit on the
+        # state's taxable income, so the next dollar there costs both. A
+        # federal rate stays the federal tax's: a state builds on federal
+        # AGI but has its own deductions and brackets, which its own scope
+        # measures.
+        measured_with = [est, *(
+            _prepare_tax(con, paid.params, aux=aux, tax_year=tax_year, tid=paid.id, kind=paid.kind,
+                         jurisdictions=tax_rules, person_lifespan=person_lifespan,
+                         taxpayers=taxpayers, growth_cache=inflation_factor_cache,
+                         ledger=ledger, shared=shared)
+            for paid in _rate_counts(tax_rules, scope))]
+        amount = _within_marginal_rate(
+            lambda ordinary, ltcg: sum(
+                p.compute(tax_api.Extra(ordinary, ltcg)).tax for p in measured_with),
+            cliff, amount, limit)
     event_id = _post_transfer(
         con, balances, account_kinds, step_id, month_s, from_lot, to_lot, amount,
         tax_char, tid, tax_year=tax_year, refill_ctx=refill_ctx,
@@ -3142,9 +4141,8 @@ class IrmaaContext:
         def grown(amount: int, series: object) -> tuple[int, bool]:
             if not series:
                 return amount, False
-            factor = _cumulative_inflation_factor(
-                self.aux, str(series), effective, january, self.inflation_factor_cache)
-            return amount * factor // 1_000_000, True
+            return _grow(self.aux, amount, str(series), effective, january,
+                         self.inflation_factor_cache), True
 
         tiers = []
         for row in rows:
@@ -3165,31 +4163,38 @@ class IrmaaContext:
 
     def magi(self, con, year: int, tid: int) -> int:
         """The household's MAGI for tax ``year``: from ``meta_json`` before
-        the run (none given is no surcharge, as the loader warned), then the
-        federal tax rule's summary."""
-        if year < self.start_year:
-            return self.prior_magi.get(year, 0)
+        the run, else the federal tax rule's summary. That has the year
+        before the run too when year-to-date rows settle it (a rolled plan's
+        projected ones, #564); a year with neither is no surcharge, as the
+        loader warned."""
+        if year < self.start_year and year in self.prior_magi:
+            return self.prior_magi[year]
         row = con.execute(
             "SELECT amount FROM tax_year_summary WHERE year = ? AND bucket = 'federal_magi'",
             (year,),
         ).fetchone()
+        if row is None and year < self.start_year:
+            return 0
         if row is None:
             raise EngineError(
-                f"irmaa id={tid}: no federal MAGI for {year}; a federal tax_accumulator "
-                f"rule must compute {year} before January {year + IRMAA_YEARS_BACK}"
+                f"irmaa id={tid}: no federal MAGI for {year}; the federal tax "
+                f"(taxes/federal.csv) must compute {year} before January {year + IRMAA_YEARS_BACK}"
             )
         return int(row[0])
 
     def filing_status(self, year: int, aux_kind: str, tid: int) -> str:
         """The filing status on tax ``year``'s return, as the tax rule finds
-        it; a year before the filing_status table starts takes its first row."""
+        it; a year before the filing_status table starts takes its first row,
+        though a death before ``year`` is still judged against ``year``."""
+        table_year = year
         if not _active_aux_rows(self.aux, aux_kind, None, f"{year}-12-31"):
             rows = self.aux.get((aux_kind, None)) or []
             if rows:
-                year = int(rows[0][0][:4])
+                table_year = int(rows[0][0][:4])
         return _active_filing_status(
             self.aux, aux_kind, year, tid,
             person_lifespan=self.person_lifespan, taxpayers=self.taxpayers,
+            table_year=table_year,
         )
 
     def tier(self, con, year: int, aux_kind: str, tid: int) -> IrmaaTier | None:
@@ -3215,34 +4220,45 @@ class IrmaaContext:
                 )
         return self._charged[key]
 
-    def enrolled(self, premium_year: int, month_s: str) -> list[tuple[str, ...]]:
-        """The add-ons (``parts``) of each irmaa rule that will charge in
-        ``premium_year``, as a planner sees it in ``month_s``: its months
-        reach that year and its person is still alive."""
+    def enrolled(
+        self, premium_year: int, month_s: str,
+    ) -> list[tuple[tuple[str, ...], str, int]]:
+        """The add-ons (``parts``), filing-status table and months charged in
+        ``premium_year`` of each irmaa rule that will charge then, as a
+        planner sees it in ``month_s``: the months its start and end allow,
+        if its person is still alive. A death not yet happened isn't
+        foreseen, as a planner can't foresee it."""
         enrolled = []
         for row in self.rules:
             person, start, end, ext = row[8], row[16], row[17], row[13]
-            if start[:4] > str(premium_year) or (end is not None and end[:4] < str(premium_year)):
-                continue
             if person in self.person_lifespan and self.person_lifespan[person] < month_s:
                 continue
-            parts = str((json.loads(ext) if ext else {}).get("parts", "B+D"))
-            enrolled.append(IRMAA_PARTS[parts])
+            months = sum(
+                1 for m in range(1, 13)
+                if start <= (month_end := date(
+                    premium_year, m, calendar.monthrange(premium_year, m)[1]).isoformat())
+                and (end is None or month_end <= end)
+            )
+            if not months:
+                continue
+            params = json.loads(ext) if ext else {}
+            enrolled.append((IRMAA_PARTS[str(params.get("parts", "B+D"))],
+                             str(params.get("filing_status_aux", "filing_status")), months))
         return enrolled
 
-    def annual_cost(
-        self, year: int, magi: int, filing_status: str, month_s: str, tid: int,
-    ) -> int:
+    def annual_cost(self, year: int, magi: int, month_s: str, tid: int) -> int:
         """What ``magi`` on ``year``'s return costs in surcharges two years
         later, for everyone who will be enrolled then, priced with the table
-        in force in ``year`` (what a planner knows when it decides)."""
-        enrolled = self.enrolled(year + IRMAA_YEARS_BACK, month_s)
-        if not enrolled:
-            return 0
-        charged = [t for t in self.tiers(year, filing_status, tid) if magi > t.floor]
-        if not charged:
-            return 0
-        return 12 * sum(getattr(charged[-1], part) for parts in enrolled for part in parts)
+        in force in ``year`` (what a planner knows when it decides). Each
+        rule's tier follows its own filing-status table, as its charge will,
+        for the months it will charge."""
+        cost = 0
+        for parts, status_aux, months in self.enrolled(year + IRMAA_YEARS_BACK, month_s):
+            tiers = self.tiers(year, self.filing_status(year, status_aux, tid), tid)
+            charged = [t for t in tiers if magi > t.floor]
+            if charged:
+                cost += months * sum(getattr(charged[-1], part) for part in parts)
+        return cost
 
     def charge(self, con, year: int, params: Mapping[str, Any], tid: int) -> int:
         """One month's surcharge for one enrollee in premium ``year``: the
@@ -3254,20 +4270,39 @@ class IrmaaContext:
         return sum(getattr(tier, part) for part in IRMAA_PARTS[str(params.get("parts", "B+D"))])
 
 
+class DrawdownPricing(NamedTuple):
+    """A tax year's after-tax drawdown pricing (#251): its tax with more
+    ordinary income and long-term gain on top, the gain's real estate part
+    third (#489), and whether it taxes an HSA as a brokerage account (#497),
+    so its gain over basis is what's drawn."""
+    tax_with: Callable[[int, int, int], int]
+    hsa_taxed: bool = False
+
+
 DEFAULT_DRAWDOWN_YEARS = 10
 """Years an after-tax drawdown spreads a traditional balance over (#251):
 the inherited-IRA rule's ten (SECURE Act, 2019)."""
 
 
 def _drawdown_tax(
-    con, tax_year: int, tax_with: Callable[[int, int], int],
+    con, tax_year: int, tax_with_in: Callable[[int], Callable[[int, int, int], int]],
+    paycheck_years: Collection[int] = (), *, hsa_taxed: bool = False,
 ) -> tuple[int | None, int]:
     """The money ``tax_year``'s after-tax net worth taxes and the extra tax on
     it (#251): its year-end traditional (tax_deferred) balances, and the
     unrealized gain of its taxable lots with a basis unless ``after_tax``
-    says ``step_up``, drawn down evenly over ``drawdown_years`` with this
-    year's brackets, filing status and other income. ``(None, 0)`` for a year
-    the run has no month of (a year-to-date one)."""
+    says ``step_up``, drawn down evenly over the ``drawdown_years`` after it.
+    Where ``hsa_taxed`` (#497), an HSA lot is taxed like a brokerage lot: its
+    gain over basis is gain, which no ``step_up`` takes away (an HSA never
+    steps up), and its balance isn't traditional money. A home's gain is
+    priced as gain, passed apart as well, since a state's gains tax leaves it
+    out (#489).
+    Each year's share is priced on top of that year's own income, brackets
+    and filing status, ``tax_with_in(year)`` (#404): money left at a year end
+    is spent in the years that follow, not on top of this year's paycheck.
+    Nobody draws savings down while still earning, so the drawdown skips
+    ``paycheck_years`` (those with salary) and starts once they end.
+    ``(None, 0)`` for a year the run has no month of (a year-to-date one)."""
     step = con.execute(
         "SELECT id FROM simulation_step WHERE substr(month, 1, 4) = ? "
         "ORDER BY month DESC LIMIT 1", (str(tax_year),),
@@ -3278,161 +4313,78 @@ def _drawdown_tax(
         con.execute("SELECT meta_json FROM scenario").fetchone()[0] or "{}"
     ).get("after_tax") or {}
     years = int(settings.get("drawdown_years", DEFAULT_DRAWDOWN_YEARS))
-    deferred = gains = 0
+    deferred = gains = hsa_gains = real_estate = 0
     for treatment, subkind, balance, basis in con.execute(
         "SELECT m.tax_treatment, a.subkind, ls.balance, ls.cost_basis "
         "FROM lot_state ls JOIN account_lot m ON m.id = ls.lot_id "
         "JOIN account a ON a.id = m.account_id "
         "WHERE ls.step_id = ? AND a.kind = 'asset'", (step[0],),
     ):
-        if treatment == "tax_deferred":
+        if subkind == "hsa" and hsa_taxed:
+            hsa_gains += max(0, balance - (basis or 0))
+        elif treatment == "tax_deferred":
             deferred += max(0, balance)
         elif (treatment == "taxable" and basis is not None
               and subkind not in registries.CASH_SUBKINDS):
             gains += max(0, balance - basis)
+            if subkind == "real_estate":
+                real_estate += max(0, balance - basis)
     if settings.get("step_up"):
-        gains = 0
+        gains = real_estate = 0
+    gains += hsa_gains
     if deferred + gains == 0:
         return 0, 0
     # Each year's share carries its cent of any remainder, so the shares sum
-    # to the whole base; only a few distinct shares need a tax computed.
-    (deferred_share, deferred_extra), (gains_share, gains_extra) = (
-        divmod(deferred, years), divmod(gains, years))
-    shares = Counter(
-        (deferred_share + (i < deferred_extra), gains_share + (i < gains_extra))
-        for i in range(years))
-    base_tax = tax_with(0, 0)
-    extra = sum(count * (tax_with(d, g) - base_tax) for (d, g), count in shares.items())
+    # to the whole base.
+    (deferred_share, deferred_extra), (gains_share, gains_extra), (home_share, home_extra) = (
+        divmod(deferred, years), divmod(gains, years), divmod(real_estate, years))
+    draw_years = (year for year in itertools.count(tax_year + 1) if year not in paycheck_years)
+    extra = 0
+    # The years are endless, so the shares end the loop.
+    for i, draw_year in zip(range(years), draw_years, strict=False):
+        tax_with = tax_with_in(draw_year)
+        share = (deferred_share + (i < deferred_extra), gains_share + (i < gains_extra),
+                 home_share + (i < home_extra))
+        extra += tax_with(*share) - tax_with(0, 0, 0)
     return deferred + gains, extra
 
 
-def _tax_year_income_buckets(con, *, tax_year: int) -> tuple[int, int]:
-    """A tax year's ordinary income and Social Security benefits. Capital
-    gains and losses are ``_capital_gains``'s."""
-    rows = con.execute(
-        "SELECT tax_character, COALESCE(SUM(amount), 0) "
-        "FROM transfer_event "
-        "WHERE COALESCE(tax_year, CAST(substr(date, 1, 4) AS INTEGER)) = ? "
-        "GROUP BY tax_character",
-        (tax_year,),
-    ).fetchall()
-    by_char = {k: int(v or 0) for k, v in rows}
-    ordinary = (
-        by_char.get("ordinary", 0)
-        + by_char.get("tax_deferred_out", 0)
-        + by_char.get("roth_nonqualified", 0)
-        - by_char.get("tax_deferred_in", 0)
-    )
-    return ordinary, by_char.get("ss_benefit", 0)
+def _record_drawdown_taxes(
+    con, pricing: Mapping[tuple[str, int], DrawdownPricing],
+) -> None:
+    """Each computed tax year's ``<scope>_drawdown_base`` and
+    ``<scope>_drawdown_tax`` (#251), once the run has every year's income
+    (#404). A share in a year past the run's last computed year is priced
+    with that last year's income, as the run can't say what comes after. The
+    drawdown skips the years with salary (``_drawdown_tax``)."""
+    paycheck_years = {
+        int(year) for (year,) in con.execute(
+            "SELECT DISTINCT COALESCE(te.tax_year, CAST(substr(te.date, 1, 4) AS INTEGER)) "
+            "FROM transfer_event te JOIN account a ON a.id = te.from_account "
+            "WHERE a.kind = 'income' AND a.subkind = 'salary' AND te.amount > 0")
+    }
+    by_scope: dict[str, dict[int, Callable[[int, int, int], int]]] = defaultdict(dict)
+    for (scope, year), priced in pricing.items():
+        by_scope[scope][year] = priced.tax_with
+    computed_at = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    for scope, by_year in by_scope.items():
+        known = sorted(by_year)
 
+        def tax_with_in(year: int, by_year=by_year, known=known) -> Callable[[int, int, int], int]:
+            return by_year[known[max(0, bisect.bisect_right(known, year) - 1)]]
 
-class BusinessResult(NamedTuple):
-    """One tax year's Schedule C result (#231): receipts less deductible
-    expenses, a loss negative, and the expenses not deducted because the
-    business is a hobby."""
-    net: int
-    disallowed: int
-
-
-def _business_result(con, *, tax_year: int) -> BusinessResult:
-    """``tax_year``'s ``business_income`` legs into, less its
-    ``business_expense`` legs out of, ``business`` accounts. A business whose
-    account's meta_json says ``"hobby": true`` isn't engaged in for profit
-    (IRC §183): its receipts are still income, but none of its expenses are
-    deductible."""
-    net = disallowed = 0
-    for event_id, character, amount, from_name, from_subkind, from_meta, to_name, to_subkind in con.execute(
-        "SELECT te.id, te.tax_character, te.amount, fa.name, fa.subkind, fa.meta_json, "
-        "       ta.name, ta.subkind "
-        "FROM transfer_event te "
-        "JOIN account fa ON fa.id = te.from_account JOIN account ta ON ta.id = te.to_account "
-        "WHERE te.tax_character IN (?, ?) "
-        "  AND COALESCE(te.tax_year, CAST(substr(te.date, 1, 4) AS INTEGER)) = ?",
-        (registries.BUSINESS_INCOME, registries.BUSINESS_EXPENSE, tax_year),
-    ):
-        income = character == registries.BUSINESS_INCOME
-        name, subkind = (to_name, to_subkind) if income else (from_name, from_subkind)
-        if subkind != registries.BUSINESS_SUBKIND:
-            # The loader checks the rows it can; this catches the rest.
-            side = "into" if income else "out of"
-            raise EngineError(
-                f"transfer_event id={event_id}: {character} must be paid {side} a "
-                f"{registries.BUSINESS_SUBKIND} account, not '{name}'"
-            )
-        if income:
-            net += int(amount)
-        elif json.loads(from_meta or "{}").get("hobby") is True:
-            disallowed += int(amount)
-        else:
-            net -= int(amount)
-    return BusinessResult(net, disallowed)
-
-
-def _summary_amount(con, year: int, bucket: str) -> int:
-    """A ``tax_year_summary`` amount, 0 if that year wasn't computed."""
-    row = con.execute(
-        "SELECT amount FROM tax_year_summary WHERE year = ? AND bucket = ?", (year, bucket),
-    ).fetchone()
-    return int(row[0]) if row else 0
-
-
-class CapitalGains(NamedTuple):
-    """One tax year's capital gains after netting (IRC §1211(b), §1212(b)):
-    the short- and long-term gains taxed, the loss deducted from ordinary
-    income, and the loss carried into the next year, by its character."""
-    stcg: int
-    ltcg: int
-    loss_deduction: int
-    carryover_st: int
-    carryover_lt: int
-
-
-def _net_capital(st: int, lt: int, limit: Callable[[], int]) -> CapitalGains:
-    """Net a year's short- and long-term results, each already less its own
-    carryover: a loss in one offsets a gain in the other, then up to the
-    limit of what's left offsets ordinary income, short-term loss first, and
-    the rest carries forward keeping its character."""
-    if st < 0 < lt or lt < 0 < st:
-        net = st + lt
-        if net >= 0:
-            st, lt = (net, 0) if st > 0 else (0, net)
-        else:
-            st, lt = (net, 0) if st < 0 else (0, net)
-    loss_st, loss_lt = max(0, -st), max(0, -lt)
-    deduction = min(limit(), loss_st + loss_lt) if loss_st + loss_lt else 0
-    used_st = min(loss_st, deduction)
-    return CapitalGains(
-        max(0, st), max(0, lt), deduction,
-        loss_st - used_st, loss_lt - (deduction - used_st),
-    )
-
-
-def _capital_gains(
-    con, *, tax_year: int, loss_limit: Callable[[int], int],
-) -> CapitalGains:
-    """``tax_year``'s capital gains: its ``stcg``/``ltcg`` legs (a withdrawal at
-    a loss posts a negative one) less its ``capital_loss`` records, netted
-    with the carryover from every earlier year, each of which used up to its
-    own year's ``loss_limit``."""
-    year_of = "COALESCE(tax_year, CAST(substr(date, 1, 4) AS INTEGER))"
-    totals: dict[int, list[int]] = {}
-    for table, sign in (("transfer_event", 1), ("capital_loss", -1)):
-        for year, character, amount in con.execute(
-            f"SELECT {year_of} AS y, tax_character, COALESCE(SUM(amount), 0) "
-            f"FROM {table} WHERE tax_character IN ('stcg', 'ltcg') AND {year_of} <= ? "
-            "GROUP BY y, tax_character",
-            (tax_year,),
-        ):
-            totals.setdefault(int(year), [0, 0])[1 if character == "ltcg" else 0] += sign * int(amount)
-    carry_st = carry_lt = 0
-    result = CapitalGains(0, 0, 0, 0, 0)
-    for year in range(min(totals, default=tax_year), tax_year + 1):
-        st, lt = totals.get(year, (0, 0))
-        result = _net_capital(
-            st - carry_st, lt - carry_lt, functools.partial(loss_limit, year),
-        )
-        carry_st, carry_lt = result.carryover_st, result.carryover_lt
-    return result
+        for year in known:
+            base, extra = _drawdown_tax(con, year, tax_with_in, paycheck_years,
+                                        hsa_taxed=pricing[(scope, year)].hsa_taxed)
+            if base is None:
+                continue
+            for bucket, amount in ((f"{scope}_drawdown_base", base),
+                                   (f"{scope}_drawdown_tax", extra)):
+                con.execute(
+                    "INSERT OR REPLACE INTO tax_year_summary(year, bucket, amount, computed_at) "
+                    "VALUES (?, ?, ?, ?)",
+                    (year, bucket, int(amount), computed_at),
+                )
 
 
 def _active_filing_status(
@@ -3442,65 +4394,42 @@ def _active_filing_status(
     tid: int,
     *, person_lifespan: dict[str, str] | None = None,
     taxpayers: Collection[str] = (),
+    table_year: int | None = None,
 ) -> str:
     """Filing status for ``tax_year``: the filing_status aux table's latest row on
     or before the year's end, except that a joint or separate filer becomes Single
     the year after a taxpayer's ``lifespan.csv`` ``final_month`` (the survivor may
     still file jointly for the year of death). The lifespan alone is enough; the
-    aux table needs no row for it.
+    aux table needs no row for it. ``table_year`` reads the table as of another
+    year (an IRMAA return from before the table starts) without moving the
+    death test.
     """
+    table_year = tax_year if table_year is None else table_year
     died = any(
         int(final_month[:4]) < tax_year
         for person, final_month in (person_lifespan or {}).items()
         if person in taxpayers
     )
-    rows = _active_aux_rows(aux, filing_status_aux, None, f"{tax_year}-12-31")
+    rows = _active_aux_rows(aux, filing_status_aux, None, f"{table_year}-12-31")
     if not rows:
         if died:
             return "Single"
         raise EngineError(
-            f"tax_accumulator id={tid}: no filing_status row effective <= {tax_year}-12-31"
+            f"tax jurisdiction id={tid}: no filing_status row effective <= {table_year}-12-31"
         )
     status = rows[0].get("filing_status")
     if not status:
         raise EngineError(
-            f"tax_accumulator id={tid}: filing_status payload missing filing_status"
+            f"tax jurisdiction id={tid}: filing_status payload missing filing_status"
         )
     return "Single" if died and status in ("MFJ", "MFS") else str(status)
 
 
-def _taxable_social_security_cents(
-    *,
-    ordinary_income: int,
-    ltcg_income: int,
-    ss_income: int,
-    tier1: int,
-    tier2: int,
-) -> int:
-    """Approximate taxable Social Security amount under provisional-income rules."""
-    provisional = ordinary_income + ltcg_income + (ss_income // 2)
-    if provisional <= tier1:
-        return 0
-    if provisional <= tier2:
-        return min(ss_income // 2, (provisional - tier1) // 2)
-    base = min(ss_income // 2, (tier2 - tier1) // 2)
-    addl = ((provisional - tier2) * 85) // 100
-    return min((ss_income * 85) // 100, base + addl)
-
-
-def _progressive_tax_cents(taxable_income: int, brackets: list[tuple[int, int]]) -> int:
-    if taxable_income <= 0 or not brackets:
-        return 0
-    tax = 0
-    for i, (floor, rate_micros) in enumerate(brackets):
-        if taxable_income <= floor:
-            continue
-        next_floor = brackets[i + 1][0] if i + 1 < len(brackets) else None
-        upper = taxable_income if next_floor is None else min(taxable_income, next_floor)
-        taxable_slice = max(0, upper - floor)
-        if taxable_slice > 0:
-            tax += (taxable_slice * rate_micros) // 1_000_000
-    return tax
+def _residences(con) -> list[tuple[str, tax_api.Residence]]:
+    """Where the household lives (residence.csv, #509), from each row's
+    month end, in date order: a tax year reads it apart from the aux tables."""
+    return [(effective, tax_api.Residence(state, county or None)) for effective, state, county
+            in con.execute("SELECT effective_date, state, county FROM residence ORDER BY effective_date")]
 
 
 def _load_aux(con) -> dict[tuple[str, str | None], list[tuple[str, dict[str, Any]]]]:
@@ -3578,7 +4507,19 @@ def _cumulative_inflation_factor(
     factor = 1_000_000
     match cadence:
         case "monthly":
-            for month in _month_ends(lo, hi):
+            months = _month_ends(lo, hi)
+            if from_date < to_date:
+                # The month stepping asks for one more month each time: start
+                # from last month's factor rather than compounding from the
+                # base again, which made a long run quadratic. The same
+                # months compound in the same order, so the result is the same.
+                last = hi if hi == add_month_ends(hi, 0) else add_month_ends(hi, -1)
+                before = add_month_ends(last, -1)
+                if before > lo:
+                    known = cache.get((series, from_date, before, cadence))
+                    if known is not None:
+                        factor, months = known, iter((last,))
+            for month in months:
                 if month <= lo:
                     continue
                 month_s = month.isoformat()
@@ -3623,6 +4564,81 @@ def _lookup_aux(
         else:
             break
     return chosen
+
+
+_TAX_INDEX_ROUNDING = 5_000
+"""Indexed tax figures round down to a multiple of $50, as IRC §1(f)(7)
+rounds the brackets and standard deduction (#467)."""
+
+
+def _grown_amount(
+    aux: dict[tuple[str, str | None], list[tuple[str, dict[str, Any]]]],
+    amount: int, series: str, since: int, tax_year: int,
+    cache: dict[tuple[str, date, date, str], int],
+) -> int:
+    """:meth:`tax_api.TaxYear.grown`: ``amount`` grown from January of
+    ``since`` to January of ``tax_year`` by ``series``, as
+    :func:`_indexed_tax_rows` grows a table's figures (#568)."""
+    if ("inflation", series) not in aux:
+        raise tax_api.TaxError(f"no inflation series {series!r} to grow an amount by")
+    try:
+        return _grow(aux, amount, series, date(since, 1, 31), date(tax_year, 1, 31), cache)
+    except EngineError as e:
+        raise tax_api.TaxError(str(e)) from None
+
+
+def _grow(
+    aux: dict[tuple[str, str | None], list[tuple[str, dict[str, Any]]]],
+    amount: int, series: str, start: date, end: date,
+    cache: dict[tuple[str, date, date, str], int],
+) -> int:
+    """``amount`` grown by ``series`` from ``start`` to ``end``, unrounded;
+    as it is when ``end`` doesn't come after ``start``. The one growth rule
+    an indexed tax table, an IRMAA tier and a calculator's own figure share,
+    so their base dates can't drift apart; each rounds as its law does."""
+    if end <= start:
+        return amount
+    return amount * _cumulative_inflation_factor(aux, series, start, end, cache) // 1_000_000
+
+
+def _indexed_tax_rows(
+    aux: dict[tuple[str, str | None], list[tuple[str, dict[str, Any]]]],
+    kind: str, series: str | None, tax_year: int,
+    cache: dict[tuple[str, date, date, str], int],
+) -> list[dict[str, Any]]:
+    """The tax table ``kind`` in force for ``tax_year``, each figure that
+    has a growth series (``registries.TAX_GROWTH_SERIES_COLUMNS``, read
+    from the row whatever its kind, so a ``bracket_aux`` of another name
+    indexes too) grown from the table's effective date to January of the
+    tax year, as the law indexes them each year (#467). A blank series, or
+    a table dated after that January, leaves the figure as written."""
+    as_of = f"{tax_year}-12-31"
+    rows = _active_aux_rows(aux, kind, series, as_of)
+    if not rows:
+        return rows
+    columns = {
+        column: money
+        for by_kind in registries.TAX_GROWTH_SERIES_COLUMNS.values()
+        for column, money in by_kind.items()
+    }
+    effective = _parse_date(max(e for e, _ in aux[(kind, series)] if e <= as_of))
+    step = registries.TAX_INDEX_ROUNDING.get(kind, _TAX_INDEX_ROUNDING)
+    january = date(tax_year, 1, 31)
+    out = []
+    for row in rows:
+        grown = row
+        # A row a move re-dated grows from its own table's date (#490).
+        base = _parse_date(row["index_from"]) if row.get("index_from") else effective
+        for column, money in columns.items():
+            growth = row.get(column)
+            if not growth or january <= base or row.get(money) is None:
+                continue
+            amount = _grow(aux, int(row[money]), str(growth), base, january, cache)
+            if kind in registries.TAX_INDEX_ROUND_NEAREST:
+                amount += step // 2
+            grown = {**grown, money: amount // step * step}
+        out.append(grown)
+    return out
 
 
 def _active_aux_rows(
@@ -3748,7 +4764,13 @@ def _calendar_tax_character(
     lot = ctx.graph.leaf_lot.get(from_chain)
     if lot is None:
         return "none"
-    to_lot = ctx.graph.leaf_lot.get(to_chain)
+    return _blank_move_character(ctx, lot, ctx.graph.leaf_lot.get(to_chain))
+
+
+def _blank_move_character(ctx: RefillContext, lot: int, to_lot: int | None) -> str | None:
+    """``_calendar_tax_character`` for money out of ``lot`` with no character
+    written: None (each leg decides) for a sale, a traditional or a Roth
+    lot's money, else ``none``. ``to_lot`` None is an interior chain."""
     if lot in ctx.roth and (to_lot is None or _leaves_roth(ctx, lot, to_lot)):
         # A Roth distribution, or money a chain may carry out of the wrapper:
         # _post_withdrawal applies the five-year rule to each leg that leaves.
@@ -3758,6 +4780,69 @@ def _calendar_tax_character(
             treatment, ctx.account_subkind.get(lot, "")) is None:
         return None
     return "none"
+
+
+def _post_strategy_move(
+    con, balances: dict[int, int], account_kinds: dict[int, str],
+    step_id: int, month_s: str, ctx: RefillContext, move: str,
+    from_id: int, to_id: int, amount: int, *, in_kind: bool, decision_id: int,
+) -> int:
+    """Post one ``year_end`` move (#421) and return the cents it moved: no
+    more than the lot holds. Its legs carry ``reason_kind='strategy'`` and the
+    decision's id.
+
+    A ``transfer`` posts as a ``one_off_transfer`` with a blank character
+    does (a sale, a conversion, a Roth distribution: ``_blank_move_character``);
+    ``in_kind`` gives a taxable lot's shares away instead, their basis leaving
+    pro rata with no gain. A ``realize`` sells and rebuys within the lot: a
+    basis leg and a gain leg from the lot to itself, which leave its balance
+    as it was, and its basis rises by the gain (a loss lowers it)."""
+    amount = min(amount, max(0, balances.get(from_id, 0)))
+    if amount <= 0:
+        return 0
+    common: dict[str, Any] = {"reason_kind": "strategy", "refill_ctx": ctx}
+    if move == "realize":
+        basis = ctx.cost_bases[from_id] or 0
+        basis_out = min(basis, basis * amount // balances[from_id])
+        character = (
+            "ltcg" if _is_long_term(ctx.acquired.get(from_id), _parse_date(month_s)) else "stcg"
+        )
+        basis_leg = _post_transfer(
+            con, balances, account_kinds, step_id, month_s, from_id, from_id, basis_out,
+            "return_of_capital", decision_id, net_effects=False, **common,
+        )
+        _post_transfer(
+            con, balances, account_kinds, step_id, month_s, from_id, from_id,
+            amount - basis_out, character, decision_id, basis_leg, net_effects=False, **common,
+        )
+        ctx.cost_bases[from_id] = basis - basis_out + amount
+        return amount
+    if in_kind:
+        mark = _ensure_min_balance(
+            con, balances, account_kinds, step_id, month_s, ctx, from_id, amount,
+        )
+        basis = ctx.cost_bases[from_id] or 0
+        prior = balances.get(from_id, 0)
+        basis_out = _pro_rata_basis(basis, prior, amount)
+        _post_transfer(
+            con, balances, account_kinds, step_id, month_s, from_id, to_id, amount, "none",
+            decision_id, refill_mark=mark, **common,
+        )
+        ctx.cost_bases[from_id] = basis - basis_out
+        return amount
+    character = _blank_move_character(ctx, from_id, to_id)
+    if character is None:
+        _post_withdrawal(
+            con, balances, account_kinds, ctx.account_tax_treatment, ctx.account_subkind,
+            ctx.account_name, ctx.cost_bases, step_id, month_s, from_id, to_id, amount,
+            decision_id, **common,
+        )
+    else:
+        _post_transfer(
+            con, balances, account_kinds, step_id, month_s, from_id, to_id, amount, character,
+            decision_id, **common,
+        )
+    return amount
 
 
 def _split_rule_character(from_chain: int, ctx: RefillContext) -> str:
@@ -3809,8 +4894,8 @@ def _swap_aux_table(
 ) -> None:
     """ADR-003 \u00a73.5 (#197): from ``ev_date`` on, every lookup of
     (``aux_kind``, ``series``) sees what a lookup of (``aux_kind``,
-    ``source_series``) would. Swapping ``state_brackets`` swaps the state's
-    standard deduction with it.
+    ``source_series``) would. A state's tables aren't swapped: a tax year
+    reads where the household lives (``residence.csv``, #509).
 
     Lookups only move forward, so the target simply becomes a copy of the
     source -- which keeps each lookup style exact: the latest row, the
@@ -3865,16 +4950,13 @@ def _swap_aux_table(
         ],
     )
     aux[(aux_kind, series)] = kept + written
-    if aux_kind == "state_brackets":
-        # A move to another state takes its standard deduction too (#248):
-        # the new state's state_standard_deduction__<state>, or, with none,
-        # the federal fallback rather than the old state's figure.
-        deduction = registries.STATE_STANDARD_DEDUCTION
-        if aux.get((deduction, source_series)):
-            _swap_aux_table(con, ev_id, ev_date, {**payload, "aux_kind": deduction}, aux)
-        elif aux.pop((deduction, series), None):
-            con.execute("DELETE FROM aux_table WHERE kind = ? AND series IS ?",
-                        (deduction, series))
+
+
+def _inflation_changed(refill_ctx: RefillContext) -> None:
+    """An inflation series' rates changed from some date on: a cached
+    factor reaching past it is wrong, and the factors are built month on
+    month (:func:`_cumulative_inflation_factor`), so they all go."""
+    refill_ctx.inflation_factor_cache.clear()
 
 
 def _apply_calendar_event(
@@ -3913,6 +4995,8 @@ def _apply_calendar_event(
             bucket = aux.setdefault((aux_kind, series), [])
             bucket.append((ev_date, row_payload))
             bucket.sort(key=lambda r: r[0])
+            if aux_kind == "inflation":
+                _inflation_changed(refill_ctx)
         case "set_amount":
             name = payload.get("scheduled_name")
             new_amount = payload.get("amount")
@@ -3954,6 +5038,8 @@ def _apply_calendar_event(
             )
         case "swap_aux_table":
             _swap_aux_table(con, ev_id, ev_date, payload, aux)
+            if payload.get("aux_kind") == "inflation":
+                _inflation_changed(refill_ctx)
         case "one_off_transfer":
             frm_name = payload.get("account_1")
             to_name = payload.get("account_2")

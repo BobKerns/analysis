@@ -6,7 +6,7 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
-SCHEMA_VERSION = 43
+SCHEMA_VERSION = 68
 
 
 def connect_sim_file(path: str | Path, **kwargs: Any) -> sqlite3.Connection:
@@ -70,8 +70,8 @@ CREATE TABLE account (
         OR (kind = 'income' AND subkind IN ('salary','ss_benefit','pension','interest',
             'dividend','capital_gain','rental','other_income'))
         OR (kind = 'expense' AND subkind IN ('living','healthcare','housing',
-            'interest_expense','taxes_federal','taxes_state','taxes_property',
-            'business','other_expense'))
+            'interest_expense','taxes_federal','taxes_state','taxes_local','taxes_property',
+            'business','gift','other_expense'))
     )
 );
 CREATE INDEX idx_account_kind_subkind ON account(kind, subkind);
@@ -234,10 +234,23 @@ CREATE TABLE calendar_event (
     -- set_rate rows by the vary step, as a ramp is.
     vary_process        TEXT,
     vary_persistence    REAL,
-    vary_innovation_sd  INTEGER,
+    vary_shock_sd  INTEGER,
+    -- #280: where the path starts: NULL for a stationary draw around the
+    -- level, 'current' for the rate in effect just before the row's date.
+    vary_process_start  TEXT,
+    -- #291: on a set_rate row with no amount of its own, a date: the row puts
+    -- back what governed its series the day before it, resuming a process
+    -- (its level, persistence and shocks) or restoring a fixed rate. The
+    -- ensemble step resolves it, as it does a varying row.
+    vary_resume         TEXT,
     -- #165: a `discrete` row's weighted outcomes, each a value or a low..high
     -- range in the target's stored unit ('30%: 0; 25%: 100000..600000').
-    vary_outcomes       TEXT
+    vary_outcomes       TEXT,
+    -- #281: the columns authored relative to a date_marker row, as a JSON
+    -- object of column -> [marker name, months] ({"date": ["start", 24]}).
+    -- Those columns hold the date against the markers' base case; the
+    -- ensemble step recomputes them from each member's drawn markers.
+    date_refs_json      TEXT
 );
 CREATE INDEX idx_calevt_date ON calendar_event(date);
 CREATE INDEX idx_calevt_kind ON calendar_event(kind);
@@ -268,6 +281,7 @@ CREATE TABLE scheduled_transaction (
                                  'return_of_capital','property_tax','none',
                                  'excluded_gain','home_sale',
                                  'capital_improvement','roth_nonqualified',
+                                 'qualified_dividend','tax_exempt',
                                  'business_income','business_expense')),
     start                   TEXT NOT NULL,
     "end"                   TEXT,
@@ -308,6 +322,9 @@ CREATE TABLE scenario (
     -- inherited without the data repo.
     parents_json      TEXT NOT NULL DEFAULT '[]',
     load_order_json   TEXT NOT NULL DEFAULT '[]',
+    -- 1 for a mix-in only scenario (ADR-003 §4.5), loaded on t_empty's
+    -- span only to check it, so `sim run` refuses it without the data repo.
+    mixin_only        INTEGER NOT NULL DEFAULT 0 CHECK (mixin_only IN (0, 1)),
     created_at        TEXT NOT NULL,
     created_by        TEXT NOT NULL,
     meta_json         TEXT NOT NULL DEFAULT '{}'
@@ -315,8 +332,8 @@ CREATE TABLE scenario (
 
 -- Optional per-scenario lifespan override (ADR-003 §4.9). When the
 -- simulated month exceeds final_month, every scheduled_transaction
--- associated with this person (explicit `person` column, or owner of
--- from_account/to_account) stops firing for the remainder of the run.
+-- whose `person` column names this person stops firing for the remainder
+-- of the run, except percent_of_balance (growth) and on_death rows.
 CREATE TABLE person_lifespan (
     scenario_id  INTEGER NOT NULL REFERENCES scenario(id),
     person       TEXT NOT NULL REFERENCES person(id),
@@ -334,6 +351,8 @@ CREATE TABLE person_lifespan (
     -- #222: a life_table lifespan's set-forward in years (negative is a
     -- set-back), solved at load so the table's median is age_at_death.
     life_table_set_forward REAL,
+    -- #315: the aux life_table__<name>.csv's name; NULL for life_table.csv
+    life_table TEXT,
     PRIMARY KEY (scenario_id, person)
 );
 
@@ -362,7 +381,8 @@ CREATE TABLE year_to_date (
                          'tax_deferred_in','tax_deferred_out',
                          'return_of_capital','property_tax','none',
                          'excluded_gain','home_sale','capital_improvement',
-                         'roth_nonqualified','business_income','business_expense')),
+                         'roth_nonqualified','qualified_dividend','tax_exempt',
+                         'business_income','business_expense')),
     year          INTEGER,
     description   TEXT,
     UNIQUE (scenario_id, name)
@@ -391,6 +411,134 @@ CREATE TABLE calendar_event_tag (
     calendar_event_id INTEGER NOT NULL REFERENCES calendar_event(id),
     tag_id            INTEGER NOT NULL REFERENCES tag(id),
     PRIMARY KEY (calendar_event_id, tag_id)
+);
+
+-- Responsive strategies (#326, ADR-010). The data repo's strategies/*.py,
+-- verbatim: the engine imports a scenario's strategy code from here, never
+-- from the data repo, so a run file carries the code it ran and an ensemble
+-- worker needs no data directory. Built-in kinds store nothing here.
+CREATE TABLE strategy_source (
+    module  TEXT PRIMARY KEY,
+    sha256  TEXT NOT NULL,
+    source  TEXT NOT NULL
+);
+
+-- Household tax calculators (#510, ADR-011): the data repo's taxes/*.py,
+-- verbatim, kept as strategy_source is, when a jurisdiction names a kind
+-- they define. Built-in kinds store nothing here.
+CREATE TABLE tax_source (
+    module  TEXT PRIMARY KEY,
+    sha256  TEXT NOT NULL,
+    source  TEXT NOT NULL
+);
+
+-- Where the household lives (residence.csv, merged by date over the lineage;
+-- #509): from effective_date (a month end) on, a state's postal code and
+-- optionally a county, the series of its state_local_tax table. A tax year
+-- reads the row in force on its December 31.
+CREATE TABLE residence (
+    id             INTEGER PRIMARY KEY,
+    effective_date TEXT NOT NULL UNIQUE,
+    state          TEXT NOT NULL,
+    county         TEXT,
+    description    TEXT NOT NULL DEFAULT ''
+);
+
+-- The scenario's income tax jurisdictions (taxes/<name>.csv, merged over the
+-- lineage; #507). name prefixes the jurisdiction's tax_year_summary buckets;
+-- kind is the calculator; upstream the jurisdictions its return builds on,
+-- space-separated: its calculator's own, filled in by the loader (#508).
+-- Each April (schedule) it pays what is still due for the year before from
+-- source_chain into destination, or pays back what was paid past it (#568),
+-- between start and end.
+CREATE TABLE tax_jurisdiction (
+    id                   INTEGER PRIMARY KEY,
+    name                 TEXT NOT NULL UNIQUE,
+    kind                 TEXT NOT NULL,
+    upstream             TEXT NOT NULL DEFAULT '',
+    source_chain_id      INTEGER NOT NULL REFERENCES chain(id),
+    destination_chain_id INTEGER NOT NULL REFERENCES chain(id),
+    schedule             TEXT NOT NULL CHECK (schedule IN ('april')),
+    start                TEXT NOT NULL,
+    "end"                TEXT,
+    params_json          TEXT NOT NULL DEFAULT '{}',
+    description          TEXT NOT NULL DEFAULT ''
+);
+
+-- The scenario's enabled strategies (strategies/<name>.csv, merged over the
+-- lineage). Each owns an interior chain, the scheduled rules carrying
+-- rule_tag (#387), or both; params_json is already in stored units (cents,
+-- millionths).
+CREATE TABLE strategy (
+    id          INTEGER PRIMARY KEY,
+    name        TEXT NOT NULL UNIQUE,
+    kind        TEXT NOT NULL,
+    chain_id    INTEGER UNIQUE REFERENCES chain(id),
+    rule_tag    TEXT,
+    start       TEXT,
+    "end"       TEXT,
+    params_json TEXT NOT NULL DEFAULT '{}',
+    description TEXT NOT NULL DEFAULT ''
+);
+
+-- The guard rails a strategy's trigger names (#441), one row per rail and
+-- margin kind ('annual' or 'cumulative'). rail_json is the rail's
+-- guard_rails.csv row as merged down the lineage, so the engine evaluates
+-- the rail as `sim report guard-rails` does without the data repo.
+CREATE TABLE strategy_trigger (
+    strategy_id INTEGER NOT NULL REFERENCES strategy(id),
+    rail        TEXT NOT NULL,
+    margin_kind TEXT NOT NULL CHECK (margin_kind IN ('annual','cumulative')),
+    rail_json   TEXT NOT NULL,
+    PRIMARY KEY (strategy_id, rail, margin_kind)
+);
+
+-- A strategy parameter an ensemble varies (#408, strategy_vary/<name>.csv).
+-- name is its node, strategy:<strategy>.<param>; bounds are in the
+-- parameter's stored unit (cents, millionths, or a plain number), and base
+-- is the authored value (params_json's, or the kind's default), which is
+-- member 0's. A member writes its draw into strategy.params_json and clears
+-- vary_distribution. unit: cents, micros or number; whole: the parameter
+-- takes whole numbers.
+CREATE TABLE strategy_vary (
+    strategy_id         INTEGER NOT NULL REFERENCES strategy(id),
+    param               TEXT NOT NULL,
+    name                TEXT NOT NULL UNIQUE,
+    base                REAL NOT NULL,
+    unit                TEXT NOT NULL,
+    whole               INTEGER NOT NULL,
+    vary_distribution   TEXT,
+    vary_low            TEXT,
+    vary_high           TEXT,
+    vary_mode           TEXT,
+    vary_median         TEXT,
+    vary_sd             TEXT,
+    vary_skew           REAL,
+    vary_tailweight     REAL,
+    vary_outcomes       TEXT,
+    vary_correlate_with TEXT,
+    vary_correlation    REAL,
+    PRIMARY KEY (strategy_id, param)
+);
+
+-- The scenario's disabled strategies (enabled false in strategies/<name>.csv,
+-- #410): checked like the rest but not run. Kept so a run with a strategy
+-- switched off still knows the targets and portfolio it would have steered
+-- by (a drift view's default); params_json is in stored units.
+CREATE TABLE strategy_disabled (
+    name        TEXT PRIMARY KEY,
+    kind        TEXT NOT NULL,
+    params_json TEXT NOT NULL DEFAULT '{}'
+);
+
+-- Allocation targets (targets.csv). One set of weights per (target_set,
+-- as_of); as_of '' holds at every date; weights of one set sum to 1000000.
+CREATE TABLE allocation_target (
+    target_set    TEXT NOT NULL,
+    as_of         TEXT NOT NULL DEFAULT '',
+    asset_class   TEXT NOT NULL,
+    weight_micros INTEGER NOT NULL,
+    PRIMARY KEY (target_set, as_of, asset_class)
 );
 
 -- Ensemble variation (ADR-006). Present (with real rows) only in a member
@@ -422,7 +570,7 @@ CREATE TABLE ensemble_draw (
     -- for a random draw or a row resolved to its central value.
     quantile            REAL,
     -- The row's vary_distribution, which resolving clears from calendar_event
-    -- (ADR-007 §5); NULL in files written before schema 28.
+    -- (ADR-007 §5).
     distribution        TEXT,
     -- ADR-008 §6: the row's standard normal score in its correlation tree;
     -- NULL for a row outside every tree.
@@ -461,6 +609,15 @@ CREATE TABLE ensemble_path_shock (
     shock       REAL NOT NULL,
     rate        INTEGER NOT NULL,
     PRIMARY KEY (node, year)
+);
+
+-- #432: the load's non-fatal warnings, in the order raised, so they can be
+-- read after the fact (sim explain, the notebooks). 'unused' is a thing
+-- defined but not read yet (#204), which only `sim check` prints at load.
+CREATE TABLE load_warning (
+    id      INTEGER PRIMARY KEY,
+    kind    TEXT NOT NULL CHECK (kind IN ('warning','unused')),
+    message TEXT NOT NULL
 );
 """
 
@@ -559,7 +716,8 @@ CREATE TABLE transfer_event (
     tax_year        INTEGER,
     tax_character   TEXT NOT NULL,
     reason_kind     TEXT NOT NULL CHECK (reason_kind IN
-                        ('rule','initial','ytd','ytd_rule','refill','overflow')),
+                        ('rule','initial','ytd','ytd_rule','refill','overflow','strategy',
+                         'tax')),
     reason_id       INTEGER,
     -- The event this leg derives from: a multi-leg rule's primary leg, a
     -- withdrawal's basis leg for its gain leg, or, for a reason_kind='refill'
@@ -569,7 +727,10 @@ CREATE TABLE transfer_event (
     parent_event_id INTEGER REFERENCES transfer_event(id),
     from_lot_id     INTEGER NOT NULL REFERENCES account_lot(id),
     to_lot_id       INTEGER NOT NULL REFERENCES account_lot(id),
-    meta_json       TEXT NOT NULL DEFAULT '{}'
+    meta_json       TEXT NOT NULL DEFAULT '{}',
+    -- The strategy decision that chose this leg's lot (#326); NULL when the
+    -- chain's own steps did.
+    strategy_decision_id INTEGER REFERENCES strategy_decision(id)
 );
 CREATE INDEX idx_xfer_date     ON transfer_event(date);
 CREATE INDEX idx_xfer_from     ON transfer_event(from_account);
@@ -577,6 +738,66 @@ CREATE INDEX idx_xfer_to       ON transfer_event(to_account);
 CREATE INDEX idx_xfer_reason   ON transfer_event(reason_kind, reason_id);
 CREATE INDEX idx_xfer_parent   ON transfer_event(parent_event_id);
 CREATE INDEX idx_xfer_taxchar  ON transfer_event(tax_character);
+CREATE INDEX idx_xfer_decision ON transfer_event(strategy_decision_id);
+
+-- One strategy hook's answer (#326, ADR-010 §4.5): what it was asked, what
+-- its own moves posted, and what the chain's steps then covered. A hook
+-- that answered "no opinion" writes no row.
+CREATE TABLE strategy_decision (
+    id             INTEGER PRIMARY KEY,
+    step_id        INTEGER NOT NULL REFERENCES simulation_step(id),
+    strategy_id    INTEGER NOT NULL REFERENCES strategy(id),
+    hook           TEXT NOT NULL CHECK (hook IN ('draw','place','year_start','scale','year_end',
+                                                 'month_start','on_breach')),
+    chain_id       INTEGER REFERENCES chain(id),
+    -- The owned rule a scale decision was about (#387).
+    scheduled_transaction_id INTEGER REFERENCES scheduled_transaction(id),
+    asked_cents    INTEGER NOT NULL,
+    chosen_cents   INTEGER NOT NULL,
+    fallback_cents INTEGER NOT NULL,
+    note           TEXT NOT NULL DEFAULT '',
+    detail_json    TEXT NOT NULL DEFAULT '{}',
+    -- The strategy's memory after the call, only when the call changed it.
+    memory_json    TEXT,
+    -- The breach an on_breach decision answered (#441).
+    breach_event_id INTEGER REFERENCES breach_event(id)
+);
+CREATE INDEX idx_decision_step ON strategy_decision(step_id);
+
+-- A triggered rail past its line, or back from it, in the year before the
+-- January step it was found in (#441): one row per strategy, rail and
+-- margin kind told. Money in CPI-constant cents, as `sim report
+-- guard-rails` shows it; margin is the margin kind's (negative is past).
+-- state: 'entered', 'continued' or 'left'.
+CREATE TABLE breach_event (
+    id              INTEGER PRIMARY KEY,
+    step_id         INTEGER NOT NULL REFERENCES simulation_step(id),
+    strategy_id     INTEGER NOT NULL REFERENCES strategy(id),
+    rail            TEXT NOT NULL,
+    margin_kind     TEXT NOT NULL,
+    year            INTEGER NOT NULL,
+    state           TEXT NOT NULL CHECK (state IN ('entered','continued','left')),
+    years_past      INTEGER NOT NULL,
+    measure_cents   INTEGER NOT NULL,
+    threshold_cents INTEGER NOT NULL,
+    margin_cents    INTEGER NOT NULL
+);
+CREATE INDEX idx_breach_step ON breach_event(step_id);
+
+-- Each posting of a rule a strategy owns (#387, ADR-010 §4): what the rule
+-- would have posted (budgeted) and what it did post (delivered), so reports
+-- compare spending against the plan. A skipped posting has a row with 0
+-- delivered; strategy_decision_id is NULL when scale answered "no opinion".
+CREATE TABLE spending_baseline (
+    id                       INTEGER PRIMARY KEY,
+    step_id                  INTEGER NOT NULL REFERENCES simulation_step(id),
+    scheduled_transaction_id INTEGER NOT NULL REFERENCES scheduled_transaction(id),
+    strategy_id              INTEGER NOT NULL REFERENCES strategy(id),
+    strategy_decision_id     INTEGER REFERENCES strategy_decision(id),
+    budgeted_cents           INTEGER NOT NULL,
+    delivered_cents          INTEGER NOT NULL
+);
+CREATE INDEX idx_baseline_step ON spending_baseline(step_id);
 
 -- #199: basis a sale could not recover, from a chain step whose
 -- tax_character is return_of_capital. No money moved, so it is not a
@@ -592,6 +813,53 @@ CREATE TABLE capital_loss (
     tax_year        INTEGER,
     reason_kind     TEXT NOT NULL,
     reason_id       INTEGER
+);
+
+-- #497: an HSA withdrawal's gain over the lot's basis (contributions and
+-- reinvested payouts), a loss negative. Only a state that doesn't recognize
+-- HSAs taxes it, so it is no transfer_event leg: the federal return never
+-- sees it, whatever the withdrawal's own tax_character.
+CREATE TABLE hsa_gain (
+    id              INTEGER PRIMARY KEY,
+    step_id         INTEGER NOT NULL REFERENCES simulation_step(id),
+    date            TEXT NOT NULL,
+    lot_id          INTEGER NOT NULL REFERENCES account_lot(id),
+    amount          INTEGER NOT NULL CHECK (amount != 0),
+    tax_character   TEXT NOT NULL CHECK (tax_character IN ('ltcg','stcg')),
+    tax_year        INTEGER,
+    reason_kind     TEXT NOT NULL,
+    reason_id       INTEGER
+);
+
+-- #255: a lot's basis reset at a death (IRC §1014) to its value at the end
+-- of the person's final month: all of the gain or loss, or the decedent's
+-- half of a joint lot outside community property. No money moves.
+CREATE TABLE basis_step_up (
+    id              INTEGER PRIMARY KEY,
+    step_id         INTEGER NOT NULL REFERENCES simulation_step(id),
+    date            TEXT NOT NULL,
+    lot_id          INTEGER NOT NULL REFERENCES account_lot(id),
+    person          TEXT NOT NULL,
+    balance         INTEGER NOT NULL,
+    basis_before    INTEGER NOT NULL,
+    basis_after     INTEGER NOT NULL,
+    -- #434: why, one of step_ups.RULES (owner, inherited, joint_half,
+    -- community_property, last_survivor).
+    rule            TEXT NOT NULL
+);
+
+-- #542: the balance each month's interest of a mortgage_payment rule was
+-- figured on, for the mortgage debt limit: one row per rule and month the
+-- interest covers. A ytd_amount catch-up posts several months' interest
+-- at once (``posted``), so it has a row for each month it replays.
+CREATE TABLE mortgage_balance (
+    id              INTEGER PRIMARY KEY,
+    step_id         INTEGER NOT NULL REFERENCES simulation_step(id),
+    rule_id         INTEGER NOT NULL REFERENCES scheduled_transaction(id),
+    posted          TEXT NOT NULL,
+    month           TEXT NOT NULL,
+    balance         INTEGER NOT NULL,
+    interest        INTEGER NOT NULL
 );
 
 CREATE TABLE applied_calendar_event (
@@ -736,6 +1004,8 @@ SNAPSHOT_TABLES: tuple[str, ...] = (
     "calendar",
     "calendar_event",
     "scheduled_transaction",
+    "tax_jurisdiction",
+    "residence",
     "aux_table",
     "scenario",
     "person_lifespan",
@@ -744,10 +1014,18 @@ SNAPSHOT_TABLES: tuple[str, ...] = (
     "account_tag",
     "scheduled_transaction_tag",
     "calendar_event_tag",
+    "strategy_source",
+    "tax_source",
+    "strategy",
+    "strategy_trigger",
+    "strategy_vary",
+    "strategy_disabled",
+    "allocation_target",
     "ensemble_manifest",
     "ensemble_draw",
     "ensemble_tail_scale",
     "ensemble_path_shock",
+    "load_warning",
 )
 
 

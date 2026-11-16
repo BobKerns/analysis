@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import shlex
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 import click
@@ -53,6 +53,10 @@ class GuideContext:
     series: Mapping[str, Sequence[str]] = field(default_factory=dict)
     # named calendar rows and latent factors, for --vary-correlate-with
     row_names: Sequence[str] = ()
+    # date_marker rows, which a date may be written relative to (#281)
+    markers: Sequence[str] = ()
+    # role:name tags in use, for a tag filter (a guard rail's, #305)
+    tags: Sequence[str] = ()
     # The scenario's other calendar rows (when editing, all but the row being
     # edited), as answers, by command: what a row must not duplicate.
     other_rows: Mapping[str, Sequence[Answers]] = field(default_factory=dict)
@@ -96,6 +100,14 @@ class Field:
     # The default offered when it depends on the answers so far (a rule
     # kind's usual tax character, say); ``default`` when it gives None.
     suggest: Callable[[GuideContext, Answers], str | None] | None = None
+    # The type when it depends on the answers so far (a guard rail's
+    # threshold: a percent or dollars, by its basis); ``type`` otherwise.
+    type_of: Callable[[Answers], FieldType] | None = None
+    # Whether ``Guide.complete`` asks this field when it has no answer; None
+    # always asks. A field that applies but isn't asked starts blank, and is
+    # still offered at the review: a fixed row's name, which only a varying
+    # row needs, can be given there (#356).
+    ask: Callable[[GuideContext, Answers], bool] | None = None
 
     @property
     def name(self) -> str:
@@ -204,11 +216,10 @@ def _vary_fields(*, targets: Sequence[str], ramp: bool) -> tuple[Field, ...]:
         Field(
             "row_name", "name for this row", option="--name", unique=True,
             required=lambda answers: answers.get("_vary") == "y",
-            # Asked when the row varies; a name an existing row already has is
-            # kept (and can be changed) either way.
-            applies=lambda ctx, answers: (  # noqa: ARG005
-                answers.get("_vary") == "y" or bool(answers.get("row_name"))
-            ),
+            # Asked only when the row varies, but every row has one to give at
+            # the review: an unnamed row a child scenario changes needs a name
+            # in the scenario that defines it (#356).
+            ask=varying,
             help="A unique name, needed when the row varies; reports and other rows "
                  "refer to the row by it.",
         ),
@@ -292,9 +303,17 @@ def _vary_fields(*, targets: Sequence[str], ramp: bool) -> tuple[Field, ...]:
                      "0 makes every year independent.",
             ),
             Field(
-                "vary_innovation_sd", "yearly shock (sd)", type="value",
-                option="--vary-innovation-sd", applies=process_set,
+                "vary_shock_sd", "yearly shock (sd)", type="value",
+                option="--vary-shock-sd", applies=process_set,
                 help="The size of one year's shock, in the rate's own unit.",
+            ),
+            Field(
+                "vary_process_start", "start", option="--vary-process-start",
+                required=False, applies=process_set, strict=True,
+                choices=lambda ctx, answers: sorted(registries.VARY_PROCESS_STARTS),  # noqa: ARG005
+                help="current: start at the rate in effect just before this date and "
+                     "revert to the drawn level at the persistence above. Blank starts "
+                     "with a year already drawn around the level.",
             ),
         ]
     fields += [
@@ -325,7 +344,11 @@ def _vary_fields(*, targets: Sequence[str], ramp: bool) -> tuple[Field, ...]:
     return tuple(fields)
 
 
-_DATE = Field("date", "date (YYYY-MM or YYYY-MM-DD)", type="date")
+_DATE = Field(
+    "date", "date (YYYY-MM or YYYY-MM-DD)", type="date",
+    choices=lambda ctx, answers: list(ctx.markers),  # noqa: ARG005
+    help="Or relative to a date_marker: NAME, NAME+2y, NAME-6m.",
+)
 _DESCRIPTION = Field("description", "description", option="--description", required=False)
 _TAX_CHARACTER_HELP = (
     "Leave blank to have it follow from the accounts: a rollover is untaxed, "
@@ -395,6 +418,15 @@ def from_endpoints(ctx: GuideContext, answers: Answers) -> Sequence[str]:  # noq
     return [*ctx.accounts, *chains_of(ctx, "source")]
 
 
+def _unless_resuming(field_: Field) -> Field:
+    """``field_``, asked only of a set_rate row that sets a rate of its own:
+    a ``--resume`` row (#291) has no rate and no draw."""
+    applies = field_.applies
+    return replace(
+        field_, applies=lambda ctx, answers: not answers.get("vary_resume") and applies(ctx, answers),
+    )
+
+
 KINDS: tuple[KindSpec, ...] = (
     KindSpec(
         "set-rate", "a series starts earning a new rate", amount_unit="percent",
@@ -411,9 +443,16 @@ KINDS: tuple[KindSpec, ...] = (
                 "series", "series",
                 choices=lambda ctx, answers: list(ctx.series.get(answers.get("aux_kind", ""), ())),
             ),
-            Field("rate_percent", "rate in percent (e.g. 4.5)", type="percent"),
+            Field(
+                "vary_resume", "resume what governed before (blank for a new rate)",
+                type="date", option="--resume", required=False,
+                choices=lambda ctx, answers: list(ctx.markers),  # noqa: ARG005
+                help="A date, usually an episode's start marker: from this row's date the "
+                     "series goes back to whatever governed it the day before (#291).",
+            ),
+            _unless_resuming(Field("rate_percent", "rate in percent (e.g. 4.5)", type="percent")),
             _DESCRIPTION, _TAGS,
-            *_vary_fields(targets=("amount", "date"), ramp=True),
+            *map(_unless_resuming, _vary_fields(targets=("amount", "date"), ramp=True)),
         ),
     ),
     KindSpec(
@@ -495,14 +534,15 @@ KINDS: tuple[KindSpec, ...] = (
         ),
     ),
     KindSpec(
-        "swap-aux-table", "an aux table is replaced by another, as in a move",
+        "swap-aux-table", "an aux table is replaced by another, as in a change of law",
         key=("date", "aux_kind", "series"),
         fields=(
             _DATE,
             Field(
                 "aux_kind", "kind of table", strict=True,
                 choices=lambda ctx, answers: sorted(registries.SWAPPABLE_AUX_KINDS),  # noqa: ARG005
-                help="state_brackets for a move to another state.",
+                help="federal_brackets for a change of law; a move to another state is "
+                     "`sim tax move`.",
             ),
             Field(
                 "source_series", "replacement series",
@@ -517,6 +557,17 @@ KINDS: tuple[KindSpec, ...] = (
             ),
             _DESCRIPTION, _TAGS,
             *_vary_fields(targets=("date",), ramp=False),
+        ),
+    ),
+    KindSpec(
+        "date-marker", "a named date other rows' dates can be written relative to",
+        fields=(
+            Field("name", "marker name", unique=True),
+            _DATE, _DESCRIPTION, _TAGS,
+            # Its name is NAME, with no other to ask for; and a truncated
+            # normal's fields never apply to a date.
+            *(f for f in _vary_fields(targets=("date",), ramp=False) if f.param not in {
+                "row_name", "vary_median", "vary_sd", "vary_skew", "vary_tailweight"}),
         ),
     ),
     KindSpec(
@@ -552,6 +603,8 @@ def kind_named(command: str) -> KindSpec:
 
 def value_type(spec: KindSpec, field_: Field, answers: Answers) -> FieldType:
     """``field_``'s type, with "value" resolved to what the row is varying."""
+    if field_.type_of is not None:
+        return field_.type_of(answers)
     if field_.type != "value":
         return field_.type
     if answers.get("vary_target") == "date":
@@ -600,6 +653,8 @@ class Guide:
 
     ``ask(text, choices, default)`` reads one line; ``checkers`` maps a field
     type to a function that raises ``click.ClickException`` for a bad answer.
+    ``askers`` maps a field's param to its own way of asking, given the
+    current answer (a scenario's parents, asked one name at a time).
     """
 
     def __init__(
@@ -608,8 +663,10 @@ class Guide:
         checkers: Mapping[FieldType, Callable[[str], object]],
         echo: Callable[[str], None] = click.echo,
         canonical_date: Callable[[KindSpec, str], str] | None = None,
+        askers: Mapping[str, Callable[[str | None], str]] | None = None,
     ) -> None:
         self._ask = ask
+        self._askers = dict(askers or {})
         self._checkers = checkers
         self._echo = echo
         # How a kind's date reads once loaded, so that two spellings of one
@@ -622,6 +679,8 @@ class Guide:
     ) -> str:
         """Ask one field until its answer is acceptable. ``current`` is the
         answer being changed, offered as the default."""
+        if (asker := self._askers.get(field_.param)) is not None:
+            return asker(current)
         choices = list(field_.choices(ctx, answers)) if field_.choices else []
         if field_.type == "yesno":
             choices = ["y", "n"]
@@ -699,6 +758,14 @@ class Guide:
         others = ctx.other_rows.get(spec.command, ())
         return any(self._key(spec, ctx, other) == key for other in others)
 
+    def problem(
+        self, spec: KindSpec, field_: Field, ctx: GuideContext, answers: Answers, answer: str,
+    ) -> str | None:
+        """Why ``answer`` won't do for ``field_``, as asking it would say; None
+        when it will. For an answer given other than by asking (an option)."""
+        choices = list(field_.choices(ctx, answers)) if field_.choices else []
+        return self._problem(spec, field_, ctx, answers, answer, choices)
+
     def _problem(
         self, spec: KindSpec, field_: Field, ctx: GuideContext, answers: Answers,
         answer: str, choices: list[str],
@@ -750,6 +817,12 @@ class Guide:
             if arguments_only and not field_.is_argument:
                 continue
             answer = answers.get(field_.param)
+            if field_.ask is not None and not field_.ask(ctx, answers):
+                if answer is None:
+                    answers[field_.param] = ""
+                    continue
+            elif field_.ask is not None and answer == "" and field_.is_required(answers):
+                answer = None  # left blank while it wasn't asked; now it's needed
             if answer and not arguments_only:
                 choices = list(field_.choices(ctx, answers)) if field_.choices else []
                 if self._problem(spec, field_, ctx, answers, answer, choices) is not None:

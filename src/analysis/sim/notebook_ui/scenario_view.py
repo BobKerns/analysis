@@ -1,6 +1,6 @@
 """Scenario intent-data notebook views: manifest, persons, chains, scheduled
-transactions, calendar events -- a scenario's whole setup, readable without
-running it.
+transactions, calendar events, year-to-date rows, itemizations and tags -- a
+scenario's whole setup, readable without running it.
 
 All take a :class:`~analysis.sim.connection.ScenarioConnection` and return
 plain, display-ready DataFrames -- these are intent-side facts (unlike
@@ -9,25 +9,63 @@ plain, display-ready DataFrames -- these are intent-side facts (unlike
 
 from __future__ import annotations
 
-from collections.abc import Callable
-
 import json
+from collections.abc import Callable, Collection
+from dataclasses import dataclass
+from pathlib import Path
 
 import pandas as pd
 
-from analysis.sim import chain_map, registries
+from analysis.sim import chain_map, lineage, registries, setup_listings
 from analysis.sim.connection import ScenarioConnection
 
 
-def manifest_view(sc: ScenarioConnection) -> pd.DataFrame:
-    """The intent file's identity card, plus the scenario row it was built from."""
+def manifest_view(sc: ScenarioConnection, **_) -> pd.DataFrame:
+    """The intent file's identity card, plus the scenario row it was built
+    from (#433): its parent, mix-ins and load order, seed, ensemble size and
+    reserve, and the run file the run-based notebooks open for it (its
+    latest run, else member 0 of its latest ensemble batch).
+
+    Every value is the intent's own, so the table says what the intent was
+    built from even after the folders change. ``(inherited)`` is what ``sim
+    scenario show`` reads from the folders, so it is added only where they
+    still give the same value; ``folders`` says when they no longer match."""
     manifest = sc.items("intent_manifest").iloc[0]
     scenario = sc.items("scenario").iloc[0]
+    parents = json.loads(scenario["parents_json"] or "[]")
+    meta = json.loads(scenario["meta_json"] or "{}")
+    try:
+        shown = setup_listings.scenario_show(sc.data_dir, sc.ref.path, None)
+    except (OSError, ValueError):
+        shown = None  # the folders can't say; the intent still can
+
+    def mark(value: object, field: str) -> str:
+        found = getattr(shown, field, None)
+        if field == "reserve":
+            inherited = found is not None and found == (value, True)
+        else:
+            inherited = found is not None and found.value == value and found.inherited
+        return f"{value} (inherited)" if inherited else str(value)
+
+    seed = None if pd.isna(scenario["seed"]) else int(scenario["seed"])
+    size = meta.get("ensemble_size")
     rows = {
         "scenario": manifest["scenario_name"],
         "description": scenario.get("description") or "",
+        "parent": parents[0] if parents else "none (a root scenario)",
+        "mix-ins": ", ".join(parents[1:]) or "none",
+        "load order": " → ".join(json.loads(scenario["load_order_json"] or "[]")),
         "start": scenario["start"],
         "end": scenario["end"],
+        "seed": mark(seed, "seed") if seed is not None else "(not set)",
+        "ensemble size": mark(size, "ensemble_size") if size else "0 (not an ensemble)",
+        "reserve": (mark(setup_listings.reserve_text(meta["reserve"]), "reserve")
+                    if "reserve" in meta else "(not set)"),
+        "run file": _run_file_text(sc),
+    }
+    if folders_changed(sc):
+        rows["folders"] = "changed since the scenario was opened: open it again to see them"
+    rows |= {
         "schema_version": manifest["schema_version"],
         "code_version": manifest["code_version"][:12],
         "data_version": manifest["data_version"][:12],
@@ -38,6 +76,27 @@ def manifest_view(sc: ScenarioConnection) -> pd.DataFrame:
         "host": manifest["host"],
     }
     return pd.DataFrame(rows.items(), columns=["field", "value"]).set_index("field")
+
+
+def _run_file_text(sc: ScenarioConnection) -> str:
+    """The run file the run-based notebooks open, relative to the runs
+    folder, with when it was written; ``none`` when there is none."""
+    found = setup_listings.stamped(sc.ref.run.latest())
+    if found is None:
+        return "none (not run yet)"
+    path, when = found
+    try:
+        path = path.relative_to(sc.ref.runs_dir)
+    except ValueError:
+        pass
+    return f"{path} ({when:%Y-%m-%d %H:%M})"
+
+
+def folders_changed(sc: ScenarioConnection) -> bool:
+    """Whether any file in ``sc``'s lineage folders was written, added or
+    removed since its intent was loaded from them, so where a row is
+    defined can no longer be read off the folders (#433)."""
+    return lineage.lineage_fingerprint(sc.scenarios_dir, sc.ref.name) != sc.loaded_fingerprint
 
 
 def persons_view(sc: ScenarioConnection, **_) -> pd.DataFrame:
@@ -153,7 +212,9 @@ def chain_table(sc: ScenarioConnection) -> pd.DataFrame:
     rows of one chain read as a block; the later steps leave ``chain``,
     ``role`` and ``used_by`` empty. ``used_by`` is :data:`UNUSED` for a chain
     nothing uses. The same facts ``sim chain list`` shows, with the steps'
-    numbers kept in columns of their own (issue #141)."""
+    numbers kept in columns of their own (issue #141). ``defined_in``, also
+    on the first step only, is the scenario whose chain file is loaded, or
+    ``overrides <ancestor>`` (#433)."""
     cmap = chain_map.chain_map(sc)
     steps = chains_view(sc)
     steps = steps[steps["step"].notna()].reset_index(drop=True)
@@ -164,7 +225,12 @@ def chain_table(sc: ScenarioConnection) -> pd.DataFrame:
     steps["used_by"] = steps["chain"].map(
         lambda name: "\n".join(chain_map.use_text(cmap, u) for u in cmap.uses.get(name, ())) or UNUSED
     )
-    for column in ("chain", "role", "used_by"):
+    if folders_changed(sc):
+        steps["defined_in"] = setup_listings.UNCONFIRMED
+    else:
+        origins = setup_listings.chain_origins(sc.ref.scenarios_dir, sc.ref.name)
+        steps["defined_in"] = steps["chain"].map(lambda name: str(origins.get(name, "")))
+    for column in ("chain", "role", "used_by", "defined_in"):
         steps[column] = steps[column].where(first, "")
     return steps
 
@@ -172,7 +238,7 @@ def chain_table(sc: ScenarioConnection) -> pd.DataFrame:
 _SCHEDULED_COLS = [
     "id", "name", "from_account", "from_lot", "to_account", "to_lot", "cadence",
     "amount_rule_kind", "amount", "tax_character", "priority", "start", "end",
-    "description",
+    "description", "defined_in",
 ]
 
 
@@ -184,8 +250,16 @@ def scheduled_view(sc: ScenarioConnection) -> pd.DataFrame:
     ``percent_of_balance`` growth rules) so numeric formatting still works --
     display it with ``.style.format({"amount": ...}, na_rep="-")`` rather than
     filling it here.
+
+    ``defined_in`` says where each rule comes from (#433): ``this scenario``,
+    the ancestor it is inherited from, ``overrides <ancestor>``, or
+    ``built in`` for a lot's growth rule, which the loader adds.
     """
     scheduled = sc.items("scheduled").copy()
+    scheduled["defined_in"] = checked_origins(
+        sc, "scheduled.csv", list(scheduled["name"]),
+        set(scheduled["name"][scheduled["from_name"].isin(setup_listings.loader_accounts())]),
+    )
     resolve = _chain_targets(sc)
     for column, side in (("from_name", "from"), ("to_name", "to")):
         targets = [resolve(name) for name in scheduled[column]]
@@ -204,7 +278,7 @@ def scheduled_view(sc: ScenarioConnection) -> pd.DataFrame:
 
 _CALENDAR_COLS = [
     "date", "kind", "target", "account_1", "lot_1", "account_2", "lot_2",
-    "amount", "description",
+    "amount", "description", "defined_in",
 ]
 
 
@@ -232,8 +306,13 @@ def calendar_view(sc: ScenarioConnection) -> pd.DataFrame:
     series for a ``set_rate`` (with its aux kind when it isn't an ordinary
     rate, e.g. ``cpi (inflation)``), otherwise the scheduled row it changes
     or retires. Again one column, since each kind acts on exactly one.
+
+    ``defined_in`` says where each row comes from, as ``sim calendar list``
+    shows it (#433); ``-`` throughout when the folders no longer match the
+    loaded intent (edited since the load), rather than a wrong guess.
     """
-    events = sc.items("calendar_event").copy()
+    events = sc.items("calendar_event").sort_values("id").copy()
+    events["defined_in"] = _calendar_defined_in(sc, events)
     events["target"] = [
         _calendar_target(kind, scheduled, series, payload)
         for kind, scheduled, series, payload in zip(
@@ -250,6 +329,144 @@ def calendar_view(sc: ScenarioConnection) -> pd.DataFrame:
         registries.format_calendar_amount(kind, amount)
         for kind, amount in zip(events["kind"], events["amount"], strict=True)
     ]
-    events = events[_CALENDAR_COLS].sort_values("date").reset_index(drop=True)
+    # Stable, so rows on one date keep the load's order.
+    events = events[_CALENDAR_COLS].sort_values("date", kind="stable").reset_index(drop=True)
     events[_CALENDAR_COLS] = events[_CALENDAR_COLS].fillna("-")
     return events
+
+
+def checked_origins(sc: ScenarioConnection, filename: str, names: list[str],
+                    built_in: Collection[str]) -> list[str]:
+    """``defined_in`` for the intent's ``names`` rows of ``filename``,
+    :data:`~setup_listings.UNCONFIRMED` throughout once the folders differ
+    from the load (:func:`setup_listings.checked_origins`)."""
+    if folders_changed(sc):
+        return [setup_listings.UNCONFIRMED] * len(names)
+    return setup_listings.checked_origins(
+        setup_listings.row_origins(sc.ref.path, filename), names, built_in)
+
+
+def _calendar_defined_in(sc: ScenarioConnection, events: pd.DataFrame) -> list[str]:
+    """Each intent calendar row's ``defined_in``, lined up with the folders'
+    merged rows by position: the loader writes them in its merge order, which
+    the overlay follows. ``-`` throughout once the folders differ from the
+    load (:func:`folders_changed`); where that can't be known, a check by kind
+    and name still catches most edits since the load."""
+    unconfirmed = [setup_listings.UNCONFIRMED] * len(events)
+    if folders_changed(sc):
+        return unconfirmed
+    origins = setup_listings.calendar_origins(sc.ref.path)
+    names = ["" if pd.isna(name) else str(name) for name in events["name"]]
+    if [(kind, name) for kind, name, _ in origins] != list(zip(events["kind"], names, strict=True)):
+        return unconfirmed
+    return [where for _kind, _name, where in origins]
+
+
+# ---------- year to date, itemizations, tags (#435) ----------
+#
+# Read with the same functions ``sim ytd list``, ``sim itemization list|show``
+# and ``sim tags`` use, so the notebook and the terminal show the same rows.
+
+YTD_COLUMNS = ["name", "source", "from", "to", "amount", "tax_character", "year",
+               "description", "defined_in"]
+
+
+def ytd_view(sc: ScenarioConnection) -> pd.DataFrame:
+    """``sim ytd list`` as a table: year_to_date.csv's rows, then the
+    scheduled rows carrying a ``ytd_amount`` or ``ytd_preroll``, merged down
+    the load order with where each is defined. ``amount`` is as written:
+    dollars, an ``@itemization``, or ``preroll``."""
+    rows = setup_listings.ytd_listing(sc.ref.path)
+    return pd.DataFrame(
+        [[r.name, r.source, r.from_account, r.to_account, r.amount, r.tax_character,
+          r.year, r.description, r.defined_in] for r in rows],
+        columns=YTD_COLUMNS,
+    )
+
+
+def itemizations_view(sc: ScenarioConnection) -> pd.DataFrame:
+    """``sim itemization list`` as a table: every itemization the scenario can
+    reference, with its row count, its total in dollars (NaN when it can't be
+    computed; ``error`` says why), how many ``@name`` cells reference it, and
+    where it is defined."""
+    items = setup_listings.itemizations(sc.data_dir, sc.ref.path)
+    references = setup_listings.itemization_references(sc.data_dir, sc.ref.path)
+    return pd.DataFrame(
+        [[i.name, len(i.rows), None if i.total_cents is None else i.total_cents / 100,
+          len(references.get(i.name, [])), i.defined_in, i.error] for i in items],
+        columns=["name", "rows", "total", "refs", "defined_in", "error"],
+    )
+
+
+@dataclass(frozen=True)
+class ItemizationDetail:
+    """``sim itemization show NAME``'s facts: the file's rows, its total, and
+    the cells referencing it."""
+    name: str
+    path: Path
+    defined_in: str
+    rows: pd.DataFrame
+    total: float | None
+    """Dollars, or None when it can't be computed (``error`` says why)."""
+    error: str
+    references: pd.DataFrame
+    """``file`` (relative to the data repo), ``line`` and ``column`` of each
+    ``@name`` cell referencing it."""
+
+
+def itemization_detail(sc: ScenarioConnection, name: str) -> ItemizationDetail:
+    """One itemization's rows, total and references. ``name`` may start with
+    ``@``; an unknown name raises KeyError."""
+    name = name.removeprefix("@")
+    item = next((i for i in setup_listings.itemizations(sc.data_dir, sc.ref.path)
+                 if i.name == name), None)
+    if item is None:
+        raise KeyError(f"no itemization {name!r} for {sc.ref.name}")
+    found = setup_listings.itemization_references(sc.data_dir, sc.ref.path).get(name, [])
+
+    def shown(path: Path) -> str:
+        try:
+            return str(path.relative_to(sc.data_dir))
+        except ValueError:
+            return str(path)
+
+    return ItemizationDetail(
+        name=item.name, path=item.path, defined_in=item.defined_in,
+        rows=pd.DataFrame(item.rows, columns=list(item.rows[0]) if item.rows else ["Value"]),
+        total=None if item.total_cents is None else item.total_cents / 100,
+        error=item.error,
+        references=pd.DataFrame(
+            [[shown(r.path), r.line, r.column] for r in found],
+            columns=["file", "line", "column"],
+        ),
+    )
+
+
+def _calendar_label(row: pd.Series) -> str:
+    """A calendar row as ``sim tags items`` names it (its date), with its
+    name, or else its kind, so two rows on one date can be told apart."""
+    label = row["name"] if isinstance(row.get("name"), str) and row["name"] else row["kind"]
+    return f"{str(row['date'])[:7]} {label}"
+
+
+def tags_view(sc: ScenarioConnection) -> pd.DataFrame:
+    """``sim tags`` and ``sim tags items`` in one table: every tag, by role
+    and name, with the accounts, scheduled rules and calendar rows carrying
+    it, one per line in each column."""
+    tags = sc.list_tags()
+    carriers: dict[str, dict[str, list[str]]] = {}
+    for item_type, column, label in (
+        ("account", "accounts", lambda row: str(row["name"])),
+        ("scheduled", "scheduled", lambda row: str(row["name"])),
+        ("calendar_event", "calendar", _calendar_label),
+    ):
+        items = sc.items(item_type)
+        for _, row in items.iterrows():
+            for token in str(row["tags"]).split():
+                carriers.setdefault(token, {}).setdefault(column, []).append(label(row))
+    tokens = [f"{role}:{name}" for role, name in zip(tags["role"], tags["name"], strict=True)]
+    return pd.DataFrame({
+        "tag": tokens,
+        **{column: ["\n".join(carriers.get(token, {}).get(column, [])) for token in tokens]
+           for column in ("accounts", "scheduled", "calendar")},
+    })

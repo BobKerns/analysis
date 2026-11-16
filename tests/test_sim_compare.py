@@ -3,13 +3,17 @@ as scenario_compare.ipynb compares them."""
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from pathlib import Path
+from typing import cast
 
 import pytest
 from click.testing import CliRunner, Result
+import pandas as pd
 
 from analysis.cli import main
+from analysis.sim import compare
+from analysis.sim.connection import RunConnection
 
 
 @pytest.fixture
@@ -74,13 +78,13 @@ def test_sim_compare_sections_account_and_graph_file(
     chart = tmp_path / "checking.svg"
     result = compare_runs("retire_alice", "higher_pay", "--section", "account",
                           "--account", "Asset_Checking", "--dollars", "nominal",
-                          "--graph-file", str(chart))
+                          "--chart-file", str(chart), "--table")
     assert result.exit_code == 0, result.output
     lines = result.output.splitlines()
-    assert lines[0] == "higher_pay vs retire_alice, nominal dollars"
-    assert lines[2] == "Asset_Checking at year end (nominal):"
+    assert lines[0] == f"wrote {chart}"  # the chart comes first (#393)
+    assert lines[1] == "higher_pay vs retire_alice, nominal dollars"
+    assert lines[3] == "Asset_Checking at year end (nominal):"
     assert "Runs:" not in result.output and "Net worth" not in result.output
-    assert lines[-1] == f"wrote {chart}"
     assert "Asset_Checking, nominal" in chart.read_text()
 
 
@@ -100,8 +104,8 @@ def test_sim_compare_asks_for_a_variant_with_a_run(
 @pytest.mark.parametrize("args, message", [
     (["--lot", "a"], "--lot needs --account"),
     (["--section", "account"], "--section account needs --account"),
-    (["--graph", "--graph-file", "x.png"], "use one of --graph and --graph-file"),
-    (["--graph-file", "x.gif"], "must end in .png or .svg"),
+    (["--chart", "--chart-file", "x.png"], "use one of --chart and --chart-file"),
+    (["--chart-file", "x.gif"], "must end in .png or .svg"),
 ])
 def test_sim_compare_checks_its_options_first(
     test_data_dir: Path, args: list[str], message: str,
@@ -134,7 +138,7 @@ def test_sim_compare_graph_draws_at_most_four_variants(
 ) -> None:
     for i in range(4):
         derive_scenario(f"v{i}", "retire_alice")
-    result = compare_runs("retire_alice", "higher_pay", "v0", "v1", "v2", "v3", "--graph")
+    result = compare_runs("retire_alice", "higher_pay", "v0", "v1", "v2", "v3", "--chart")
     assert result.exit_code == 2 and "at most 4 variants" in result.output
 
 
@@ -231,7 +235,6 @@ def test_sim_compare_refuses_a_cpi_constant_balance_without_a_cpi_index(
 ) -> None:
     """A run with no CPI index has an all-NaN CPI-constant balance: an error
     naming the cause, not a balance of zero."""
-    import pandas as pd
 
     from analysis.sim.connection import RunConnection
     from analysis.sim.types import DollarMode
@@ -279,6 +282,20 @@ def test_breakeven_of_no_months_is_none() -> None:
     assert breakeven_month(pd.Series([], dtype=float)) is None
 
 
+def test_breakeven_month_never_ahead_returns_none() -> None:
+    idx = pd.date_range("2026-01-31", periods=3, freq="ME")
+    series = pd.Series([-1.0, -2.0, -3.0], index=idx)
+
+    assert compare.breakeven_month(series) is None
+
+
+def test_breakeven_month_finds_first_month_that_stays_ahead() -> None:
+    idx = pd.date_range("2026-01-31", periods=4, freq="ME")
+    series = pd.Series([-1.0, 1.0, -1.0, 1.0], index=idx)
+
+    assert compare.breakeven_month(series) == idx[3]
+
+
 def test_scenario_run_path_matches_the_whole_scenario_name(runs_dir: Path) -> None:
     """``base``'s run is never ``higher_base``'s, though the file names share
     a ``_base_`` segment."""
@@ -286,10 +303,10 @@ def test_scenario_run_path_matches_the_whole_scenario_name(runs_dir: Path) -> No
 
     runs_dir.mkdir(parents=True, exist_ok=True)
     other = runs_dir / "2030-01-02T000000Z_higher_base_abc1234.sqlite3"
-    other.touch()
+    other.write_bytes(b"x")
     assert scenario_run_path(runs_dir, "base") is None
     own = runs_dir / "2030-01-01T000000Z_base_abc1234.sqlite3"
-    own.touch()
+    own.write_bytes(b"x")
     assert scenario_run_path(runs_dir, "base") == own
     assert scenario_run_path(runs_dir, "higher_base") == other
 
@@ -310,3 +327,240 @@ def test_runs_with_different_horizons_compare_over_their_shared_months() -> None
     assert summary.loc["b", "final net worth"] == 3.0
     assert all_nan_columns(nw.assign(c=float("nan"))) == ["c"]
     assert all_nan_columns(nw.iloc[:0]) == []
+
+
+@pytest.mark.slow
+def test_sim_compare_guard_rails_match_rails_by_name(
+    compare_runs: Callable[..., Result], test_data_dir: Path,
+) -> None:
+    """Rails are a lens: a variant's changed rail shows at once, no rerun.
+    A rail only the variant has shows without a change column."""
+    (test_data_dir / "scenarios" / "higher_pay" / "guard_rails.csv").write_text(
+        "name,measure,side,threshold,basis,start\n"
+        "budget,spending,above,95000.00,cpi_constant,2031-01\n"
+        "floor,spending,below,50000.00,cpi_constant,2031-01\n",
+        encoding="utf-8",
+    )
+    result = compare_runs("retire_alice", "higher_pay", "--section", "guard-rails")
+
+    assert result.exit_code == 0, result.output
+    budget = _section(result.output, "budget:")
+    assert budget[0].split() == [
+        "year", "retire_alice", "higher_pay", "Δ", "higher_pay", "retire_alice", "cum",
+        "higher_pay", "cum", "Δ", "higher_pay", "cum"]
+    first = budget[1].split()
+    assert first[0] == "2031"
+    # The same spending against a budget $10,000 higher.
+    assert int(first[3].replace(",", "")) == pytest.approx(10_000, abs=1)
+    floor = _section(result.output, "floor:")
+    assert floor[0].split() == ["year", "higher_pay", "higher_pay", "cum"]
+    assert "four_percent:" in result.output  # inherited by both
+
+
+def test_sim_compare_guard_rails_says_when_there_are_none(
+    compare_runs: Callable[..., Result], test_data_dir: Path,
+) -> None:
+    (test_data_dir / "scenarios" / "retire_alice" / "guard_rails.csv").unlink()
+    result = compare_runs("retire_alice", "higher_pay", "--section", "guard-rails")
+    assert result.exit_code == 0, result.output
+    assert "Guard rails: none in these scenarios" in result.output
+    default = compare_runs("retire_alice", "higher_pay")  # every section, rails only if any
+    assert default.exit_code == 0, default.output
+    assert "Guard rail" not in default.output
+
+
+def test_sim_compare_guard_rails_refuses_cpi_constant_without_a_cpi_index(
+    compare_runs: Callable[..., Result], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The guard-rails section alone reads no net worth, so it checks for a
+    CPI index itself rather than showing the rails as covering no years."""
+    from analysis.sim.connection import RunConnection
+
+    original = RunConnection.cpi_index
+    monkeypatch.setattr(RunConnection, "cpi_index",
+                        lambda self: original(self) * float("nan"))
+    result = compare_runs("retire_alice", "higher_pay", "--section", "guard-rails")
+    assert result.exit_code == 1, result.output
+    assert "no 'cpi' inflation index in the run of retire_alice" in result.output
+    nominal = compare_runs("retire_alice", "higher_pay", "--section", "guard-rails",
+                           "--dollars", "nominal")
+    assert nominal.exit_code == 0, nominal.output
+    assert "gk_upper:" in nominal.output  # a share of the portfolio needs no CPI
+
+
+class _Rules:
+    """A run's scheduled rules and its start, enough for ``compare.rule_differences``."""
+
+    def __init__(self, scenario_start: str = "2025-01-31", **ss_fields: object) -> None:
+        self.scenario_start = scenario_start
+        self.frame = pd.DataFrame([{
+            "name": "ss_bill", "from_name": "Income_SS_Bill", "to_name": "Asset_Checking",
+            "amount_rule_kind": "ss_benefit", "amount_cents": 320000.0, "claim_age": 70.0,
+            "rate_micros": None, "start": "2026-01-31", "end": None, **ss_fields,
+        }])
+
+    def items(self, kind: str) -> pd.DataFrame:
+        if kind == "scenario":
+            return pd.DataFrame([{"start": self.scenario_start}])
+        assert kind == "scheduled"
+        return self.frame
+
+
+def test_rule_differences_show_every_field_as_it_reads() -> None:
+    """#376: a claim age (or a rate) a variant changes shows, in its units."""
+    runs = cast(Mapping[str, RunConnection],
+                {"base": _Rules(), "early": _Rules(claim_age=67.0, rate_micros=25_000)})
+    rules = compare.rule_differences(runs, ["base", "early"], "base")
+    assert rules.fillna("—").to_dict("index") == {
+        ("ss_bill", "rate"): {"base": "—", "early": "2.5%"},
+        ("ss_bill", "claim_age"): {"base": "70", "early": "67"},
+    }
+    assert compare.rule_differences(runs, ["base", "base"], "base").empty
+
+
+def test_rule_starts_before_the_same_start_still_differ() -> None:
+    """#502: two annual rules that began before the same start fire in their
+    own months, so their starts are a difference, not both ``(start)``."""
+    runs = cast(Mapping[str, RunConnection], {
+        "base": _Rules("2026-05-31", start="2025-03-31"),
+        "variant": _Rules("2026-05-31", start="2026-05-31")})
+    rules = compare.rule_differences(runs, ["base", "variant"], "base")
+    assert rules.loc[("ss_bill", "start")].to_dict() == {"base": "2025-03-31", "variant": "(start)"}
+
+
+@pytest.mark.parametrize(("old", "new", "differs"), [
+    ("2026-05-31", "2027-01-31", False),  # each starts with its scenario
+    ("", "2027-01-31", False),  # blank begins with its scenario
+    ("2027-01-31", "2027-01-31", False),  # authored alike, new's first month
+    ("2026-08-31", "2026-08-31", False),  # authored alike, before new's start
+    ("2026-08-31", "2027-03-31", True),
+])
+def test_rule_starts_differ_only_where_authored_differently_across_starts(
+    old: str, new: str, differs: bool,
+) -> None:
+    """#502: last year's plan (start 2026-05) against the rolled one (2027-01)."""
+    runs = cast(Mapping[str, RunConnection], {
+        "plan": _Rules("2026-05-31", start=old), "rolled": _Rules("2027-01-31", start=new)})
+    rules = compare.rule_differences(runs, ["plan", "rolled"], "plan")
+    assert ("start" in rules.index.get_level_values("field")) is differs
+
+
+# ---------- Social Security and tax (#335, #336) ----------
+
+
+@pytest.mark.slow
+def test_sim_compare_social_security_by_year_and_over_the_run(
+    compare_runs: Callable[..., Result], test_data_dir: Path, intent_dir: Path, runs_dir: Path,
+    derive_scenario: Callable[..., Path], scheduled_override: Callable[..., str], tmp_path: Path,
+) -> None:
+    default = compare_runs("retire_alice", "higher_pay", "--dollars", "nominal")
+    assert "Social Security" not in default.output  # the same benefits: left out unasked
+    derive_scenario("bigger_ss", "retire_alice",
+                    {"scheduled.csv": scheduled_override(ss_alice="3500.00")})
+    _invoke("run", "bigger_ss", "--data-dir", str(test_data_dir), "--intent-dir", str(intent_dir),
+            "--runs-dir", str(runs_dir), "--allow-dirty-data")
+    chart = tmp_path / "ss.svg"
+    result = compare_runs("retire_alice", "bigger_ss", "--section", "social-security",
+                          "--dollars", "nominal", "--chart-file", str(chart), "--table")
+    assert result.exit_code == 0, result.output
+    assert "Gross Social Security, nominal" in chart.read_text()
+    yearly = _section(result.output, "Gross Social Security by year (nominal):")
+    assert yearly[0].split() == ["year", "retire_alice", "bigger_ss", "Δ", "bigger_ss"]
+    assert all(line.split()[-1].startswith("$") for line in yearly[1:])  # never less
+    lifetime = _section(result.output, "Gross Social Security over the run (nominal)")
+    assert lifetime[0].split() == ["scenario", "gross_ss", "Δ", "gross_ss"]
+    assert lifetime[1].split()[-1] == "$0"
+    assert lifetime[2].split()[-1] != "$0"
+    assert "Total tax" not in result.output
+
+
+@pytest.mark.slow
+def test_sim_compare_tax_matches_sim_report_tax(
+    business_scenarios: Path, test_data_dir: Path, intent_dir: Path, runs_dir: Path,
+) -> None:
+    from analysis.sim.connection import open_run
+    from analysis.sim.loader import scenario_run_path
+    from analysis.sim.reports import tax_by_year
+    from analysis.sim.types import DollarMode
+
+    names = ("alice_business", "alice_business_hobby")
+    for name in names:
+        _invoke("run", name, "--data-dir", str(test_data_dir), "--intent-dir", str(intent_dir),
+                "--runs-dir", str(runs_dir), "--allow-dirty-data")
+    result = CliRunner().invoke(main, [
+        "sim", "compare", *names, "--section", "tax", "--dollars", "nominal",
+        "--data-dir", str(test_data_dir), "--runs-dir", str(runs_dir)])
+    assert result.exit_code == 0, result.output
+    heading = "Total tax by tax year (nominal)"
+    rows = _section(result.output, heading)
+    assert rows[0].split() == ["year", *names, "Δ", names[1]]
+    totals = {}
+    for name in names:
+        run = scenario_run_path(runs_dir, name)
+        assert run is not None
+        with open_run(run, name, scenarios_dir=business_scenarios, data_dir=test_data_dir) as rc:
+            totals[name] = tax_by_year(rc, DollarMode.NOMINAL)["total_tax"]
+    for row in rows[1:]:
+        year, *cells = row.split()
+        for name, cell in zip(names, cells, strict=False):
+            assert cell == f"${round(totals[name][int(year)]):,}"
+    summary = _section(result.output, "Tax over the run (nominal)")
+    assert summary[0].split()[:3] == ["scenario", "fed_tax", "total_tax"]
+    hobby = summary[2].split()
+    assert hobby[0] == names[1] and hobby[3] != "$0"  # a hobby can't deduct its losses
+
+
+def test_sim_compare_chart_file_draws_one_chart(test_data_dir: Path) -> None:
+    result = CliRunner().invoke(main, [
+        "sim", "compare", "retire_alice", "base", "--section", "social-security",
+        "--section", "tax", "--chart-file", "x.png", "--data-dir", str(test_data_dir)])
+    assert result.exit_code == 2 and "--chart-file writes one chart" in result.output, result.output
+
+
+def test_compare_charts_for_the_sections_asked() -> None:
+    from analysis.sim.cli import _compare_charts
+
+    assert _compare_charts((), None) == ["net-worth"]
+    assert _compare_charts(("runs",), "Asset_Checking") == ["account"]
+    assert _compare_charts(("tax", "social-security"), None) == ["social-security", "tax"]
+    assert _compare_charts(("tax", "break-even"), None) == ["net-worth", "tax"]
+
+
+def _years(*years: int) -> pd.DatetimeIndex:
+    return pd.DatetimeIndex([f"{year}-12-31" for year in years], name="month")
+
+
+def test_ss_by_year_and_summary_compare_each_variant_with_the_baseline() -> None:
+    ss = pd.DataFrame({"base": [10.0, 20.0], "later": [0.0, 40.0]}, index=_years(2030, 2031))
+    yearly = compare.ss_by_year(ss, "base", ["later"])
+    assert list(yearly.index) == [2030, 2031]
+    assert list(yearly["Δ later"]) == [-10.0, 20.0]
+    summary = compare.ss_summary(ss, "base")
+    assert summary.loc["later", "gross_ss"] == 40.0 and summary.loc["later", "Δ gross_ss"] == 10.0
+    assert compare.ss_differs(ss)
+    assert not compare.ss_differs(ss[["base"]].assign(same=ss["base"]))
+
+
+def test_tax_comparison_and_summary_treat_a_run_without_tax_as_owing_none() -> None:
+    years = pd.Index([2030, 2031], name="year")
+    tax = {
+        "base": pd.DataFrame({"fed_tax": [100.0, 100.0], "state_tax": [10.0, 10.0],
+                              "total_tax": [110.0, 110.0]}, index=years),
+        "convert": pd.DataFrame({"fed_tax": [300.0, 50.0], "total_tax": [300.0, 50.0]},
+                                index=years),
+        "none": pd.DataFrame(columns=["fed_tax", "total_tax"], dtype=float),
+    }
+    table = compare.tax_comparison(tax, "base", ["convert", "none"])
+    assert list(table["Δ convert"]) == [190.0, -60.0]
+    assert list(table["none"]) == [0.0, 0.0]
+    assert compare.tax_differs(table).all()
+    ss = pd.DataFrame({"base": [5.0], "convert": [5.0], "none": [0.0]}, index=_years(2031))
+    nw = pd.DataFrame({"base": [1.0, 2.0], "convert": [1.0, 3.0], "none": [0.0, 0.0]},
+                      index=_years(2030, 2031))
+    summary = compare.tax_summary(tax, ss, nw, "base")
+    assert list(summary.columns) == ["fed_tax", "state_tax", "total_tax", "Δ tax", "gross_ss", "Δ ss",
+                                     "Δ ss net of tax", "final_net_worth"]
+    assert summary.loc["convert", "Δ tax"] == 130.0
+    assert summary.loc["convert", "state_tax"] == 0.0
+    assert summary.loc["none", "Δ ss net of tax"] == -5.0 + 220.0
+    assert summary.loc["convert", "final_net_worth"] == 3.0

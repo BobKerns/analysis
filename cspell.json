@@ -20,8 +20,10 @@
     "state/**",
     "historical_data/*/**",
     "docs/**/*.svg",
-    "src/analysis/sim/vendor/**"
+    "src/analysis/sim/vendor/**",
+    "docs/videos/*/published.toml"
   ],
+  "ignoreRegExpList": ["/\\S*[\\u0250-\\u02AF\\u02C8\\u02CC\\u02D0\\u1D7B]\\S*/gu"],
   "dictionaries": ["python", "softwareTerms", "project-words", "data-words"],
   "files": ["**/*.md", "**/*.rst", "**/*.txt", "**/*.py", "**/.gitignore", "**/*.csv", "**/*.toml", "**/.gitattributes"]
 }

@@ -1,0 +1,2 @@
+kind,chain,start,end,enabled,params_json,description
+buckets,portfolio_draw,,,,"{""portfolio"":""portfolio:invest"",""need"":""40000.00""}",Spend from cash; refill it from stocks when they gained

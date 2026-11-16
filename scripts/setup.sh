@@ -1,7 +1,14 @@
 #!/bin/sh
 # One-time repo setup: a C toolchain, uv, pinned Python, git hooks, deps,
-# notebook filter, Node.js and the lint tools, and the link to the data repo.
+# notebook filter, Node.js and the lint tools, the link to the data repo,
+# background scenario builds (sim builder install; not under CI or an agent),
+# and an offer to install the finance-research Claude plugin.
 # Safe to re-run; every step is idempotent.
+#
+#   scripts/setup.sh [LINK-DATA ARGUMENTS]
+#
+# Arguments go to scripts/link-data.sh: a data repo's PATH, `--new PATH
+# [sim init options]` or `--template`. Without them it asks for the path.
 set -eu
 
 cd "$(dirname "$0")/.."
@@ -242,14 +249,56 @@ else
     npm ci --no-audit --no-fund
 fi
 
-# Last, so the venv is there for the user prompt. Asks for the data repo's
-# path; a blank answer (or no terminal) builds template data instead.
+# Last, so the venv is there for the user prompt and `sim init`. Without
+# arguments, asks for the data repo's path, offering to create one there
+# (#308); a blank answer (or no terminal) builds template data instead.
 echo "Linking the data repo at data/shared..."
-scripts/link-data.sh
+scripts/link-data.sh "$@"
 
 # Template data (CI's) is a plain directory inside this repo, so there this
 # just sets this repo's identical values again.
 echo "Configuring merges in the data repo..."
 set_merge_config data/shared
+
+# Background scenario builds (#300): on by default for a person's own
+# workspace with a linked data repo; never under CI or an agent, whose
+# checkouts aren't the person's workspace. `sim builder install` opts in later.
+if [ "${ANALYSIS_NO_BUILDER-}" ] || [ "${CI-}" ] || [ "${CLAUDECODE-}" ] \
+        || [ "${CLAUDE_CODE_REMOTE-}" ] || [ "${AI_AGENT-}" ]; then
+    echo "Skipping background builds (CI, an agent, or ANALYSIS_NO_BUILDER);"
+    echo "  turn them on with: .venv/bin/sim builder install --data-dir data/shared/sim"
+elif [ -L data/shared ]; then
+    echo "Turning on background scenario builds..."
+    .venv/bin/sim builder install --data-dir data/shared/sim || \
+        echo "  (not turned on; see the message above)" >&2
+fi
+
+# The finance-research Claude plugin (#345): opt in, default no, and only
+# asked at a terminal with Claude Code installed; never under CI or an
+# agent. Once installed, a re-run renders it again from the data repo's
+# research.yaml, so a changed setting takes effect without asking.
+if [ "${CI-}" ] || [ "${CLAUDECODE-}" ] || [ "${CLAUDE_CODE_REMOTE-}" ] \
+        || [ "${AI_AGENT-}" ] || ! command -v claude >/dev/null 2>&1; then
+    :
+elif claude plugin list 2>/dev/null | grep -q 'finance-research@finance-research-local'; then
+    echo "Updating the finance-research Claude plugin..."
+    .venv/bin/analysis research-plugin install --data-dir data/shared/sim || \
+        echo "  (not updated; see the message above)" >&2
+elif [ -t 0 ]; then
+    echo "The finance-research Claude plugin writes tear sheets on funds and"
+    echo "companies from public sources. Each run browses the web for several"
+    echo "minutes and uses around 150k tokens (docs/guides/finance-research.md)."
+    printf 'Install it for Claude Code? [y/N] '
+    read -r answer || answer=""
+    case $answer in
+        [Yy]*)
+            .venv/bin/analysis research-plugin install --data-dir data/shared/sim || \
+                echo "  (not installed; see the message above)" >&2
+            ;;
+        *)
+            echo "  Skipped; install it later with: .venv/bin/analysis research-plugin install"
+            ;;
+    esac
+fi
 
 echo "Setup complete."

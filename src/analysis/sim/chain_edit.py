@@ -14,11 +14,12 @@ import csv
 from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path
 
-from analysis.sim import registries
-from analysis.sim.lineage import load_order
+from analysis.sim import registries, strategy_files
+from analysis.sim.lineage import load_order, scenario_dir
 
 __all__ = [
-    "ACCOUNT_COLUMNS", "CHAIN_COLUMNS", "LOT_COLUMNS", "REFERENCE_COLUMNS", "TAX_COLUMNS", "chain_file",
+    "ACCOUNT_COLUMNS", "CHAIN_COLUMNS", "LOT_COLUMNS", "REFERENCE_COLUMNS", "TAX_COLUMNS",
+    "TAX_FILE_COLUMNS", "chain_file",
     "chain_files", "defining_scenario", "descendants", "new_chain_file", "read_steps", "rename_cells",
     "rename_references", "shares_to_percents", "write_steps",
 ]
@@ -42,7 +43,13 @@ REFERENCE_COLUMNS: dict[str, tuple[str, ...]] = {
     "account_lots.csv": ("refill_chain", "overflow_chain"),
 }
 """The columns, per scenario file, that may name a chain. Chain files' own
-``account_name`` steps are handled with the chain files."""
+``account_name`` steps are handled with the chain files, and strategy
+files' ``chain`` (``strategies/<name>.csv``) and tax files'
+``source_chain`` (``taxes/<name>.csv``) with ``rename_references``."""
+
+TAX_FILE_COLUMNS = ("source_chain", "destination")
+"""A tax jurisdiction file's columns (#507) that may name an account; only
+``source_chain`` may name a chain."""
 
 
 class AmbiguousChain(ValueError):
@@ -87,7 +94,7 @@ def defining_scenario(scenarios_dir: Path, scenario: str, name: str) -> str | No
     chain."""
     found = None
     for each in load_order(scenarios_dir, scenario):
-        if chain_file(scenarios_dir / each, name) is not None:
+        if chain_file(scenario_dir(scenarios_dir, each), name) is not None:
             found = each
     return found
 
@@ -176,6 +183,12 @@ def rename_references(scenario_dir: Path, old: str, new: str) -> list[str]:
     for path in chain_files(scenario_dir):
         if rename_cells(path, ("account_name",), old, new):
             changed.append(f"chains/{path.parent.name}/{path.name}")
+    for path in strategy_files.own_files(scenario_dir, registries.STRATEGIES_DIR):
+        if rename_cells(path, ("chain",), old, new):
+            changed.append(f"{registries.STRATEGIES_DIR}/{path.name}")
+    for path in strategy_files.own_files(scenario_dir, registries.TAXES_DIR):
+        if rename_cells(path, ("source_chain",), old, new):
+            changed.append(f"{registries.TAXES_DIR}/{path.name}")
     return changed
 
 

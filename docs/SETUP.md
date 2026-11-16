@@ -4,7 +4,77 @@
 > - In Jupyter: right-click on it and select `Open With / Markdown Preview`
 > - In VSCode: Command `Markdown Preview Enhanced: Open Preview` or ⌘⇧V
 
-Run the setup script (idempotent — safe to re-run):
+## Install with one line
+
+If you don't have the code yet, or don't use git, paste this into a terminal
+(macOS, Linux or WSL; on Windows, [set up WSL](#windows-set-up-wsl-first)
+first):
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/BobKerns/analysis/main/scripts/install.sh | sh
+```
+
+It installs git if it's missing (on macOS, Apple's command-line tools: finish
+installing them in the window that opens, then paste the line again),
+downloads the code into `~/retirement/analysis`, runs the setup script below,
+and creates your data repo in `~/retirement/data` with `sim init`, asking who
+you are. It asks before using either place, and an existing data repo at the
+data place is linked rather than created. Paste the same line again to
+update: it brings the code up to date (unless you've changed it, or switched
+it to another branch, which it says) and re-runs setup. Without a terminal,
+pass the answers as options, `... | sh -s -- --yes --id alice --display
+"Alice Example" --birthdate 1960-05-01 --filing-status MFJ`; the comment at
+the top of [`scripts/install.sh`](../scripts/install.sh) lists them all.
+
+Video: [Setup and install](https://youtu.be/qnug-0zzlqA) walks through the
+install, a new data repo, activating it, and saving your work
+([日本語](https://youtu.be/Eu0r0Hk1ghM)).
+
+## Windows: set up WSL first
+
+The simulator runs on Linux and macOS. On Windows it runs in WSL, the Windows
+Subsystem for Linux, which runs Ubuntu inside Windows 11, or Windows 10
+version 2004 or later. The video [WSL for Windows](https://youtu.be/yHr90VdoHGQ)
+walks through this ([日本語](https://youtu.be/zeTFTujsWwI)).
+
+1. Right-click Start and choose **Terminal (Admin)** (on Windows 10,
+   **Windows PowerShell (Admin)**), then run `wsl --install`. Restart when
+   it asks.
+2. Ubuntu opens after the restart and asks for a Linux user name (one word,
+   lowercase; it needn't match your Windows name) and a password. Nothing
+   shows as you type the password. Linux asks for it with `sudo`, and the
+   installer needs it once, to install a compiler.
+3. Open Ubuntu again from the Start menu, or from Windows Terminal's
+   new-tab arrow. In Windows Terminal's Settings, **Startup**, **Default
+   profile** makes Ubuntu the tab it opens.
+4. Paste the install line above into the Ubuntu terminal (Ctrl+V in Windows
+   Terminal).
+
+Keep the code and data in your Linux home folder, where the installer puts
+them, not under `/mnt/c` (your C: drive): it's much faster, and git behaves.
+To reach them from Windows, click **Linux** at the bottom of File Explorer's
+left side, or type `\\wsl$\Ubuntu\home\<your Linux name>` in its address
+bar. From Ubuntu, `explorer.exe .` opens the current folder in File Explorer.
+
+For the notebooks, and a terminal that shows `--graph` and `--chart` charts, install
+[VS Code](https://code.visualstudio.com) in Windows, add its **WSL**
+extension, and open the code from Ubuntu with `code ~/retirement/analysis`.
+Turn on **Terminal › Integrated: Enable Images** in its settings. Windows
+Terminal doesn't take the image protocols `--graph` and `--chart` use, so there it saves
+the chart as a PNG and prints its path (see
+[Drawing chain flowcharts](#drawing-chain-flowcharts-in-the-terminal)).
+`analysis jupyter` works too: if no browser opens, Ctrl+click the link it
+prints.
+
+If `wsl --install` fails with a message about virtualization, it is turned
+off in the computer's firmware (BIOS or UEFI) settings, often called Intel
+VT-x, AMD-V or SVM; turn it on there. Microsoft's
+[WSL install guide](https://learn.microsoft.com/windows/wsl/install) has the
+details.
+
+## The setup script
+
+In a clone of the code, run the setup script (idempotent — safe to re-run):
 
 ```sh
 ./scripts/setup.sh
@@ -45,13 +115,69 @@ verification gates do.
 
 Last, it links the data and code repositories together. It asks for the path to
 your data repo, makes `data/shared` point to it, and asks which of the data
-repo's primary persons you are. Leave the path blank and it fills `data/shared`
-with the template data instead, used as a `test` person, which is what CI does.
+repo's primary persons you are. Give a path with no data repo yet and it offers
+to create one there with `sim init`, which asks who you are. Leave the path
+blank and it fills `data/shared` with the template data instead, used as a
+`test` person, which is what CI does. Arguments to `setup.sh` go to
+`scripts/link-data.sh` instead of the question: a data repo's path,
+`--new PATH` (with `sim init`'s options, if you like) or `--template`.
 Either way, this then gives you a working environment:
 
 ```sh
 source data/shared/sim/activate-analysis
 ```
+
+With a data repo linked, it then turns on background scenario builds
+(`sim builder install`; [ADR-004](architecture/ADR-004-reproducibility-and-activation.md) §12):
+commits, checkouts, merges and rebases in either repo rebuild, in the
+background, every scenario whose results could have changed, and opening a
+scenario's run waits for a pending build of it. It builds only while the code
+is committed and matches your local `main` (or the branch
+`sim builder install BRANCH` names). Setup skips this under CI or an
+agent (`CI`, `CLAUDECODE`, `CLAUDE_CODE_REMOTE` or `AI_AGENT` set) or with
+`ANALYSIS_NO_BUILDER=1`; `sim builder install` turns it on later, and
+`sim builder uninstall` off. `sim builder status` says what it's doing,
+and `sim builder log` what it did in the last hour (`-v` adds build output).
+
+The builder also fetches prices after each weekday's US market close, so a lot
+held by shares stays current without `sim prices fetch`. `sim builder install`
+adds an hourly timer that runs `sim builder tick` (a launchd agent on macOS,
+a crontab line elsewhere; `uninstall` removes it). A timer installed before
+nightly rolls (below) runs `sim builder prices --if-due`; run
+`sim builder install` again to replace it. The fetch never
+touches your checkout: it commits on the data repo's `builder/prices` branch,
+in its own sparse worktree, and the builder merges it into `main` between
+builds, only while `main` is checked out with no uncommitted changes. Then, if
+`main` is strictly ahead of `origin/main`, it pushes; otherwise `sim builder
+log` says why it didn't (run `git pull` on `main` when it lacks commits).
+[A private remote for the data repo](guides/data-repo-remote.md) covers where
+that `origin` should live; never make the data repo public. `sim builder status` shows the last
+fetch, prices waiting to merge and why, and any symbol that keeps failing;
+`sim builder prices` fetches now. `sim builder install --no-prices`, or
+`ANALYSIS_PRICE_FETCH=off`, turns the fetches off.
+
+The same timer rolls forward, at night, each scenario marked to roll
+(`sim scenario edit NAME --roll monthly`; what is built on it too, after it,
+unless marked `off`) once its start month is over, so
+its run picks up the month's prices: as `sim scenario roll --yes` would, on
+the `builder/roll` branch, merged into `main` the same way. Night is 01:00 to
+05:00 local time unless `sim builder install --roll-window HH:MM-HH:MM` says
+otherwise; `--no-roll`, or `ANALYSIS_ROLL=off`, turns it off. A roll into a
+new year tags the plan before it `plan-<year>` rather than keeping a copy.
+`sim builder status` shows each roll, and one skipped or failed with why.
+Since it builds from your local `main`, not `origin/main`, `sim run` and
+the first run a notebook opens say so when your `main` is behind what you
+last fetched (a `NOTE:` line); `git pull` on `main` brings the newer code.
+
+Finally, if Claude Code (`claude`) is on your `PATH`, it offers to install the
+finance-research Claude plugin, which writes tear sheets on funds and
+companies from public sources. The answer defaults to no, and it isn't asked
+under CI or an agent. Each run of the plugin browses the web for several
+minutes and uses around 150k tokens. Its settings (tab languages, tax
+state) come from the data repo's `research.yaml`, and setup says which it
+used; once installed, a re-run of setup updates it. Install or remove it by
+hand with `.venv/bin/analysis research-plugin install` or `uninstall`; see
+[the finance research guide](guides/finance-research.md).
 
 ## What the script does, step by step (for reference or manual setup)
 
@@ -107,8 +233,47 @@ source data/shared/sim/activate-analysis
     ```sh
     scripts/link-data.sh /path/to/data-repo   # or --template for template data
     ```
-    With no argument it asks for the path. Once `data/shared` exists, re-running
+    `--new PATH` creates a data repo there with `sim init` first. With no
+    argument it asks for the path. Once `data/shared` exists, re-running
     it leaves it alone; remove `data/shared` to link a different data repo.
+10. Turn on background scenario builds, for a linked data repo:
+    ```sh
+    .venv/bin/sim builder install --data-dir data/shared/sim
+    ```
+11. Optionally, install the finance-research Claude plugin:
+    ```sh
+    .venv/bin/analysis research-plugin install --data-dir data/shared/sim
+    ```
+
+## Blocked keywords
+
+The git hooks and the `Gates` workflow refuse commits, commit messages and
+pull requests that contain a word giving away the real data
+(`scripts/check-blocked-keywords.sh`). The words come from two lists in the
+same format: one keyword per line, `#` comment lines and blank lines ignored.
+
+- **Public:** `.githooks/blocked-keywords.txt`, committed here, for words
+  that are fine to publish (an initial, an institution's abbreviation).
+- **Private:** never committed here, for words that would themselves give
+  something away. A hit on one reports only the file and line, never the
+  text. The check reads both of these places and merges them with the
+  public list:
+  - the `BLOCKED_KEYWORDS_PRIVATE` environment variable, which may also
+    separate keywords with commas where a value can't span lines;
+  - a `blocked-keywords.txt` file at the top of the data repo, found through
+    `$ANALYSIS_DATA_DIR`, or else through `data/shared` in the main checkout
+    (so worktrees and hooks run from an editor find it too).
+
+Set the private list once in each place it is needed:
+
+- **Your own machine:** create `blocked-keywords.txt` at the top of the data
+  repo and commit it there. Nothing more is needed.
+- **GitHub:** in this repository, Settings → Secrets and variables → Actions
+  → New repository secret, named `BLOCKED_KEYWORDS_PRIVATE`, with the
+  keywords one per line. The workflow warns when the secret is missing.
+- **Claude Code on the web:** in the cloud environment's settings, add an
+  environment variable `BLOCKED_KEYWORDS_PRIVATE` with the keywords separated
+  by commas.
 
 ## Drawing chain flowcharts in the terminal
 
@@ -135,7 +300,15 @@ flowchart work offline, and the chart never leaves your machine.
 - [WezTerm](https://wezterm.org) (macOS, Linux, Windows)
 - VS Code's integrated terminal, with `terminal.integrated.enableImages` on
 
-iTerm2 gets its own image protocol. Elsewhere `--graph` asks the terminal
+On an iPad, connecting over SSH to the machine that runs the code, use
+[gterm](https://apps.apple.com/us/app/gterm-ghostty-ssh/id6774837597) from the
+App Store. It is built on Ghostty's terminal library and is the one iPad
+terminal we have found that shows the images. It has far fewer features than
+other SSH apps, but everything this project needs works. Termius has just
+added the same library, but in testing (October 2026) it did not work yet: one
+try gave a blank screen, another hung.
+
+iTerm2 gets its own image protocol. Elsewhere `--graph` (or `--chart`) asks the terminal
 whether it takes the kitty graphics protocol, and falls back to iTerm2's
 protocol for older VS Code and WezTerm. In any other terminal, including macOS
 Terminal and inside tmux, it writes the chart to a PNG file and prints its

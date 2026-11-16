@@ -1,0 +1,2 @@
+name,description,start,end,seed,parent_scenario,created_by,meta_json
+t_pandemic_spike,"A post-pandemic-style price spike on top of the long-run rates: two to four years of high prices, with one year when stocks and bonds fall together.",,,,t_inflation_series:t_market_series,,{}

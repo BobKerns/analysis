@@ -7,6 +7,7 @@ used as written, and other sources still default to ``none``."""
 from __future__ import annotations
 
 import sqlite3
+from contextlib import closing
 from collections.abc import Callable
 from pathlib import Path
 
@@ -31,7 +32,7 @@ def _run(load_test_copy: Callable[[], LoadResult], runs_dir: Path) -> Path:
 def _legs(run: Path, kind: str) -> list[tuple[str, int]]:
     """The (tax_character, amount) legs this test's ``kind`` calendar event
     posted, leaving out the prototype's own rows."""
-    with sqlite3.connect(run) as con:
+    with closing(sqlite3.connect(run)) as con:
         return con.execute(
             "SELECT te.tax_character, te.amount FROM transfer_event te "
             "JOIN scheduled_transaction s ON s.id = te.reason_id AND te.reason_kind = 'rule' "
@@ -43,7 +44,7 @@ def _legs(run: Path, kind: str) -> list[tuple[str, int]]:
 
 def _brokerage(run: Path, month: str) -> tuple[int, int]:
     """The brokerage lot's (balance, cost_basis) at the end of ``month``."""
-    with sqlite3.connect(run) as con:
+    with closing(sqlite3.connect(run)) as con:
         return con.execute(
             "SELECT ls.balance, ls.cost_basis FROM lot_state ls "
             "JOIN simulation_step s ON s.id = ls.step_id "

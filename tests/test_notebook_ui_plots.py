@@ -4,22 +4,27 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 import matplotlib
 import numpy as np
 
 matplotlib.use("Agg")
 
+from analysis.sim.accounts import accounts_dataframe
 from analysis.sim.types import DollarMode
-from analysis.sim.notebook_ui.accounts_plots import render_balance_history_figure
+from analysis.sim.run_charts import balance_history_figure
 from analysis.sim.connection import RunConnection, open_run
-from analysis.sim.notebook_ui.accounts_plots import account_history_widget
+from analysis.sim.notebook_ui.accounts_plots import account_history_widget, show_account_setup
 from analysis.sim.notebook_ui.pickers import AccountPicker, TimeRangePicker, run_years
 from analysis.sim.notebook_ui.networth_plots import (
-    after_tax_widget,
+    economic_income_widget,
     expenses_widget,
     gains_widget,
+    guard_rails_widget,
     income_widget,
     net_worth_widget,
+    tax_widget,
 )
 
 
@@ -80,16 +85,66 @@ def test_gains_widget_builds_without_error(retire_alice_run_file: Path,
         dollar_mode.value = DollarMode.CPI_CONSTANT
 
 
-def test_after_tax_widget_builds_without_error(retire_alice_run_file: Path,
-                                               data_dir: Path,
-                                               scenarios_dir: Path) -> None:
+def test_economic_income_widget_builds_without_error(retire_alice_run_file: Path,
+                                                     data_dir: Path,
+                                                     scenarios_dir: Path) -> None:
     with open_run(retire_alice_run_file, "retire_alice",
                   data_dir=data_dir,
                   scenarios_dir=scenarios_dir) as rc:
-        widget = after_tax_widget(rc)
+        widget = economic_income_widget(rc)
         controls, chart_out, table_out = widget.children
-        dollar_mode, _time_range = controls.children
+        dollar_mode, after_tax, _time_range = controls.children
         dollar_mode.value = DollarMode.CPI_CONSTANT
+        after_tax.value = not after_tax.value
+
+
+def test_tax_widget_toggles_dollar_basis(report_run: RunConnection) -> None:
+    widget = tax_widget(report_run)
+    controls, _chart_out, _table_out = widget.children
+    dollar_mode, _time_range = controls.children
+    dollar_mode.value = DollarMode.CPI_CONSTANT  # must not raise
+
+
+def test_tax_widget_says_when_no_tax_was_computed(
+    retire_alice_run: RunConnection, capsys: pytest.CaptureFixture[str],
+) -> None:
+    tax_widget(retire_alice_run)
+    # Outside a kernel an Output widget's prints reach stdout.
+    assert "No tax was computed in this run" in capsys.readouterr().out
+
+
+def test_economic_income_widget_says_an_empty_run_has_no_net_worth(
+    empty_scenario_runs: tuple[RunConnection, RunConnection], capsys: pytest.CaptureFixture[str],
+) -> None:
+    _, empty = empty_scenario_runs
+    economic_income_widget(empty)
+    # Outside a kernel an Output widget's prints reach stdout.
+    assert "No net worth in this run" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(("widget", "what"), [
+    (income_widget, "income"), (expenses_widget, "expenses"), (gains_widget, "gains"),
+])
+def test_bar_chart_widgets_say_an_empty_run_has_nothing_to_chart(
+    empty_scenario_runs: tuple[RunConnection, RunConnection], capsys: pytest.CaptureFixture[str],
+    widget, what: str,
+) -> None:
+    _, empty = empty_scenario_runs
+    widget(empty)
+    # Outside a kernel an Output widget's prints reach stdout.
+    assert f"No {what} to chart in this run" in capsys.readouterr().out
+
+
+def test_accounts_dataframe_and_setup_handle_a_scenario_with_no_accounts(
+    empty_scenario_runs: tuple[RunConnection, RunConnection],
+) -> None:
+    full, empty = empty_scenario_runs
+    accounts = accounts_dataframe(empty.scenario)
+    assert accounts.empty
+    # Same shape as a scenario with accounts, so callers can pick columns.
+    assert list(accounts.columns) == list(accounts_dataframe(full.scenario).columns)
+    assert accounts.index.name == "name"
+    show_account_setup(empty.scenario)
 
 
 def test_account_history_widget_defaults_to_kind(retire_alice_run_file: Path,
@@ -149,7 +204,7 @@ def test_balance_history_adds_total_for_multiple_accounts() -> None:
     index = pd.to_datetime(["2026-01-31", "2026-02-28"])
     balances = pd.DataFrame({"Checking": [100, 120], "Savings": [50, 80]}, index=index)
 
-    fig = render_balance_history_figure(balances, ["Checking", "Savings"], "Assets")
+    fig = balance_history_figure(balances, ["Checking", "Savings"], "Assets")
 
     assert fig is not None
     assert [line.get_label() for line in fig.axes[0].lines] == [
@@ -169,7 +224,7 @@ def test_balance_history_clips_after_taking_the_monthly_change() -> None:
     time_range.cover([2026, 2027])
     time_range.value = (2027, 2027)
 
-    fig = render_balance_history_figure(
+    fig = balance_history_figure(
         balances, ["Checking"], "Assets",
         value_mode=ValuePlotMode.MONTHLY, clip=time_range.clip,
     )
@@ -200,3 +255,53 @@ def test_cpi_constant_expense_balances_preserve_zero_monthly_flow(
         converted = rc.cpi_balance_pivot("expense")
 
         assert converted.loc["2027-01-31":, "Expense_Living"].diff().iloc[1:].eq(0).all()
+
+
+def test_guard_rails_widget_builds_with_its_controls(retire_alice_run: RunConnection) -> None:
+    widget = guard_rails_widget(retire_alice_run)
+    controls, _chart_out, _table_out = widget.children
+    dollar_mode, _time_range, carried = controls.children
+    assert dollar_mode.value == DollarMode.CPI_CONSTANT
+    assert carried.value
+
+
+@pytest.mark.slow
+def test_guard_rails_widget_redraws_on_each_control(retire_alice_run: RunConnection) -> None:
+    widget = guard_rails_widget(retire_alice_run)
+    controls, _chart_out, _table_out = widget.children
+    dollar_mode, time_range, carried = controls.children
+    dollar_mode.value = DollarMode.NOMINAL  # each redraws; none may raise
+    carried.value = False
+    time_range.value = (2035, 2040)
+
+
+def test_guard_rails_widget_says_a_scenario_has_none(
+    run_test_copy, test_data_dir: Path, write_guard_rails, capsys: pytest.CaptureFixture[str],
+) -> None:
+    write_guard_rails()
+    with open_run(run_test_copy(), "retire_alice", data_dir=test_data_dir) as rc:
+        widget = guard_rails_widget(rc)
+    assert len(widget.children) == 1
+    assert "No guard rails in retire_alice" in capsys.readouterr().out
+
+
+def test_guard_rails_widget_says_a_run_without_its_scenario_has_no_rails(
+    retire_alice_run: RunConnection, capsys: pytest.CaptureFixture[str],
+) -> None:
+    with RunConnection(retire_alice_run.run_path) as rc:
+        widget = guard_rails_widget(rc)
+    assert len(widget.children) == 1
+    assert "opened without its scenario" in capsys.readouterr().out
+
+
+def test_guard_rails_widget_rereads_the_rails_on_each_draw(
+    run_test_copy, test_data_dir: Path, write_guard_rails, capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Rails are a lens: an edit shows on the next draw, with no rerun."""
+    with open_run(run_test_copy(), "retire_alice", data_dir=test_data_dir) as rc:
+        widget = guard_rails_widget(rc)
+        controls, _chart_out, _table_out = widget.children
+        capsys.readouterr()
+        write_guard_rails()
+        controls.children[2].value = False  # "Carried at return" redraws
+    assert "No guard rails in retire_alice" in capsys.readouterr().out

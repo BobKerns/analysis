@@ -1,7 +1,8 @@
 # Type definitions for the analysis.sim module.
 
+from datetime import date
 from enum import StrEnum
-from typing import Literal
+from typing import Literal, NamedTuple
 
 
 type AccountKind = Literal["asset", "liability", "income", "expense"]
@@ -17,10 +18,23 @@ type ScenarioName = str
 """Scenario name type."""
 
 
+class Death(NamedTuple):
+    """A person's death as a chart marks it (#255): who, and their final
+    month's last day."""
+    person: str
+    month: date
+
+
 class DollarMode(StrEnum):
     """Dollar mode type."""
     NOMINAL = "nominal"
     CPI_CONSTANT = "cpi_constant"
+
+    @property
+    def label(self) -> str:
+        """How charts and tables name these dollars: "CPI-constant" or
+        "nominal". One spelling, so titles and headings can't drift apart."""
+        return "CPI-constant" if self is DollarMode.CPI_CONSTANT else "nominal"
 
 
 class ValuePlotMode(StrEnum):
@@ -89,6 +103,8 @@ type ItemType = Literal[
     "scenario",
     "tax_year_summary",
     "capital_loss",
+    "hsa_gain",
+    "basis_step_up",
     "year_to_date",
     "person",
     "security",

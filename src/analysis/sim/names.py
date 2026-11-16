@@ -12,11 +12,15 @@ completion's. Nothing here validates a name.
 from __future__ import annotations
 
 import csv
+import re
 from collections.abc import Iterable, Iterator
 from pathlib import Path
 
-from analysis.sim import registries
-from analysis.sim.lineage import load_order
+from analysis.sim import registries, series_files
+from analysis.sim.asset_classes import is_lot_key
+from analysis.sim.lineage import (
+    TEMPLATE_AUX_DIR, is_pool, load_order, pool_components, reading_order, scenario_dir, template_names,
+)
 
 __all__ = [
     "account_names",
@@ -44,10 +48,24 @@ def _rows(path: Path) -> Iterator[dict[str, str]]:
         return
 
 
-def _lineage_dirs(data_dir: Path, scenario: str) -> list[Path]:
-    """The scenario's folder and every one it inherits from, root first."""
+def _reading_dirs(data_dir: Path, scenario: str) -> list[Path]:
+    """The scenario's folder and every one it inherits from, root first; a
+    pool's base component's, then the pool's own (``reading_order``): where
+    its guard rails come from."""
     scenarios = data_dir / "scenarios"
-    return [scenarios / name for name in load_order(scenarios, scenario)]
+    return [scenario_dir(scenarios, name) for name in reading_order(scenarios, scenario)]
+
+
+def _lineage_dirs(data_dir: Path, scenario: str) -> list[Path]:
+    """:func:`_reading_dirs`, and for a pool every other component's lineage
+    after them (ADR-009 §6): a pool's members hold any component's
+    accounts, lots and tags, so the names to complete are all of theirs."""
+    scenarios = data_dir / "scenarios"
+    order = reading_order(scenarios, scenario)
+    for component in pool_components(scenarios, scenario):
+        if component != scenario and not is_pool(scenarios, component):
+            order += [n for n in load_order(scenarios, component) if n not in order]
+    return [scenario_dir(scenarios, name) for name in order]
 
 
 def _column(paths: Iterable[Path], column: str) -> list[str]:
@@ -62,17 +80,31 @@ def _stems(folders: Iterable[Path], pattern: str = "*.csv") -> set[str]:
     }
 
 
+def lineage_rows(data_dir: Path, scenario: str, filename: str) -> list[dict[str, str]]:
+    """Every row of ``filename`` in the scenario's folders, root first,
+    unmerged: what's named anywhere in its lineage."""
+    return [row for d in _reading_dirs(data_dir, scenario) for row in _rows(d / filename)]
+
+
 def scenario_names(data_dir: Path) -> list[str]:
     """Scenario folder names, as ``loader.list_scenario_names`` lists them."""
     scenarios = data_dir / "scenarios"
     if not scenarios.is_dir():
         return []
-    return sorted(p.name for p in scenarios.iterdir() if p.is_dir())
+    return sorted([*(p.name for p in scenarios.iterdir() if p.is_dir()), *template_names(scenarios)])
 
 
 def account_names(data_dir: Path, scenario: str) -> list[str]:
     """Every account the scenario has, its own and inherited."""
     return _column((d / "accounts.csv" for d in _lineage_dirs(data_dir, scenario)), "name")
+
+
+def builtin_account_names() -> list[str]:
+    """The accounts the loader makes on demand (ADR-003 §2.2): growth's other
+    side, and where payouts come from. Not in any accounts.csv, but a
+    transfer or a year-to-date row may name one (``capital_gains``)."""
+    builtins = (*registries.GROWTH_COUNTERPARTY_ACCOUNTS.values(), *registries.builtin_payout_accounts())
+    return sorted({counterparty.name for counterparty in builtins})
 
 
 def lot_names(data_dir: Path, scenario: str, account: str, *, implicit: bool = True) -> list[str]:
@@ -112,10 +144,23 @@ def ytd_names(data_dir: Path, scenario: str) -> list[str]:
     return _column((d / "year_to_date.csv" for d in _lineage_dirs(data_dir, scenario)), "name")
 
 
+def guard_rail_names(data_dir: Path, scenario: str) -> list[str]:
+    """The names of the scenario's guard rails (#305), its own and inherited."""
+    return _column((d / "guard_rails.csv" for d in _reading_dirs(data_dir, scenario)), "name")
+
+
 def calendar_row_names(data_dir: Path, scenario: str) -> list[str]:
     """The names of the scenario's named calendar rows (latent factors among
     them), its own and inherited."""
     return _column((d / "calendar.csv" for d in _lineage_dirs(data_dir, scenario)), "name")
+
+
+def date_marker_names(data_dir: Path, scenario: str) -> list[str]:
+    """The names of the scenario's date_marker rows (#281), its own and inherited."""
+    return sorted({
+        row["name"] for d in _lineage_dirs(data_dir, scenario) for row in _rows(d / "calendar.csv")
+        if row.get("kind") == registries.DATE_MARKER_KIND and row.get("name")
+    })
 
 
 def person_ids(data_dir: Path) -> list[str]:
@@ -126,27 +171,42 @@ def person_ids(data_dir: Path) -> list[str]:
 def series_names(data_dir: Path, scenario: str, kind: str | None = None) -> list[str]:
     """The series of ``kind`` (``rate``, ``inflation``, ...), or of any kind,
     that the scenario's ``series/`` and ``aux/`` folders and the shared
-    ``aux/`` have a file for: ``<kind>__<name>.csv``."""
-    folders = [data_dir / "aux"]
+    ``aux/`` (and the code repository's ``templates/aux/``, #317) have a
+    file for: ``<kind>__<name>.csv``. A rate or inflation series the
+    scenario has emptied (``sim series delete``, #471) is left out, since it
+    has no rates here."""
+    folders = [TEMPLATE_AUX_DIR, data_dir / "aux"]
     for d in _lineage_dirs(data_dir, scenario):
         folders += [d / "series", d / "aux"]
-    names = set()
+    found: set[tuple[str, str]] = set()
     for stem in _stems(folders, f"{kind}__*.csv" if kind else "*__*.csv"):
-        names.add(stem.split("__", 1)[1])
-    return sorted(names)
+        kind_of, _, name = stem.partition("__")
+        found.add((kind_of, name))
+    emptied = {key for key, series in series_files.scenario_series(data_dir, scenario).items()
+               if series.empty}
+    return sorted({name for _, name in found - emptied})
 
 
-def tag_tokens(data_dir: Path, scenario: str) -> list[str]:
+def tag_tokens(
+    data_dir: Path, scenario: str,
+    filenames: tuple[str, ...] = ("accounts.csv", "scheduled.csv", "calendar.csv"),
+) -> list[str]:
     """Every ``role:name`` tag on the scenario's accounts, rules and
-    calendar rows. A malformed token is skipped."""
+    calendar rows (or just ``filenames``'). A malformed token is skipped."""
     tokens: set[str] = set()
     for d in _lineage_dirs(data_dir, scenario):
-        for filename in ("accounts.csv", "scheduled.csv", "calendar.csv"):
+        for filename in filenames:
             for row in _rows(d / filename):
                 tokens.update(
                     t for t in row.get("tags", "").split() if registries.TAG_TOKEN_RE.match(t)
                 )
     return sorted(tokens)
+
+
+def rule_tags(data_dir: Path, scenario: str) -> list[str]:
+    """Every ``role:name`` tag on the scenario's scheduled rules: what a
+    spending strategy's ``rules`` column names (#387)."""
+    return tag_tokens(data_dir, scenario, ("scheduled.csv",))
 
 
 def symbols(data_dir: Path) -> list[str]:
@@ -155,15 +215,75 @@ def symbols(data_dir: Path) -> list[str]:
     ``prices/`` files, and every scenario's lots."""
     scenarios = data_dir / "scenarios"
     scenario_dirs = sorted(p for p in scenarios.iterdir() if p.is_dir()) if scenarios.is_dir() else []
-    found = set(_column(
+    found = set(s for s in _column(
         [data_dir / "securities.csv", data_dir / "allocations.csv",
          *(d / "account_lots.csv" for d in scenario_dirs)],
         "symbol",
-    ))
+    ) if not is_lot_key(s))  # allocations.csv account:lot keys aren't symbols (#326)
     prefix = "security_price__"
     price_dirs = [data_dir / "prices", *(d / "prices" for d in scenario_dirs)]
     found.update(s[len(prefix):] for s in _stems(price_dirs, f"{prefix}*.csv"))
     return sorted(found)
+
+
+def strategy_names(data_dir: Path, scenario: str) -> list[str]:
+    """The scenario's strategies, its own and inherited (#326): a file each
+    in ``strategies/`` (#408)."""
+    dirs = _lineage_dirs(data_dir, scenario)
+    return sorted(_stems(d / registries.STRATEGIES_DIR for d in dirs))
+
+
+def tax_jurisdiction_names(data_dir: Path, scenario: str) -> list[str]:
+    """The scenario's tax jurisdictions, its own and inherited: a file each
+    in ``taxes/`` (#507), in the order they settle."""
+    found = _stems(d / registries.TAXES_DIR for d in _lineage_dirs(data_dir, scenario))
+    return [name for name in registries.TAX_JURISDICTIONS if name in found]
+
+
+def strategy_vary_nodes(data_dir: Path, scenario: str) -> list[str]:
+    """The scenario's varied strategy parameters' correlation nodes,
+    ``strategy:<name>.<param>`` (#408), its own and inherited."""
+    found: dict[str, list[str]] = {}
+    for d in _lineage_dirs(data_dir, scenario):
+        folder = d / registries.STRATEGY_VARY_DIR
+        if folder.is_dir():
+            for path in folder.glob("*.csv"):
+                if not path.stem.startswith("_"):
+                    found[path.stem] = [row["param"] for row in _rows(path) if row.get("param")]
+    return sorted(f"{registries.STRATEGY_NODE_PREFIX}{name}.{param}"
+                  for name, params in found.items() for param in params)
+
+
+def target_set_names(data_dir: Path, scenario: str) -> list[str]:
+    """The scenario's targets.csv sets, its own and inherited (#326)."""
+    return _column((d / "targets.csv" for d in _lineage_dirs(data_dir, scenario)), "target_set")
+
+
+_KIND_RE = re.compile(r"^\s+kind\s*=\s*[\"']([A-Za-z_]\w*)[\"']", re.MULTILINE)
+
+
+def strategy_kind_names(data_dir: Path) -> list[str]:
+    """The built-in strategy kinds and those the data repo's ``strategies/``
+    modules appear to define (read as text: completion runs no strategy code)."""
+    from analysis.sim import strategies
+
+    folders = [Path(strategies.__file__).parent, data_dir / "strategies"]
+    return sorted({
+        kind for folder in folders if folder.is_dir()
+        for path in folder.glob("*.py") for kind in _KIND_RE.findall(path.read_text(encoding="utf-8"))
+    })
+
+
+def tax_kind_names(data_dir: Path) -> list[str]:
+    """The built-in tax calculator kinds and those the data repo's ``taxes/``
+    modules appear to define (read as text, as for strategy kinds)."""
+    from analysis.sim import taxes
+
+    folders = [Path(taxes.__file__).parent, data_dir / "taxes"]
+    return sorted({
+        kind for folder in folders if folder.is_dir()
+        for path in folder.glob("*.py") for kind in _KIND_RE.findall(path.read_text(encoding="utf-8"))
+    })
 
 
 def itemization_names(data_dir: Path, scenario: str) -> list[str]:

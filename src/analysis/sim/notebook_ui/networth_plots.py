@@ -1,29 +1,25 @@
 """Net-worth notebook widgets: one function per section, each self-contained.
 
 All take a :class:`~analysis.sim.connection.RunConnection` and pull their
-data from its cached derived-data methods -- no notebook-local pandas code.
+data from its cached derived-data methods and :mod:`analysis.sim.reports`
+-- no notebook-local pandas code. The charts are
+:mod:`analysis.sim.run_charts`' (#327), the ones ``sim networth`` and
+``sim report ... --chart`` draw.
 """
 
 from __future__ import annotations
 
 import ipywidgets as widgets
-import matplotlib.pyplot as plt
 import pandas as pd
 from IPython.display import clear_output, display
 
-from analysis.sim.plotting import FRAME_ALPHA
-from analysis.sim.connection import (
-    EXPENSE_CATEGORIES,
-    GAIN_CATEGORIES,
-    RunConnection,
-    year_end_values,
-    yearly_totals,
-)
+from analysis.sim import reports, run_charts
+from analysis.sim.connection import RunConnection, year_end_values
 from analysis.sim.notebook_ui.pickers import (
     AfterTaxPicker, DollarModePicker, TimeRangePicker, controls_row, observe_while_shown, run_years,
 )
-from analysis.sim.types import INCOME_CATEGORIES, DollarMode
-from analysis.sim.notebook_ui.styled import StyledMarkdown
+from analysis.sim.types import DollarMode
+from analysis.sim.notebook_ui.styled import StyledMarkdown, show_figure
 
 
 def net_worth_widget(rc: RunConnection,
@@ -48,22 +44,13 @@ def net_worth_widget(rc: RunConnection,
         columns = ["nominal", "cpi_constant", *(["deferred_tax", "unpaid_tax"] if taxed else [])]
         year_end = year_end_values(nw[columns])
         year_end.index.name = "year"
+        suffix = "" if member == 0 else f"#{member}"
         with chart_out:
             clear_output(wait=True)
-            fig, ax = plt.subplots(figsize=(10, 5))
-            ax.plot(nw.index, nw["nominal"], label="nominal")
-            if nw["cpi_constant"].notna().any():
-                ax.plot(nw.index, nw["cpi_constant"], label="CPI-constant", linestyle="--")
-            ax.set_ylim(bottom=0)
-            suffix = "" if member == 0 else f"#{member}"
-            ax.set_title(f"{'After-tax net' if taxed else 'Net'} worth ({rc.label}{suffix})")
-            ax.set_xlabel("month")
-            ax.set_ylabel("USD")
-            ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda v, _: f"${v:,.0f}"))
-            ax.grid(True, axis="y", alpha=0.3)
-            ax.legend(framealpha=FRAME_ALPHA)
-            plt.xticks(rotation=90)
-            plt.show()
+            show_figure(run_charts.net_worth_figure(
+                nw[["nominal", "cpi_constant"]].rename(columns={"cpi_constant": "CPI-constant"}),
+                f"{'After-tax net' if taxed else 'Net'} worth ({rc.label}{suffix})",
+                deaths=rc.deaths()))
         with table_out:
             clear_output(wait=True)
             display(year_end.style.format("${:,.0f}"))
@@ -75,53 +62,73 @@ def net_worth_widget(rc: RunConnection,
     return widgets.VBox([controls_row(after_tax, time_range), chart_out, table_out])
 
 
-def income_widget(rc: RunConnection,
-                  dollar_mode: DollarModePicker | None = None,
-                  time_range: TimeRangePicker | None = None, **_,
-                  ) -> widgets.VBox:
-    """Yearly income table + a nominal/CPI-constant stacked bar chart, by category."""
-    dollar_mode = dollar_mode or DollarModePicker()
-    time_range = time_range or TimeRangePicker()
-    time_range.cover(run_years(rc))
+def _nothing_to_chart(chart: pd.DataFrame, what: str, rc: RunConnection) -> bool:
+    """Say so, and return True, when ``chart`` has no rows to draw.
 
+    An empty scenario (no accounts) or a time range holding none of the
+    run's years leaves none (#348).
+    """
+    if not chart.empty:
+        return False
+    print(f"No {what} to chart in this run ({rc.label}).")
+    return True
+
+
+def _flows(rc: RunConnection, side: reports.FlowSide, mode: DollarMode) -> pd.DataFrame:
+    """``sim report income|expenses``' groups by category and their total,
+    less a category with nothing in any year, as the report leaves it out."""
+    frame = reports.without_empty_groups(
+        reports.flows_by_year(rc, side, mode=mode, story=False)
+        .rename(columns={reports.ECONOMIC_INCOME: "total"}),
+        keep={"total"})
+    return frame[[*run_charts.flow_groups(frame), "total"]]
+
+
+def _flow_widget(rc: RunConnection, side: reports.FlowSide, dollar_mode: DollarModePicker,
+                 time_range: TimeRangePicker, caveat: str | None = None) -> widgets.VBox:
+    time_range.cover(run_years(rc))
     table_out = widgets.Output()
     chart_out = widgets.Output()
+    extra = []
+    if caveat is not None:
+        caveat_out = widgets.Output()
+        with caveat_out:
+            display(StyledMarkdown(caveat))
+        extra.append(caveat_out)
+    # reports caches nothing: build each mode's frame once, so moving the
+    # year slider only clips it rather than re-reading the run's events.
+    by_mode: dict[DollarMode, pd.DataFrame] = {}
 
     def _redraw(*_):
         mode = dollar_mode.value
-        mode_label = "CPI-constant" if mode == DollarMode.CPI_CONSTANT else "nominal"
-        
-        income = rc.income_by_category()
-        income_based = (
-            rc.to_cpi_constant(income) if mode == DollarMode.CPI_CONSTANT
-            else income
-        )
-        income_yearly = time_range.clip(yearly_totals(income_based))
-
-        chart = income_yearly
-        with chart_out:
-            clear_output(wait=True)
-            fig, ax = plt.subplots(figsize=(10, 5))
-            chart[INCOME_CATEGORIES].plot(
-                kind="bar", stacked=True, ax=ax,
-                color=["#1f77b4", "#2ca02c", "#ff7f0e"],
-            )
-            ax.set_title(f"Annual income by category ({mode_label}) ({rc.label})")
-            ax.set_xlabel("year")
-            ax.set_ylabel("USD")
-            ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda v, _: f"${v:,.0f}"))
-            ax.grid(True, axis="y", alpha=0.3)
-            ax.legend(title="category", framealpha=FRAME_ALPHA)
-            plt.show()
+        if mode not in by_mode:
+            by_mode[mode] = _flows(rc, side, mode)
+        yearly = time_range.clip(by_mode[mode])
         with table_out:
             clear_output(wait=True)
-            display(income_yearly.style.format("${:,.0f}"))
+            display(yearly.style.format("${:,.0f}"))
+        with chart_out:
+            clear_output(wait=True)
+            if _nothing_to_chart(yearly, side, rc):
+                return
+            show_figure(run_charts.flows_figure(
+                yearly, f"Annual {side} by category ({DollarMode(mode).label}) ({rc.label})",
+                deaths=rc.deaths()))
 
     observe_while_shown(dollar_mode, _redraw)
     observe_while_shown(time_range, _redraw)
     _redraw()
+    return widgets.VBox([controls_row(dollar_mode, time_range), chart_out, *extra, table_out])
 
-    return widgets.VBox([controls_row(dollar_mode, time_range), chart_out, table_out])
+
+def income_widget(rc: RunConnection,
+                  dollar_mode: DollarModePicker | None = None,
+                  time_range: TimeRangePicker | None = None, **_,
+                  ) -> widgets.VBox:
+    """Yearly income table + a stacked bar chart by category, in nominal or
+    CPI-constant dollars: ``sim report income``'s categories."""
+    return _flow_widget(rc, "income", dollar_mode or DollarModePicker(),
+                        time_range or TimeRangePicker())
 
 
 _EXPENSES_CAVEAT = (
@@ -138,52 +145,82 @@ def expenses_widget(rc: RunConnection,
                     dollar_mode: DollarModePicker | None = None,
                     time_range: TimeRangePicker | None = None,
                     **_) -> widgets.VBox:
-    """Yearly expenses table + a nominal/CPI-constant stacked bar chart, by category."""
+    """Yearly expenses table + a stacked bar chart by category, in nominal or
+    CPI-constant dollars: ``sim report expenses``' categories."""
+    return _flow_widget(rc, "expenses", dollar_mode or DollarModePicker(),
+                        time_range or TimeRangePicker(), caveat=_EXPENSES_CAVEAT)
+
+
+def spending_widget(rc: RunConnection,
+                    dollar_mode: DollarModePicker | None = None,
+                    time_range: TimeRangePicker | None = None,
+                    **_) -> widgets.VBox:
+    """Spending against the plan (#387, #408), as ``sim report spending``
+    shows it: delivered spending by year against what the rules budgeted,
+    grouped by category, account or a tag role; then the level and shape
+    by year, and the run's summary."""
+    from analysis.sim.spending_charts import spending_figure
+
     dollar_mode = dollar_mode or DollarModePicker()
     time_range = time_range or TimeRangePicker()
     time_range.cover(run_years(rc))
-
-    table_out = widgets.Output()
+    # The roles an expense can be grouped by: any tag's, as `--by tag:ROLE` takes them.
+    roles = [role for (role,) in rc._con.execute("SELECT DISTINCT role FROM tag ORDER BY role")]
+    by = widgets.Dropdown(options=["category", "account", *(f"tag:{r}" for r in roles)],
+                          value="category", description="By:")
     chart_out = widgets.Output()
-    caveat_out = widgets.Output()
-    with caveat_out:
-        display(StyledMarkdown(_EXPENSES_CAVEAT))
+    table_out = widgets.Output()
+    # Only the grouping and the dollars change the numbers; a new time range
+    # only clips them, so it reads nothing again.
+    reports_by: dict[tuple[str, DollarMode], tuple[pd.DataFrame, dict[str, float]] | None] = {}
+
+    def _report(by_value: str, mode: DollarMode) -> tuple[pd.DataFrame, dict[str, float]] | None:
+        if (by_value, mode) not in reports_by:
+            delivered, budgeted = reports.spending_by_year(rc, by=by_value, mode=mode)
+            reports_by[by_value, mode] = (None if delivered.empty
+                                          else reports.spending_report(delivered, budgeted))
+        return reports_by[by_value, mode]
 
     def _redraw(*_):
-        mode = dollar_mode.value
-        mode_label = "CPI-constant" if mode == DollarMode.CPI_CONSTANT else "nominal"
-
-        expenses = rc.expenses_by_category()
-        expenses_based = (
-            rc.to_cpi_constant(expenses) if mode == DollarMode.CPI_CONSTANT
-            else expenses
-        )
-        expenses_yearly = time_range.clip(yearly_totals(expenses_based))
-
-        chart = expenses_yearly
+        mode = DollarMode(dollar_mode.value)
+        found = _report(by.value, mode)
+        if found is None:
+            with chart_out:
+                clear_output(wait=True)
+                print(f"No spending in this run ({rc.label}).")
+            with table_out:
+                clear_output(wait=True)
+            return
+        frame, summary = found
+        unit = f"{mode.label} dollars"
         with chart_out:
             clear_output(wait=True)
-            fig, ax = plt.subplots(figsize=(10, 5))
-            chart[EXPENSE_CATEGORIES].plot(
-                kind="bar", stacked=True, ax=ax,
-                color=["#1f77b4", "#d62728", "#9467bd", "#8c564b", "#7f7f7f"],
-            )
-            ax.set_title(f"Annual expenses by category ({mode_label}) ({rc.label})")
-            ax.set_xlabel("year")
-            ax.set_ylabel("USD")
-            ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda v, _: f"${v:,.0f}"))
-            ax.grid(True, axis="y", alpha=0.3)
-            ax.legend(title="category", framealpha=0.5)
-            plt.show()
+            low, high = time_range.value
+            show_figure(spending_figure(frame, f"Spending against the plan ({rc.label})", ylabel=unit,
+                                        years=(low, high), deaths=rc.deaths()))
         with table_out:
             clear_output(wait=True)
-            display(expenses_yearly.style.format("${:,.0f}"))
+            shown = time_range.clip(frame)
+            shares = [c for c in shown.columns if c in ("of_plan", "redirected")
+                      or c.startswith(reports.FILLED)]
+            display(shown.style.format({**{c: "${:,.0f}" for c in shown.columns if c not in shares},
+                                        **dict.fromkeys(shares, "{:.1%}")}))
+            if summary["of_plan"] == 1.0 and not any(k.startswith(reports.FILLED) for k in summary):
+                display(StyledMarkdown("_No spending strategy changed this run's spending: "
+                                       "delivered is the plan._"))
+            else:
+                display(StyledMarkdown(
+                    f"Over the run: **{summary['of_plan']:.1%} of plan**, RMS difference "
+                    f"${summary['rms']:,.0f} a year; redirected {summary['redirected_mean']:.1%} on "
+                    f"average, {summary['redirected_worst']:.1%} at worst "
+                    f"({summary['redirected_worst_year']:.0f}); cosine similarity "
+                    f"{summary['cosine_mean']:.3f}."))
 
+    by.observe(_redraw, names="value")
     observe_while_shown(dollar_mode, _redraw)
     observe_while_shown(time_range, _redraw)
     _redraw()
-
-    return widgets.VBox([controls_row(dollar_mode, time_range), chart_out, caveat_out, table_out])
+    return widgets.VBox([controls_row(by, dollar_mode, time_range), chart_out, table_out])
 
 
 def gains_widget(rc: RunConnection,
@@ -200,38 +237,17 @@ def gains_widget(rc: RunConnection,
 
     def _redraw(*_):
         mode = dollar_mode.value
-        mode_label = "CPI-constant" if mode == DollarMode.CPI_CONSTANT else "nominal"
-
-        gains_nominal = rc.gains_by_category()
-        gains_yearly = time_range.clip(
-            rc.to_cpi_constant_annual(gains_nominal) if mode == DollarMode.CPI_CONSTANT
-            else gains_nominal
-        )
-        chart = gains_yearly
-        with chart_out:
-            clear_output(wait=True)
-            fig, ax = plt.subplots(figsize=(10, 5))
-            years = chart.index.astype(str)
-            chart[GAIN_CATEGORIES].plot(
-                kind="bar", stacked=True, ax=ax,
-                color=["#2ca02c", "#1f77b4", "#7f7f7f"],
-            )
-            ax.plot(
-                years, chart["expenses"],
-                label="expenses", color="#d62728", marker="o", linewidth=2,
-            )
-            ax.axhline(0, color="grey", linewidth=0.8)
-            ax.set_title(f"Realized vs. unrealized gains ({mode_label}) ({rc.label})")
-            ax.set_xlabel("year")
-            ax.set_ylabel("USD")
-            ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda v, _: f"${v:,.0f}"))
-            ax.grid(True, axis="y", alpha=0.3)
-            ax.legend(title="category", framealpha=0.5)
-            plt.setp(ax.get_xticklabels(), rotation=90)
-            plt.show()
+        gains_yearly = time_range.clip(reports.gains_by_year(rc, mode))
         with table_out:
             clear_output(wait=True)
             display(gains_yearly.style.format("${:,.0f}"))
+        with chart_out:
+            clear_output(wait=True)
+            if _nothing_to_chart(gains_yearly, "gains", rc):
+                return
+            show_figure(run_charts.gains_figure(
+                gains_yearly, f"Realized vs. unrealized gains ({DollarMode(mode).label}) ({rc.label})",
+                deaths=rc.deaths()))
 
     observe_while_shown(dollar_mode, _redraw)
     observe_while_shown(time_range, _redraw)
@@ -240,13 +256,17 @@ def gains_widget(rc: RunConnection,
     return widgets.VBox([controls_row(dollar_mode, time_range), chart_out, table_out])
 
 
-def after_tax_widget(rc: RunConnection,
-                     dollar_mode: DollarModePicker | None = None,
-                     time_range: TimeRangePicker | None = None,
-                     **_) -> widgets.VBox:
-    """Tax reconciliation table + after-tax income vs. non-tax-expense chart."""
+def economic_income_widget(rc: RunConnection,
+                           dollar_mode: DollarModePicker | None = None,
+                           time_range: TimeRangePicker | None = None,
+                           after_tax: AfterTaxPicker | None = None,
+                           **_) -> widgets.VBox:
+    """Economic income carried down to the change in net worth (#249), as
+    ``sim report income`` shows it: a chart of what each year added and
+    spent, the year's table, and the tax reconciliation."""
     dollar_mode = dollar_mode or DollarModePicker()
     time_range = time_range or TimeRangePicker()
+    after_tax = after_tax or AfterTaxPicker()
     time_range.cover(run_years(rc))
 
     table_out = widgets.Output()
@@ -254,78 +274,188 @@ def after_tax_widget(rc: RunConnection,
 
     def _redraw(*_):
         mode = dollar_mode.value
-        mode_label = "CPI-constant" if mode == DollarMode.CPI_CONSTANT else "nominal"
+        taxed = after_tax.value
 
-        reconciliation_nominal = rc.tax_reconciliation_by_year()
-        income_yearly_nominal = yearly_totals(rc.income_by_category())
-        expenses_yearly_nominal = yearly_totals(rc.expenses_by_category())
-
-        money_columns = [c for c in reconciliation_nominal.columns if c != "reconciliation_year"]
-        reconciliation = time_range.clip(
-            rc.to_cpi_constant_annual(reconciliation_nominal)
-            if mode == DollarMode.CPI_CONSTANT
-            else reconciliation_nominal
-        )
-        income_yearly = (rc.to_cpi_constant_annual(income_yearly_nominal)
-                         if mode == DollarMode.CPI_CONSTANT
-                         else income_yearly_nominal
-        )
-        expenses_yearly = (rc.to_cpi_constant_annual(expenses_yearly_nominal)
-                           if mode == DollarMode.CPI_CONSTANT
-                           else expenses_yearly_nominal
-        )
-
-        net = pd.DataFrame({
-            "gross_income": income_yearly["total"],
-            "tax_liability": rc.tax_liability_by_year(),
-            "expenses": expenses_yearly["total"],
-            "tax_expenses": expenses_yearly["taxes"],
-        })
-        net[["gross_income", "expenses", "tax_expenses"]] = net[[
-            "gross_income", "expenses", "tax_expenses",
-        ]].fillna(0)
-        net["after_tax_income"] = net["gross_income"] - net["tax_liability"]
-        net["non_tax_expenses"] = net["expenses"] - net["tax_expenses"]
-        net["after_tax_surplus"] = net["after_tax_income"] - net["non_tax_expenses"]
-        net = time_range.clip(net)
-        chart = rc.to_cpi_constant_annual(net) if mode == DollarMode.CPI_CONSTANT else net
+        # The reconciliation keeps its reconciliation_year (the April a tax
+        # year settles in), which is a year, not money.
+        reconciliation = rc.tax_reconciliation_by_year()
+        money_columns = [c for c in reconciliation.columns if c != "reconciliation_year"]
+        if mode == DollarMode.CPI_CONSTANT:
+            reconciliation = reconciliation.assign(
+                **rc.to_cpi_constant_annual(reconciliation[money_columns]))
+        reconciliation = time_range.clip(reconciliation)
+        income = reports.flows_by_year(rc, "income", mode=mode, after_tax=taxed)
+        story = time_range.clip(
+            income[[c for c in (reports.ECONOMIC_INCOME, *reports.NET_WORTH_COLUMNS)
+                    if c in income.columns]]
+            .dropna(subset=[reports.NET_WORTH_CHANGE]))
+        if story.empty:
+            # An empty scenario (no accounts) has no net worth to follow.
+            for out in (chart_out, table_out):
+                with out:
+                    clear_output(wait=True)
+            with chart_out:
+                print(f"No net worth in this run ({rc.label}).")
+            return
         with chart_out:
             clear_output(wait=True)
-            fig, ax = plt.subplots(figsize=(10, 5))
-            years = chart.index.astype(str)
-            ax.bar(
-                years, chart["after_tax_income"],
-                label="after-tax income", color="#2ca02c", alpha=0.7,
-            )
-            ax.bar(
-                years, -chart["non_tax_expenses"],
-                label="non-tax expenses", color="#d62728", alpha=0.7,
-            )
-            ax.plot(
-                years, chart["tax_liability"],
-                label="tax liability", color="#9467bd", marker="o", linewidth=2,
-            )
-            ax.plot(
-                years, chart["after_tax_surplus"],
-                label="after-tax surplus", color="black", marker="o", linewidth=2,
-            )
-            ax.axhline(0, color="grey", linewidth=0.8)
-            ax.set_title(f"Annual after-tax income ({mode_label}) ({rc.label})")
-            ax.set_xlabel("year")
-            ax.set_ylabel("USD")
-            ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda v, _: f"${v:,.0f}"))
-            ax.grid(True, axis="y", alpha=0.3)
-            ax.legend(framealpha=0.5)
-            plt.setp(ax.get_xticklabels(), rotation=90)
-            plt.show()
+            show_figure(run_charts.economic_income_figure(
+                story, f"Economic income and net worth change "
+                       f"({'after tax' if taxed else 'pre-tax'}, {DollarMode(mode).label}) ({rc.label})",
+                deaths=rc.deaths()))
 
         with table_out:
             clear_output(wait=True)
+            display(story.style.format("${:,.0f}", na_rep=""))
             display(reconciliation.style.format({c: "${:,.0f}" for c in money_columns}))
-            display(net.style.format("${:,.0f}"))
+
+    observe_while_shown(dollar_mode, _redraw)
+    observe_while_shown(time_range, _redraw)
+    observe_while_shown(after_tax, _redraw)
+    _redraw()
+    return widgets.VBox([controls_row(dollar_mode, after_tax, time_range), chart_out, table_out])
+
+
+def tax_widget(rc: RunConnection,
+               dollar_mode: DollarModePicker | None = None,
+               time_range: TimeRangePicker | None = None,
+               **_) -> widgets.VBox:
+    """Federal and state tax by year, as ``sim report tax`` shows it: a chart
+    of each year's tax with its effective rate, then the table of AGI,
+    deduction, taxable income and tax."""
+    dollar_mode = dollar_mode or DollarModePicker()
+    time_range = time_range or TimeRangePicker()
+    time_range.cover(run_years(rc))
+
+    table_out = widgets.Output()
+    chart_out = widgets.Output()
+
+    by_mode: dict[DollarMode, pd.DataFrame] = {}  # as in _flow_widget
+
+    def _redraw(*_):
+        mode = dollar_mode.value
+        if mode not in by_mode:
+            by_mode[mode] = reports.tax_by_year(rc, mode)
+        whole = by_mode[mode]
+        frame = time_range.clip(whole)
+        for out in (chart_out, table_out):
+            with out:
+                clear_output(wait=True)
+        if frame.empty:
+            with chart_out:
+                # Only the whole run says whether any tax was computed.
+                if whole.empty:
+                    print(f"No tax was computed in this run ({rc.label}).")
+                else:
+                    print(f"No tax in the years picked ({rc.label}).")
+            return
+        with chart_out:
+            show_figure(run_charts.tax_figure(
+                frame, f"Tax ({DollarMode(mode).label}) ({rc.label})", deaths=rc.deaths()))
+        with table_out:
+            formats = {c: {"effective_rate": "{:.1%}", "irmaa_tier": "{:.0f}"}.get(c, "${:,.0f}")
+                       for c in frame.columns}
+            display(frame.style.format(formats, na_rep=""))
 
     observe_while_shown(dollar_mode, _redraw)
     observe_while_shown(time_range, _redraw)
     _redraw()
-
     return widgets.VBox([controls_row(dollar_mode, time_range), chart_out, table_out])
+
+
+def guard_rails_widget(rc: RunConnection,
+                       dollar_mode: DollarModePicker | None = None,
+                       time_range: TimeRangePicker | None = None,
+                       **_) -> widgets.VBox:
+    """Where the run stands against its scenario's guard rails (#305), as
+    ``sim report guard-rails`` shows it: per measure, the year's measure
+    against each rail, then each rail's cumulative margin (with the margin
+    carried at the portfolio's return, dotted); the margins by year, red past
+    a rail to stay inside and blue past a positive one; and a summary.
+
+    Rails are read from the scenario's guard_rails.csv when shown, so an
+    edited rail shows on the next draw without a re-run. Margins accumulate
+    over the whole run; the years picked only limit what is drawn."""
+    from analysis.sim import guard_rails
+    from analysis.sim.guard_rail_charts import CARRIED_CAVEAT, guard_rail_figure
+
+    dollar_mode = dollar_mode or DollarModePicker(DollarMode.CPI_CONSTANT)
+    time_range = time_range or TimeRangePicker()
+    time_range.cover(run_years(rc))
+    carried = widgets.Checkbox(value=True, description="Carried at return",
+                               indent=False, layout=widgets.Layout(width="auto"))
+    chart_out = widgets.Output()
+    table_out = widgets.Output()
+
+    def _read_rails() -> list[guard_rails.GuardRail] | None:
+        """The rails as the file has them now, or None, said why in chart_out."""
+        try:
+            scenarios_dir = rc.scenario.scenarios_dir
+        except RuntimeError:  # a run file opened without its data repo
+            print(f"{rc.name} was opened without its scenario, so its guard rails "
+                  "can't be read; open it with open_run().")
+            return None
+        try:
+            rails = guard_rails.run_rails(rc, scenarios_dir)
+        except guard_rails.GuardRailError as exc:
+            print(f"The guard rails of {rc.name} don't load; `sim check {rc.name}` lists:")
+            for issue in exc.issues:
+                print(f"  {issue}")
+            return None
+        if not rails:
+            print(f"No guard rails in {rc.name}; `sim guard-rail add` adds one.")
+            return None
+        return rails
+
+    with chart_out:
+        if _read_rails() is None:
+            return widgets.VBox([chart_out])
+
+    def _redraw(*_):
+        with chart_out:
+            clear_output(wait=True)
+            rails = _read_rails()
+        if rails is None:
+            with table_out:
+                clear_output()
+            return
+        mode = dollar_mode.value
+        unit = DollarMode(mode).label
+        results = guard_rails.evaluate_run(rc, rails, mode)
+        shown = [r for r in results if r.applies]
+        low, high = time_range.value
+        with chart_out:
+            clear_output(wait=True)
+            fig = guard_rail_figure(results, f"Guard rails ({rc.label})", unit=unit,
+                                    carried=carried.value, years=(low, high),
+                                    deaths=rc.deaths())
+            show_figure(fig)
+        senses = {}
+        for r in shown:
+            for suffix in ("", guard_rails.CUMULATIVE_SUFFIX, guard_rails.CARRIED_SUFFIX):
+                senses[r.rail.name + suffix] = r.rail.sense
+
+        def past_color(value: float, column: str) -> str:
+            if pd.isna(value) or value >= 0 or column not in senses:
+                return ""
+            return "color: #d03b3b" if senses[column] == "negative" else "color: #2a78d6"
+
+        with table_out:
+            clear_output(wait=True)
+            if not shown:
+                print("No guard rail covers this run's years.")
+                return
+            margins = time_range.clip(guard_rails.margins_frame(shown, carried=carried.value))
+            display(margins.style.format("${:,.0f}", na_rep="")
+                    .apply(lambda col: [past_color(v, str(col.name)) for v in col]))
+            display(guard_rails.summary_frame(shown).style.format(
+                {"worst": "${:,.0f}", "end": "${:,.0f}", "rms_over": "${:,.0f}"}))
+            display(StyledMarkdown(
+                "A margin is the room left before a rail; negative is past it (red past a "
+                "rail to stay inside, blue past a positive one). " + CARRIED_CAVEAT))
+
+    observe_while_shown(dollar_mode, _redraw)
+    observe_while_shown(time_range, _redraw)
+    carried.observe(_redraw, names="value")
+    _redraw()
+    return widgets.VBox([controls_row(dollar_mode, time_range, carried), chart_out, table_out])

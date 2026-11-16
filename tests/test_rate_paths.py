@@ -25,7 +25,7 @@ from analysis.sim.loader import LoadError, LoadResult
 
 from tests.test_correlation import _factor
 
-_PROCESS = {"vary_process": "ar1", "vary_persistence": "0.5", "vary_innovation_sd": "2%"}
+_PROCESS = {"vary_process": "ar1", "vary_persistence": "0.5", "vary_shock_sd": "2%"}
 
 
 def _process_rate(
@@ -131,17 +131,17 @@ def test_every_month_grows_by_a_positive_factor_at_the_lowest_level() -> None:
 
 @pytest.mark.parametrize(("extra", "fragment"), [
     ({"vary_process": "random_walk"}, "unknown vary_process 'random_walk'"),
-    ({"vary_persistence": ""}, "requires vary_persistence and vary_innovation_sd"),
-    ({"vary_innovation_sd": ""}, "requires vary_persistence and vary_innovation_sd"),
+    ({"vary_persistence": ""}, "requires vary_persistence and vary_shock_sd"),
+    ({"vary_shock_sd": ""}, "requires vary_persistence and vary_shock_sd"),
     ({"vary_persistence": "1"}, "vary_persistence must be at least 0 and below 1"),
     ({"vary_persistence": "-0.1"}, "vary_persistence must be at least 0 and below 1"),
     ({"vary_persistence": "nan"}, "vary_persistence must be at least 0 and below 1"),
     ({"vary_persistence": "x"}, "vary_persistence 'x' is not a number"),
-    ({"vary_innovation_sd": "0%"}, "vary_innovation_sd must be positive"),
-    ({"vary_innovation_sd": "1.00001%"}, "invalid percent value"),
+    ({"vary_shock_sd": "0%"}, "vary_shock_sd must be positive"),
+    ({"vary_shock_sd": "1.00001%"}, "invalid percent value"),
     ({"vary_ramp_months": "6"}, "vary_process and vary_ramp_months don't combine"),
     ({"vary_low": "-100%"}, "level must stay above -100%"),
-    ({"vary_innovation_sd": "150%"}, "is over 100%"),
+    ({"vary_shock_sd": "150%"}, "is over 100%"),
 ])
 def test_bad_process_rows_are_rejected(
     append_calendar_row: Callable[..., None], load_test_copy: Callable[[], LoadResult],
@@ -161,6 +161,25 @@ def test_an_inferred_bound_below_minus_100_percent_is_rejected(
     assert any("level must stay above -100%" in i for i in _issues(load_test_copy))
 
 
+def test_the_old_shock_column_name_is_rejected_as_renamed(
+    retire_alice_csv: Callable[[str], Path], load_test_copy: Callable[[], LoadResult],
+) -> None:
+    """#284: a file still using vary_innovation_sd fails with the new name,
+    rather than its process quietly losing its shock size."""
+    path = retire_alice_csv("calendar.csv")
+    df = pd.read_csv(path, dtype=str, keep_default_na=False)
+    df = df.reindex(columns=[*df.columns, "vary_innovation_sd"], fill_value="")
+    df.loc[len(df)] = dict.fromkeys(df.columns, "") | {
+        "date": "2027-02-28", "kind": "set_rate", "name": "stock_path",
+        "series": "Asset_Checking", "amount": "4.5%", "vary_target": "amount",
+        "vary_distribution": "uniform", "vary_low": "4%", "vary_high": "5%",
+        "vary_process": "ar1", "vary_persistence": "0.5", "vary_innovation_sd": "2%",
+    }
+    df.to_csv(path, index=False)
+    issues = _issues(load_test_copy)
+    assert any("vary_innovation_sd was renamed to vary_shock_sd" in i for i in issues), issues
+
+
 def test_process_columns_need_a_varying_set_rate_amount_row(
     append_calendar_row: Callable[..., None], load_test_copy: Callable[[], LoadResult],
 ) -> None:
@@ -175,7 +194,7 @@ def test_process_columns_need_a_varying_set_rate_amount_row(
     issues = _issues(load_test_copy)
     assert any("vary_* columns set without vary_distribution" in i for i in issues), issues
     assert any("(late): vary_process is only valid" in i for i in issues), issues
-    assert any("(orphan): vary_persistence/vary_innovation_sd are only read" in i
+    assert any("(orphan): vary_persistence/vary_shock_sd are only read" in i
                for i in issues), issues
 
 
@@ -196,7 +215,7 @@ def test_a_process_row_loads_and_is_stored(
     con = sqlite3.connect(load_test_copy().intent_path)
     try:
         stored = con.execute(
-            "SELECT vary_process, vary_persistence, vary_innovation_sd FROM calendar_event "
+            "SELECT vary_process, vary_persistence, vary_shock_sd FROM calendar_event "
             "WHERE name = 'stock_path'"
         ).fetchone()
     finally:
@@ -362,11 +381,11 @@ def _set_rate(test_data_dir: Path, *options: str) -> Result:
 
 @pytest.mark.parametrize(("options", "fragment"), [
     (("--vary-process", "ar1", "--vary-persistence", "0.2"),
-     "requires --vary-persistence and --vary-innovation-sd"),
+     "requires --vary-persistence and --vary-shock-sd"),
     (("--vary-persistence", "0.2"), "go with --vary-process"),
-    (("--vary-process", "ar1", "--vary-persistence", "1", "--vary-innovation-sd", "17"),
+    (("--vary-process", "ar1", "--vary-persistence", "1", "--vary-shock-sd", "17"),
      "at least 0 and below 1"),
-    (("--vary-process", "ar1", "--vary-persistence", "0.2", "--vary-innovation-sd", "17",
+    (("--vary-process", "ar1", "--vary-persistence", "0.2", "--vary-shock-sd", "17",
       "--vary-ramp-months", "6"), "don't combine"),
 ])
 def test_set_rate_checks_process_options(
@@ -381,7 +400,7 @@ def test_editing_a_process_row_keeps_its_process(
     test_data_dir: Path, retire_alice_csv: Callable[[str], Path],
 ) -> None:
     result = _set_rate(test_data_dir, "--vary-process", "ar1", "--vary-persistence", "0.2",
-                       "--vary-innovation-sd", "17")
+                       "--vary-shock-sd", "17")
     assert result.exit_code == 0, result.output
     result = CliRunner().invoke(main, [
         "sim", "calendar", "edit", "stock_path",
@@ -391,7 +410,7 @@ def test_editing_a_process_row_keeps_its_process(
     rows = pd.read_csv(retire_alice_csv("calendar.csv"), dtype=str, keep_default_na=False)
     row = rows.query("name == 'stock_path'").iloc[0]
     assert (row["description"], row["vary_process"], row["vary_persistence"],
-            row["vary_innovation_sd"]) == ("stocks", "ar1", "0.2", "17%")
+            row["vary_shock_sd"]) == ("stocks", "ar1", "0.2", "17%")
 
 
 # --- end to end ----------------------------------------------------------------------

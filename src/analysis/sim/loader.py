@@ -7,6 +7,7 @@ Git-based provenance stamps (ADR-004) are computed via ``analysis.sim.provenance
 from __future__ import annotations
 
 import csv
+import dataclasses
 import json
 import math
 import os
@@ -14,7 +15,8 @@ import re
 import socket
 import sqlite3
 import tempfile
-from collections.abc import Callable, Collection, Generator, Iterable, Mapping
+from collections import defaultdict
+from collections.abc import Callable, Collection, Generator, Iterable, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
@@ -22,10 +24,13 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, NamedTuple
 
-from analysis.sim import life_table, registries, units
+from analysis.sim import (
+    asset_classes, guard_rails, life_table, load_warnings, registries, states, strategy_api,
+    strategy_code, strategy_files, strategy_load, tax_code, tax_files, units,
+)
 from analysis.sim.dates import (
-    MONTH_FORMAT_HINT, VaryBoundRole, final_month_for_age, month_end_iso, parse_day,
-    vary_date_iso,
+    MONTH_FORMAT_HINT, VaryBoundRole, add_month_ends, final_month_for_age, is_marker_name, month_end_iso, parse_day,
+    parse_month, parse_relative_date, place_month, vary_date_iso,
 )
 from analysis.sim.distributions import (
     Discrete,
@@ -33,11 +38,24 @@ from analysis.sim.distributions import (
     OutcomeRole,
     Triangular,
     TruncatedNormal,
+    Uniform,
     parse_outcomes,
     resolve_truncated_normal_bounds,
     rewrite_outcomes,
 )
-from analysis.sim.lineage import ScenarioCycleError, load_order, parse_parents, read_parents
+from analysis.sim.lineage import (
+    TEMPLATE_AUX_DIR,
+    TEMPLATE_SCENARIOS_DIR,
+    ScenarioCycleError,
+    is_mixin_only,
+    is_pool,
+    is_template,
+    load_order,
+    parse_parents,
+    read_parents,
+)
+from analysis.sim.lineage import scenario_dir as _scenario_dir
+from analysis.sim.param_units import param_units
 from analysis.sim.provenance import (
     EMPTY_CODE_STAMPS,
     EMPTY_DATA_STAMPS,
@@ -54,17 +72,26 @@ from analysis.sim.schema import SCHEMA_VERSION, apply_run_schema, inserted_id, c
 from analysis.sim.types import INVESTMENT_ASSET_SUBKINDS
 
 __all__ = [
-    "BATCH_MANIFEST_FILENAME",
-    "CURRENT_SCENARIO_FILE", "DEFAULT_INTENT_DIR", "DEFAULT_RUNS_DIR",
-    "DEFAULT_SCENARIO_NAME",
-    "LoadError", "LoadResult", "DataDirtyRefused", "ScenarioRef",
-    "batch_mode", "latest_ensemble_batch", "latest_run_path", "list_scenario_names", "load_scenario", "open_intent_db",
-    "read_current_scenario", "resolve_scenario_name", "scenario_run_path", "find_state_dir",
+    "BATCH_MANIFEST_FILENAME", "BATCH_MODE_DIRS",
+    "CURRENT_SCENARIO_FILE", "KEEP_SCENARIO_ENV", "DEFAULT_INTENT_DIR", "DEFAULT_RUNS_DIR",
+    "DEFAULT_SCENARIO_NAME", "DISABLE_FILE",
+    "LoadError", "LoadResult", "DataDirtyRefused", "PendingRun", "ScenarioRef",
+    "batch_mode", "batch_recipe", "batches_dir", "ensemble_batches", "find_batch",
+    "intent_batch_dir", "is_ensemble_batch", "latest_ensemble_batch",
+    "latest_run_path", "list_scenario_names", "load_scenario", "open_intent_db",
+    "read_current_scenario", "read_disabled_scenarios", "resolve_scenario_name", "scenario_run_path", "find_state_dir",
     "growth_rule_name",
-    "write_current_scenario",
+    "set_scenario_enabled", "template_aux_copies", "write_current_scenario",
 ]
 
 CURRENT_SCENARIO_FILE = ".current_scenario"
+# Set (non-empty), a command naming a scenario uses it without making it
+# current (#350): for an agent or script looking things up for the user.
+KEEP_SCENARIO_ENV = "ANALYSIS_KEEP_SCENARIO"
+# In a scenario's folder: the scenario isn't built unless named (#300), as
+# for a mix-in or a base that only exists to be built on. Not inherited, and
+# left out of every data tree (provenance), so it changes no scenario's data.
+DISABLE_FILE = ".disable"
 DEFAULT_SCENARIO_NAME = "base"
 DEFAULT_STATE_DIR = Path("state")
 DEFAULT_INTENT_DIR = Path("intent")
@@ -170,6 +197,27 @@ def write_current_scenario(data_dir: Path | str, scenario: str) -> None:
     current_scenario_path(data_dir).write_text(f"{scenario}\n", encoding="utf-8")
 
 
+def read_disabled_scenarios(data_dir: Path | str) -> frozenset[str]:
+    """The data repo's disabled scenarios (a ``.disable`` file in the
+    folder): never built by `sim all` or the background builder, and left
+    out of the notebooks' pickers. Building one by name still works."""
+    scenarios = Path(data_dir) / "scenarios"
+    if not scenarios.is_dir():
+        return frozenset()
+    return frozenset(p.parent.name for p in scenarios.glob(f"*/{DISABLE_FILE}"))
+
+
+def set_scenario_enabled(data_dir: Path | str, name: str, enabled: bool) -> None:
+    """Enable scenario ``name`` (remove its ``.disable``) or disable it."""
+    path = Path(data_dir) / "scenarios" / name / DISABLE_FILE
+    if enabled:
+        path.unlink(missing_ok=True)
+    else:
+        path.write_text(
+            "Not built unless named: `sim scenario enable` builds it again (#300).\n",
+            encoding="utf-8")
+
+
 def find_state_dir(data_dir: Path | str | None, default: Path | str) -> Path:
     """Resolve a data repo's ``state/intent`` or ``state/runs`` dir (ADR-004 §4).
 
@@ -183,21 +231,118 @@ def find_state_dir(data_dir: Path | str | None, default: Path | str) -> Path:
     return (Path(data_dir).resolve().parent / default).resolve()
 
 
-def latest_run_path(runs_dir: Path | str, scenario: str | None = None) -> Path | None:
+def latest_run_path(
+    runs_dir: Path | str, scenario: str | None = None, *, wait: bool = True,
+) -> Path | None:
     """Most recent run file under ``runs_dir``, or ``None`` if there is none.
 
-    Run filenames are ``<timestamp>_<scenario>_<data-version>.sqlite3``, so they
-    sort chronologically and can be filtered by scenario by name alone. Neither
-    the timestamp nor the data version has an underscore, so the scenario is
-    matched whole: ``base`` doesn't pick up ``higher_base``'s runs.
+    For a named ``scenario``, first waits for a pending background build of
+    it (#300, ``builder.await_fresh``) unless ``wait`` is False.
+
+    Run filenames are ``<timestamp>[-N]_<scenario>_<data-version>.sqlite3``
+    (``-N`` when runs collided in one second, #300), so they sort
+    chronologically by ``locks.run_name_key`` and can be filtered by scenario
+    by name alone. Neither the timestamp nor the data version has an
+    underscore, so the scenario is matched whole: ``base`` doesn't pick up
+    ``higher_base``'s runs. A zero-byte file is a name a run has reserved
+    (``locks.reserve_run_path``) but not begun writing, so it is skipped.
     """
+    if scenario and wait:
+        _await_fresh(Path(runs_dir), scenario)
+    runs = run_files(runs_dir, scenario)
+    return runs[-1] if runs else None
+
+
+def run_files(runs_dir: Path | str, scenario: str | None = None) -> list[Path]:
+    """The started run files under ``runs_dir`` (of ``scenario``, when
+    given), oldest first; see :func:`latest_run_path` for how they are
+    named and matched. Never waits for a background build."""
+    from analysis.sim.locks import run_name_key
+
     glob_pattern = f"*_{scenario}_*.sqlite3" if scenario else "*.sqlite3"
     re_pattern = (re.compile(rf"[^_]+_{re.escape(scenario)}_[^_]*[.]sqlite3") if scenario
                   else re.compile(".*"))
     runs = (r for r in Path(runs_dir).glob(glob_pattern)
-            if re_pattern.fullmatch(r.name))
-    runs = sorted(runs)
-    return runs[-1] if runs else None
+            if re_pattern.fullmatch(r.name) and _started(r))
+    return sorted(runs, key=lambda r: run_name_key(r.name))
+
+
+@dataclass(frozen=True)
+class RunStatus:
+    """A run file's ``simulation_run`` status (#437), as ``sim list`` shows it."""
+
+    path: Path
+    status: str
+    """``succeeded``, ``failed``, ``running`` (still going, or interrupted),
+    or ``unreadable`` when the file can't be read as a run."""
+    finished_at: str | None
+    """UTC, ``YYYY-MM-DDTHH:MM:SSZ``; None until the run ends."""
+    failure_reason: str | None
+
+
+def read_run_status(path: Path | str) -> RunStatus:
+    """``path``'s run status; never raises for a damaged or half-written file."""
+    path = Path(path)
+    try:
+        # as_uri escapes a '#' or '?' in the path, which would end it.
+        con = connect_sim_file(f"{path.resolve().as_uri()}?mode=ro", uri=True)
+        try:
+            row = con.execute("SELECT status, finished_at, failure_reason "
+                              "FROM simulation_run WHERE id = 1").fetchone()
+        finally:
+            con.close()
+    except sqlite3.OperationalError as exc:
+        if "no such table" not in str(exc):
+            return RunStatus(path, "unreadable", None, None)
+        row = None  # just created: its run hasn't written its tables yet
+    except sqlite3.DatabaseError:
+        return RunStatus(path, "unreadable", None, None)
+    if row is None:
+        return RunStatus(path, "running", None, None)
+    status, finished_at, failure_reason = row
+    return RunStatus(path, status, finished_at, failure_reason)
+
+
+def last_good_run_path(
+    runs_dir: Path | str, name: str, *, wait: bool = True,
+) -> Path | None:
+    """The run a notebook opens for scenario ``name`` (#437): like
+    :func:`scenario_run_path`, but passing over newer runs that didn't
+    succeed, since a failed run holds only the months before it failed.
+    When none of its runs succeeded, its latest; :func:`runs_not_succeeded_after`
+    names what was passed over."""
+    runs_dir = Path(runs_dir)
+    if wait:
+        _await_fresh(runs_dir, name)
+    runs = run_files(runs_dir, name)
+    for run in reversed(runs):
+        if read_run_status(run).status == "succeeded":
+            return run
+    return runs[-1] if runs else _latest_ensemble_member_zero(runs_dir, name, wait=False)
+
+
+def runs_not_succeeded_after(
+    runs_dir: Path | str, name: str, run_path: Path | str,
+) -> list[RunStatus]:
+    """Scenario ``name``'s runs newer than ``run_path`` that didn't succeed,
+    newest first (#437): what :func:`last_good_run_path` passed over. None
+    for an ensemble member, whose batch lists its members' statuses."""
+    from analysis.sim.locks import run_name_key
+
+    run_path = Path(run_path)
+    if run_path.parent.resolve() != Path(runs_dir).resolve():
+        return []
+    after = run_name_key(run_path.name)
+    newer = (read_run_status(r) for r in reversed(run_files(runs_dir, name))
+             if run_name_key(r.name) > after)
+    return [s for s in newer if s.status != "succeeded"]
+
+
+def _started(run: Path) -> bool:
+    try:
+        return run.stat().st_size > 0
+    except OSError:  # pruned between the glob and here
+        return False
 
 
 BATCH_MANIFEST_FILENAME = "batch_manifest.json"
@@ -211,7 +356,7 @@ def batch_mode(batch_dir: Path) -> str:
     """A batch's ADR-007 §5 mode: from its ``batch_manifest.json``, else from
     any member run file's own ``ensemble_manifest.mode`` (a batch whose run
     was interrupted before the manifest was written), else ``"monte_carlo"``
-    (every batch written before ADR-007, or one synthesized by a test)."""
+    (one synthesized by a test)."""
     path = Path(batch_dir) / BATCH_MANIFEST_FILENAME
     if path.is_file():
         return json.loads(path.read_text()).get("mode", "monte_carlo")
@@ -223,33 +368,101 @@ def batch_mode(batch_dir: Path) -> str:
             finally:
                 con.close()
         except sqlite3.Error:
-            continue  # empty, partial, or pre-ADR-007: try the next member
+            continue  # empty or partial: try the next member
         if row is not None:
             return row[0]
     return "monte_carlo"
 
 
-def latest_ensemble_batch(recipe_dir: Path, mode: str | None = None) -> Path | None:
-    """The most recently generated batch subfolder under ``recipe_dir`` that
-    holds at least one member run file or a batch manifest, or ``None`` if
-    there isn't one.
+def _await_fresh(runs_dir: Path, scenario: str, mode: str | None = "monte_carlo") -> None:
+    """Wait for a pending background build of ``scenario``'s results of
+    ``mode`` (a single run's too, for Monte Carlo; every kind when None)."""
+    from analysis.sim.builder import await_fresh
 
-    A recipe's members live under ``<recipe_dir>/<timestamp>/member_NNNN.sqlite3``
-    -- one subfolder per ``sim run`` invocation, timestamp-named so reruns
-    never collide and every batch's history is kept (matching how an
-    ordinary, non-ensemble run file is never overwritten either). The
-    manifest check covers the batch where every member failed to resolve:
-    no member file was ever created for any of them, but the batch itself
-    (and its recorded failures) still needs to be discoverable, not silently
-    invisible.
+    await_fresh(runs_dir, scenario, mode=mode)
 
-    ``mode`` (ADR-007 §5) restricts the search to ``"monte_carlo"`` or
-    ``"sensitivity"`` batches; ``None`` accepts either.
-    """
+
+# #454: each mode's batches in a folder of their own under the recipe's,
+# so the latest of a mode is the newest name there, with no batch opened.
+BATCH_MODE_DIRS: dict[str, str] = {"monte_carlo": "monte-carlo", "sensitivity": "sensitivity"}
+
+
+def batches_dir(recipe_dir: Path | str, mode: str) -> Path:
+    """Where ``mode``'s batches of a recipe live (#454):
+    ``<recipe_dir>/monte-carlo/`` or ``<recipe_dir>/sensitivity/``. The same
+    under ``state/runs/<recipe>`` and ``state/intent/<recipe>``."""
+    return Path(recipe_dir) / BATCH_MODE_DIRS[mode]
+
+
+def batch_recipe(batch_dir: Path | str) -> str:
+    """The recipe a batch folder belongs to: ``<recipe>/<mode dir>/<batch>``."""
+    return Path(batch_dir).parent.parent.name
+
+
+def ensemble_batches(recipe_dir: Path | str, mode: str | None = None) -> list[Path]:
+    """A recipe's run batches of ``mode`` (both modes when None), oldest
+    first: folders holding a member run file or a batch manifest. With both
+    modes, ordered by when they were made (``locks.run_name_key``)."""
+    from analysis.sim.locks import run_name_key
+
+    recipe_dir = Path(recipe_dir)
+    if not recipe_dir.is_dir():
+        return []
+    found: list[Path] = []
+    for each in (mode,) if mode is not None else registries.ENSEMBLE_MODES:
+        folder = batches_dir(recipe_dir, each)
+        if folder.is_dir():
+            found.extend(p for p in folder.iterdir() if is_ensemble_batch(p))
+    return sorted(found, key=lambda p: run_name_key(p.name))
+
+
+def find_batch(recipe_dir: Path | str, name: str, mode: str | None = None) -> Path | None:
+    """A recipe's batch named ``name`` (a ``sim run`` stamp), of ``mode``
+    (either, when None), or None when there is no such batch."""
     recipe_dir = Path(recipe_dir)
     if not recipe_dir.is_dir():
         return None
-    batches = sorted(p for p in recipe_dir.iterdir() if is_ensemble_batch(p, mode))
+    for each in (mode,) if mode is not None else registries.ENSEMBLE_MODES:
+        path = batches_dir(recipe_dir, each) / name
+        if is_ensemble_batch(path):
+            return path
+    return None
+
+
+def intent_batch_dir(intent_dir: Path | str, batch_dir: Path | str) -> Path:
+    """The member intents of the run batch ``batch_dir``: the folder of the
+    same name, recipe and mode under ``intent_dir`` (#454)."""
+    batch_dir = Path(batch_dir)
+    recipe = Path(intent_dir) / batch_recipe(batch_dir)
+    return batches_dir(recipe, batch_mode(batch_dir)) / batch_dir.name
+
+
+def latest_ensemble_batch(
+    recipe_dir: Path, mode: str | None = None, *, wait: bool = True,
+) -> Path | None:
+    """The most recently generated batch under ``recipe_dir`` that holds at
+    least one member run file or a batch manifest, or ``None`` if there
+    isn't one.
+
+    A recipe's members live under
+    ``<recipe_dir>/<mode dir>/<timestamp>/member_NNNN.sqlite3`` (#454:
+    :func:`batches_dir`) -- one subfolder per ``sim run`` invocation,
+    timestamp-named so reruns never collide and every batch's history is
+    kept (matching how an ordinary, non-ensemble run file is never
+    overwritten either). The manifest check covers the batch where every
+    member failed to resolve: no member file was ever created for any of
+    them, but the batch itself (and its recorded failures) still needs to
+    be discoverable, not silently invisible.
+
+    ``mode`` (ADR-007 §5) restricts the search to ``"monte_carlo"`` or
+    ``"sensitivity"`` batches; ``None`` accepts either. Unless ``wait`` is
+    False, first waits for a pending background build of that mode (#300,
+    #454).
+    """
+    recipe_dir = Path(recipe_dir)
+    if wait:
+        _await_fresh(recipe_dir.parent, recipe_dir.name, mode)
+    batches = ensemble_batches(recipe_dir, mode)
     return batches[-1] if batches else None
 
 
@@ -262,25 +475,70 @@ def is_ensemble_batch(batch_dir: Path, mode: str | None = None) -> bool:
     ) and (mode is None or batch_mode(batch_dir) == mode)
 
 
-def _latest_ensemble_member_zero(runs_dir: Path, name: str) -> Path | None:
+def _latest_ensemble_member_zero(
+    runs_dir: Path, name: str, *, wait: bool = True,
+) -> Path | None:
     """``member_0000.sqlite3`` of ``name``'s most recent ensemble batch, for
     a caller that only knows how to open one run file per scenario (ADR-006
     §8): member 0 is always the recipe's deterministic (non-drawn) member,
     so it stands in for "the" run the same way any other scenario's one run
     file would.
     """
-    batch = latest_ensemble_batch(Path(runs_dir) / name)
+    batch = latest_ensemble_batch(Path(runs_dir) / name, mode="monte_carlo", wait=wait)
     if batch is None:
         return None
     member = batch / "member_0000.sqlite3"
     return member if member.exists() else None
 
 
-def scenario_run_path(runs_dir: Path | str, name: str) -> Path | None:
+def scenario_run_path(
+    runs_dir: Path | str, name: str, *, wait: bool = True,
+) -> Path | None:
     """The run file that stands for scenario ``name`` under ``runs_dir``: its
     latest run, else member 0 of its latest ensemble batch; ``None`` when it
-    has neither."""
-    return latest_run_path(runs_dir, name) or _latest_ensemble_member_zero(Path(runs_dir), name)
+    has neither. ``wait=False`` for a listing that only asks whether one
+    exists (#300: only opening a run waits for its build)."""
+    return (latest_run_path(runs_dir, name, wait=wait)
+            or _latest_ensemble_member_zero(Path(runs_dir), name, wait=wait))
+
+
+class PendingRun:
+    """The run file that stands for a scenario (``scenario_run_path``), not
+    yet waited for (#309). Looking a scenario up never waits on its
+    background build (#300); only opening its run does, so a command that
+    edits the scenario, and so makes that build stale, never waits for it.
+
+    Like a future: :meth:`result` waits for a pending build and returns the
+    run then on hand, :meth:`done` asks whether it would have to wait, and
+    :meth:`latest` reads the run on hand now, never waiting."""
+
+    def __init__(self, runs_dir: Path, name: str, path: Path | None = None) -> None:
+        self.runs_dir = runs_dir
+        self.name = name
+        self._path = path
+        self._known = path is not None  # a run named outright waits for nothing
+
+    def done(self) -> bool:
+        if self._known:
+            return True
+        from analysis.sim.builder import build_pending
+
+        return not build_pending(self.runs_dir, self.name)
+
+    def result(self) -> Path | None:
+        if not self._known:
+            self._path = scenario_run_path(self.runs_dir, self.name)
+            self._known = True
+        return self._path
+
+    def latest(self) -> Path | None:
+        if self._known:
+            return self._path
+        return scenario_run_path(self.runs_dir, self.name, wait=False)
+
+    def __repr__(self) -> str:
+        state = f"{self._path}" if self._known else "not waited for"
+        return f"PendingRun({self.name!r}: {state})"
 
 
 @dataclass(frozen=True)
@@ -294,11 +552,17 @@ class ScenarioRef:
     intent_dir: Path
     intent_path: Path
     runs_dir: Path
-    run_path: Path | None
+    run: PendingRun = field(compare=False)
     state_dir: Path
     commit: str | None
     branch: str | None
     dirty: bool = False
+
+    @property
+    def run_path(self) -> Path | None:
+        """The scenario's run, once any pending background build of it is
+        done (``run.result()``): reading it may wait."""
+        return self.run.result()
 
     @property
     def loaded(self) -> bool:
@@ -320,10 +584,16 @@ class ScenarioRef:
             intent += f" — loaded {_mtime(self.intent_path)}"
         else:
             intent += " — *not loaded; run `sim load`*"
-        if self.run_path is None:
-            run = f"*no runs in `{self.runs_dir}`; run `sim run`*"
+        # Describing a scenario never waits for its build.
+        run_path = self.run.latest()
+        building = not self.run.done()
+        if run_path is None:
+            run = (f"*no runs in `{self.runs_dir}` yet; one is being built*" if building
+                   else f"*no runs in `{self.runs_dir}`; run `sim run`*")
         else:
-            run = f"`{self.run_path}` — {_mtime(self.run_path)}"
+            run = f"`{run_path}` — {_mtime(run_path)}"
+            if building:
+                run += " *(a newer one is being built)*"
         return (
             f"**scenario `{self.name}`**\n\n"
             f"| | |\n|---|---|\n"
@@ -378,7 +648,7 @@ def resolve_scenario_name(
         # A scenario is a folder directly under scenarios/: a path such as
         # "../x" never names one, even when it reaches a folder.
         if (scenario in (".", "..") or Path(scenario).name != scenario
-                or not (scenarios_dir / scenario).is_dir()):
+                or not _scenario_dir(scenarios_dir, scenario).is_dir()):
             raise LoadError([f"scenario not found: {scenarios_dir / scenario}"])
         name = scenario
     else:
@@ -395,18 +665,17 @@ def resolve_scenario_name(
                 else find_state_dir(data_dir, DEFAULT_STATE_DIR) / DEFAULT_RUNS_DIR
         )
     )
-    run_path = (Path(run_path).resolve() if run_path is not None
-                else scenario_run_path(resolved_runs_dir, name)
-    )
+    run = PendingRun(resolved_runs_dir, name,
+                     Path(run_path).resolve() if run_path is not None else None)
     return ScenarioRef(
         name=name,
         data_dir=data_dir,
         scenarios_dir=scenarios_dir,
-        path=scenarios_dir / name,
+        path=_scenario_dir(scenarios_dir, name),
         intent_dir=resolved_intent_dir,
         intent_path=resolved_intent_dir / f"{name}.sqlite3",
         runs_dir=resolved_runs_dir,
-        run_path=run_path,
+        run=run,
         state_dir=state_dir,
         commit=head.commit,
         branch=head.branch,
@@ -414,8 +683,26 @@ def resolve_scenario_name(
     )
 
 
+def template_aux_copies(data_dir: Path) -> list[str]:
+    """The data repo's shared ``aux/`` files that match the code repository's
+    ``templates/aux/`` byte for byte (#317). The loader reads the template's
+    anyway, so each can be deleted, and while it stays it hides the
+    template's later updates."""
+    folder = data_dir / "aux"
+    if not folder.is_dir():
+        return []
+    return [
+        path.name for path in sorted(folder.glob("*.csv"))
+        if path.name != "filing_status.csv"  # the household's, even while empty
+        and (TEMPLATE_AUX_DIR / path.name).is_file()
+        and path.read_bytes() == (TEMPLATE_AUX_DIR / path.name).read_bytes()
+    ]
+
+
 def list_scenario_names(data_dir: Path, scenarios_dir: Path | None = None) -> list[str]:
-    """Scenario folder names under data_dir/scenarios, sorted."""
+    """Scenario folder names under data_dir/scenarios, sorted. The code
+    repository's template scenarios aren't listed: they're the data repo's
+    to build on, not its own, and ``sim all`` shouldn't run them."""
     scenarios = scenarios_dir if scenarios_dir is not None else Path(data_dir) / "scenarios"
     if not scenarios.is_dir():
         raise LoadError([f"no scenarios/ in {data_dir}"])
@@ -425,7 +712,8 @@ def list_scenario_names(data_dir: Path, scenarios_dir: Path | None = None) -> li
 def _default_scenario_name(data_dir: Path, scenarios: Path, scenarios_dir: Path | None = None) -> str:
     recorded = read_current_scenario(data_dir)
     if recorded:
-        if not ((scenarios_dir if scenarios_dir is not None else Path(data_dir) / "scenarios") / recorded).is_dir():
+        if not _scenario_dir(scenarios_dir if scenarios_dir is not None else Path(data_dir) / "scenarios",
+                             recorded).is_dir():
             raise LoadError([
                 f"{current_scenario_path(data_dir)} names a missing scenario: "
                 f"{recorded!r}"
@@ -495,8 +783,8 @@ def calendar_row_key(row: Mapping[str, str]) -> tuple[str, ...]:
     canonical = {column: (value or "").strip() for column, value in row.items()}
     _normalize_month_columns([canonical], "calendar.csv", [])
     _normalize_units([canonical], "calendar.csv", [])
-    if canonical.get("kind") == registries.LATENT_FACTOR_KIND:
-        return (registries.LATENT_FACTOR_KIND, canonical.get("name", ""))
+    if canonical.get("kind") in registries.INERT_CALENDAR_KINDS:
+        return (canonical["kind"], canonical.get("name", ""))
     return (
         *(canonical.get(column, "") for column in registries.CALENDAR_KEY_COLUMNS),
         *_swapped_aux_kind(canonical),
@@ -540,14 +828,16 @@ def _merge_calendar_rows(
     collide on it (an authoring mistake, not an override), so that
     combination is reported rather than silently collapsed one way.
 
-    A ``latent_factor`` row (ADR-008) is keyed by its name alone.
+    A ``latent_factor`` row (ADR-008) or ``date_marker`` row (#281) is keyed
+    by its name alone.
     """
     def key_of(row: dict[str, str]) -> tuple[str, ...]:
-        # A latent factor (ADR-008) has no date or event fields -- only its
-        # name identifies it, so two factors don't collide on blank fields,
-        # and a child scenario's factor of the same name overrides its parent's.
-        if row.get("kind") == registries.LATENT_FACTOR_KIND:
-            return (registries.LATENT_FACTOR_KIND, (row.get("name") or "").strip())
+        # A latent factor (ADR-008) or a date marker (#281) has no event
+        # fields -- only its name identifies it, so two don't collide on blank
+        # fields, and a child scenario's row of the same name overrides its parent's.
+        kind = row.get("kind", "")
+        if kind in registries.INERT_CALENDAR_KINDS:
+            return (kind, (row.get("name") or "").strip())
         return (*(row.get(c, "") for c in key_columns), *_swapped_aux_kind(row))
 
     def name_of(row: dict[str, str]) -> str:
@@ -631,14 +921,20 @@ def _inherit_unit_context(
                 row[column] = source[column]
 
 
+_TEMPLATE_FALLBACK_COLUMNS = ("start", "end", "seed")
+
+
 def _merge_scenario_rows(
     parent_rows: list[dict[str, str]],
     child_rows: list[dict[str, str]],
     key_columns: tuple[str, ...],
     *,
     require_key: bool = True,
+    replace_whole: bool = False,
 ) -> list[dict[str, str]]:
-    """Overlay child CSV rows on parent rows using the table's natural key."""
+    """Overlay child CSV rows on parent rows using the table's natural key:
+    a child row's cells over its parent's, or with ``replace_whole`` the
+    child row in its place."""
     merged = {tuple(row.get(column, "") for column in key_columns): dict(row)
               for row in parent_rows}
     order = list(merged)
@@ -653,9 +949,27 @@ def _merge_scenario_rows(
         if key not in merged:
             order.append(key)
             merged[key] = dict(row)
+        elif replace_whole:
+            merged[key] = dict(row)
         else:
             merged[key].update(row)
     return [merged[key] for key in order]
+
+
+def _refuse_pools(scenarios_dir: Path, scenario_name: str) -> None:
+    """ADR-009: a pool has no intent of its own, and can't be built on."""
+    if is_pool(scenarios_dir, scenario_name):
+        raise LoadError([
+            f"{scenario_name} is a pool (ADR-009): it has nothing to load, since its members "
+            f"come from its components' runs; `sim run {scenario_name}` builds it"
+        ])
+    pools = [name for name in _strict_load_order(scenarios_dir, scenario_name)
+             if name != scenario_name and is_pool(scenarios_dir, name)]
+    if pools:
+        raise LoadError([
+            f"{scenario_name} builds on {', '.join(pools)}, a pool (ADR-009); a pool can't be "
+            "a parent or a mix-in, since it has no rows to inherit"
+        ])
 
 
 def _strict_load_order(scenarios_dir: Path, scenario_name: str) -> list[str]:
@@ -688,9 +1002,13 @@ def _read_scenario_inputs(
     lifespan_rows: list[dict[str, str]] = []
     ytd_rows: list[dict[str, str]] = []
     meta: dict[str, Any] = {}
+    # A template's start, end and seed only fill what no data repo scenario
+    # in the lineage sets (ADR-003 §4.5a): a template mixed in after a
+    # scenario mustn't move its span or seed.
+    template_fallbacks: dict[str, str] = {}
     account_from: dict[str, str] = {}  # account name -> the scenario whose row is in force
     for name in _strict_load_order(scenarios_dir, scenario_name):
-        scenario_dir = scenarios_dir / name
+        scenario_dir = _scenario_dir(scenarios_dir, name)
         if not scenario_dir.is_dir():
             raise LoadError([f"scenario folder not found: {scenario_dir}"])
 
@@ -739,6 +1057,10 @@ def _read_scenario_inputs(
             return rows
 
         own_meta = own_scenario.pop("meta_json", "")
+        if is_template(scenarios_dir, name):
+            template_fallbacks.update(
+                {k: own_scenario.pop(k) for k in _TEMPLATE_FALLBACK_COLUMNS if own_scenario.get(k)}
+            )
         scenario_row.update(
             {k: v for k, v in own_scenario.items() if v != "" and k != ORIGIN}
         )
@@ -775,7 +1097,7 @@ def _read_scenario_inputs(
         if (scenario_dir / "account_values.csv").exists():
             issues.append(
                 f"{_data_label(scenario_dir / 'account_values.csv', data_dir)}: renamed to "
-                "account_lots.csv (#217); run scripts/migrate_217.py on the data repo"
+                "account_lots.csv (#217)"
             )
         value_rows = _merge_scenario_rows(
             value_rows, _default_lots(
@@ -798,6 +1120,8 @@ def _read_scenario_inputs(
         ytd_rows = _merge_scenario_rows(
             ytd_rows, read_overlay("year_to_date.csv"), ("name",),
         )
+    for col, value in template_fallbacks.items():
+        scenario_row.setdefault(col, value)
     for col in ("start", "end"):
         if not scenario_row.get(col):
             # Blank all the way down (a root scenario's own blank, say): the
@@ -820,6 +1144,22 @@ def _read_scenario_inputs(
         _check_after_tax(meta["after_tax"], scenario_name, issues)
     if "irmaa" in meta:
         _check_irmaa_meta(meta["irmaa"], scenario_name, issues)
+    if meta.get("roth_survivor", "own") not in registries.ROTH_SURVIVOR_ELECTIONS:
+        issues.append(
+            f"{scenario_name}: scenario.csv meta_json roth_survivor must be one of "
+            f"{', '.join(registries.ROTH_SURVIVOR_ELECTIONS)} (got {meta['roth_survivor']!r})"
+        )
+    if meta.get(registries.ROLL_KEY, "off") not in registries.ROLL_CHOICES:
+        issues.append(
+            f"{scenario_name}: scenario.csv meta_json {registries.ROLL_KEY} must be one of "
+            f"{', '.join(registries.ROLL_CHOICES)} (got {meta[registries.ROLL_KEY]!r})"
+        )
+    if not isinstance(meta.get("community_property", False), bool):
+        # #255: a household fact the basis step-up at a death reads.
+        issues.append(
+            f"{scenario_name}: scenario.csv meta_json community_property must be true or "
+            f"false (got {meta['community_property']!r})"
+        )
     scenario_row["name"] = scenario_name
     scenario_row["meta_json"] = json.dumps(meta, separators=(",", ":"))
     return (
@@ -915,9 +1255,10 @@ def load_scenario(
     """
     data_dir = Path(data_dir).resolve()
     scenarios_dir = Path(scenarios_dir or (data_dir / "scenarios"))
-    scenario_dir = scenarios_dir / scenario_name
+    scenario_dir = _scenario_dir(scenarios_dir, scenario_name)
     if not scenario_dir.is_dir():
         raise LoadError([f"scenario folder not found: {scenario_dir}"])
+    _refuse_pools(scenarios_dir, scenario_name)
     if intent_dir is None:
         if intent_path is None:
             intent_dir = data_dir / "intent"
@@ -930,7 +1271,7 @@ def load_scenario(
         raise LoadError([f"intent_path {intent_path} is not within intent_dir {intent_dir}"])
 
     lineage_names = _scenario_lineage_names(scenarios_dir, scenario_name)
-    scenario_dirs = [scenarios_dir / name for name in lineage_names]
+    scenario_dirs = [_scenario_dir(scenarios_dir, name) for name in lineage_names]
     money_resolver = _MoneyReferenceResolver(data_dir, scenario_dirs)
 
     issues: list[str] = []
@@ -939,6 +1280,12 @@ def load_scenario(
 
     persons = _read_csv(data_dir / "persons.csv", issues)
     _validate_birthdates(persons, issues)
+    # `joint`, the household, owns what no one person does; the CLI offers it
+    # as every account's default owner, so a persons.csv without the row
+    # (sim init writes only real people) still loads (#368).
+    if not any(p.get("id") == "joint" for p in persons):
+        persons.append({"id": "joint", "display": "Joint household", "birthdate": "",
+                        "sex": "", "role": "", "meta_json": '{"household": true}'})
     securities = _read_csv(data_dir / "securities.csv", issues, optional=True)
     _validate_securities(securities, issues)
     allocations = _read_csv(data_dir / "allocations.csv", issues, optional=True)
@@ -953,7 +1300,8 @@ def load_scenario(
                               scenarios_dir=scenarios_dir,
                               account_clashes=(account_clashes := []))
     _normalize_vary_dates(calendar_rows)
-    parents = read_parents(scenarios_dir / scenario_name)
+    _resolve_relative_dates(calendar_rows, issues, unused)
+    parents = read_parents(scenario_dir)
     load_order_names = _strict_load_order(scenarios_dir, scenario_name)
     # A scenario folder's own README.md, if there is one, is the scenario's
     # real description -- scenario.csv's own description column is only the
@@ -965,6 +1313,24 @@ def load_scenario(
     if description is not None:
         scenario_row["description"] = description
     chains = _read_chain_files(data_dir, scenario_name, issues)
+    strategy_rows = _read_strategy_files(data_dir, scenarios_dir, scenario_name, issues)
+    tax_rows = _read_tax_files(data_dir, scenarios_dir, scenario_name, issues)
+    vary_files = _read_strategy_vary_files(data_dir, scenarios_dir, scenario_name, issues)
+    target_rows = _read_lineage_overlay(
+        data_dir, scenarios_dir, scenario_name, "targets.csv",
+        ("target_set", "as_of", "asset_class"), issues,
+    )
+    residence_rows = _read_lineage_overlay(
+        data_dir, scenarios_dir, scenario_name, registries.RESIDENCE_FILE,
+        ("effective_date",), issues, replace_whole=True,  # a county left out is blank
+    )
+    strategy_sources = strategy_code.read_sources(data_dir)
+    tax_kinds = tax_code.TaxKinds(tax_code.read_sources(data_dir))
+    # A broken calculator module fails the loads that name a kind of the
+    # data repo's (it may be the one that broke); others get a hint.
+    builtin = tax_code.builtin_kinds()
+    (issues if any(row.get("kind") not in builtin for row in tax_rows) else unused).extend(
+        tax_kinds.problems)
 
 
     aux_files = [
@@ -992,29 +1358,50 @@ def load_scenario(
     )
     _validate_scheduled_money(scheduled_rows, issues, money_resolver=money_resolver)
     _validate_scheduled(scheduled_rows, leaves, set(chains), issues)
+    scenario_tags = _scenario_tags(accounts, scheduled_rows, calendar_rows)
+    _validate_taxes(tax_rows, leaves, set(chains), accounts, scenario_row, issues,
+                    kinds=tax_kinds, tags=scenario_tags)
+    _validate_local_tax(tax_rows, aux_rows, issues)
+    _validate_residence(residence_rows, tax_rows, aux_rows, issues)
     _validate_calendar(
         calendar_rows, leaves, set(chains), issues,
         asset_accounts=frozenset(a["name"] for a in accounts if a.get("kind") == "asset"),
     )
     life_tables_ok = _validate_life_tables(aux_rows, issues)
+    _validate_state_gain_tables(aux_rows, issues)
+    _validate_itemized_limits(aux_rows, issues)
+    life_tables: dict[str | None, list[tuple[str, dict[str, Any]]]] = {}
+    for kind, name, payload, eff in aux_rows:
+        if kind == life_table.LIFE_TABLE_KIND:
+            life_tables.setdefault(name, []).append((eff, payload))
     lifespan_links = _validate_lifespan(
         lifespan_rows, persons, scenario_row.get("start", ""), issues,
-        life_tables=[(eff, payload) for kind, _, payload, eff in aux_rows
-                     if kind == life_table.LIFE_TABLE_KIND] if life_tables_ok else None,
+        life_tables=life_tables if life_tables_ok else None,
     )
-    _validate_calendar_correlation(calendar_rows, issues, unused, lifespan_links)
     _validate_series_references(
-        scheduled_rows, calendar_rows, aux_rows, chains, issues, unused,
+        scheduled_rows, calendar_rows, aux_rows, chains, issues, unused, taxed=bool(tax_rows),
+    )
+    _validate_inflation_from_start(aux_rows, calendar_rows, scenario_row.get("start", ""), issues)
+    _validate_rate_series_start(
+        scheduled_rows, calendar_rows, aux_rows, scenario_row, issues,
     )
     _validate_swap_aux_tables(calendar_rows, aux_rows, issues)
-    _warn_state_standard_deduction(scheduled_rows, calendar_rows, aux_rows, warnings)
+    _warn_state_standard_deduction(tax_rows, residence_rows, aux_rows, warnings)
+    _warn_hand_typed_deductions(
+        aux_rows, scheduled_rows, accounts, calendar_rows, tax_rows, residence_rows, warnings)
+    _validate_state_social_security(aux_rows, persons, issues, warnings)
+    _validate_state_standard_deduction(aux_rows, issues)
+    _validate_state_retirement_exclusions(aux_rows, issues)
+    _validate_state_adjustments(
+        aux_rows, issues, unused, tax_rows=tax_rows, residence_rows=residence_rows,
+        tags=scenario_tags)
     _validate_chains(
         chains, value_rows, leaves, issues, money_resolver=money_resolver,
         asset_accounts=frozenset(a["name"] for a in accounts if a.get("kind") == "asset"),
         retirement_accounts=frozenset(
             a["name"] for a in accounts if a.get("subkind") == registries.RETIREMENT_SUBKIND),
     )
-    _validate_chain_roles(chains, scheduled_rows, calendar_rows, value_rows, issues)
+    _validate_chain_roles(chains, scheduled_rows, calendar_rows, value_rows, issues, tax_rows=tax_rows)
     roth_leaves = frozenset(
         leaves.leaf_of[(m.get("account_name", ""), m.get("lot") or registries.DEFAULT_LOT)]
         for m in value_rows
@@ -1023,7 +1410,7 @@ def load_scenario(
     )
     _validate_rmd_rules(scheduled_rows, leaves, chains, issues, roth_leaves=roth_leaves)
     _validate_fill_bracket(
-        scheduled_rows, chains, issues, roth_leaves=roth_leaves,
+        scheduled_rows, chains, tax_rows, issues, roth_leaves=roth_leaves,
         traditional_leaves=frozenset(
             leaves.leaf_of[(m.get("account_name", ""), m.get("lot") or registries.DEFAULT_LOT)]
             for m in value_rows
@@ -1032,15 +1419,47 @@ def load_scenario(
             in leaves.leaf_of
         ),
         bracket_rates=_bracket_rates(aux_rows),
-        irmaa_tiers=any(kind == registries.IRMAA_TIERS and table is None
-                        for kind, table, *_ in aux_rows),
+        residence_rows=residence_rows,
+        span=(scenario_row.get("start") or "", scenario_row.get("end") or ""),
+        irmaa_tiers=frozenset(
+            payload["tier"] for kind, table, payload, _effective in aux_rows
+            if kind == registries.IRMAA_TIERS and table is None
+            and isinstance(payload.get("tier"), int)),
     )
     _validate_retirement_owners(accounts, persons, issues)
-    _validate_irmaa(scheduled_rows, aux_rows, persons, scenario_row, issues, warnings)
+    _validate_irmaa(scheduled_rows, tax_rows, aux_rows, persons, scenario_row, issues, warnings,
+                    projected_years={row.get("year", "").strip() for row in ytd_rows
+                                     if (found := registries.PROJECTED_YTD_NAME.fullmatch(
+                                         row.get("name", "").strip()))
+                                     and found[1] == row.get("year", "").strip()})
+    _validate_filing_status(scheduled_rows, tax_rows, aux_rows, scenario_row, issues)
+    _validate_itemized_deductions(aux_rows, issues)
+    _validate_optional_state_tables(aux_rows, issues)
     _validate_year_to_date(ytd_rows, leaves, issues, money_resolver=money_resolver)
     _validate_business(
         accounts, scheduled_rows, calendar_rows, ytd_rows, chains, leaves, issues,
     )
+    _validate_itemizing_rows(accounts, scheduled_rows, ytd_rows, leaves, issues)
+    _validate_income_tax_payments(accounts, scheduled_rows, calendar_rows, ytd_rows, chains, leaves,
+                                  issues)
+    rail_rows = _validate_guard_rails(scenarios_dir, scenario_name, accounts, scheduled_rows,
+                                      calendar_rows, issues)
+    disabled_strategies: list[strategy_load.PreparedStrategy] = []
+    strategy_kinds, strategies = _validate_strategies(
+        strategy_rows, target_rows, strategy_sources,
+        accounts=accounts, value_rows=value_rows, allocations=allocations, chains=chains,
+        scheduled_rows=scheduled_rows, rails=rail_rows, leaves=leaves,
+        start=scenario_row.get("start", ""), issues=issues, unused=unused,
+        persons=persons, lifespan_rows=lifespan_rows,
+        aux_kinds=frozenset(f"{kind}__{table}" if table else kind for kind, table, _p, _e in aux_rows),
+        tax_rows=tax_rows, disabled=disabled_strategies,
+    )
+    strategy_varies, strategy_links = strategy_load.prepare_vary(
+        vary_files, strategy_rows=strategy_rows, prepared=strategies, kinds=strategy_kinds,
+        issues=issues, unused=unused,
+    )
+    _validate_calendar_correlation(
+        calendar_rows, issues, unused, {**lifespan_links, **strategy_links})
 
     for account, replacing, replaced in account_clashes:
         if any(f"({account})" in issue or f"({account} /" in issue for issue in issues):
@@ -1090,13 +1509,24 @@ def load_scenario(
             scenario_row=scenario_row,
             parents=parents,
             lineage_order=load_order_names,
+            mixin_only=is_mixin_only(scenarios_dir, scenario_name),
             scheduled_rows=scheduled_rows,
+            tax_rows=tax_rows,
             chains=chains,
             calendar_rows=calendar_rows,
             lifespan_rows=lifespan_rows,
             ytd_rows=ytd_rows,
+            residence_rows=residence_rows,
             money_resolver=money_resolver,
         )
+        counts.update(strategy_load.write_strategies(
+            con, strategies, kinds=strategy_kinds, sources=strategy_sources,
+            target_rows=target_rows, rail_rows=rail_rows, disabled=disabled_strategies,
+        ))
+        counts.update(strategy_load.write_strategy_vary(con, strategy_varies))
+        counts["tax_source"] = tax_code.write_sources(
+            con, tax_code.snapshot(tax_kinds, [row.get("kind", "") for row in tax_rows]))
+        load_warnings.write(con, warnings, unused)
         _write_manifest(
             con,
             scenario_name=scenario_name,
@@ -1149,9 +1579,14 @@ person would open, not the row's position in the merged list (#136)."""
 
 def _data_label(path: Path, data_dir: Path) -> str:
     """``path`` as a message names it: relative to the data repo when it's
-    inside it, so two scenarios' files of the same name are told apart."""
+    inside it, so two scenarios' files of the same name are told apart, and
+    a template's as ``templates/scenarios/...`` in the code repository."""
     try:
         return path.relative_to(data_dir).as_posix()
+    except ValueError:
+        pass
+    try:
+        return path.relative_to(TEMPLATE_SCENARIOS_DIR.parent.parent).as_posix()
     except ValueError:
         return path.as_posix()
 
@@ -1209,8 +1644,12 @@ _MONTH_COLUMNS: dict[str, tuple[str, ...]] = {
     "scenario.csv": ("start", "end"),
     "accounts.csv": ("opened", "closed"),
     "scheduled.csv": ("start", "end", "base_date"),
-    "calendar.csv": ("date", "param_date"),
+    "calendar.csv": ("date", "param_date", "vary_resume"),
     "allocations.csv": ("as_of",),
+    "strategies": ("start", "end"),
+    "taxes": ("start", "end"),
+    "targets.csv": ("as_of",),
+    registries.RESIDENCE_FILE: ("effective_date",),
 }
 """Per-file columns that name a month (#34): ``YYYY-MM`` or ``YYYY-MM-DD``,
 stored as that month's last day. Day-precise columns (``birthdate``, a lot's
@@ -1233,6 +1672,13 @@ def _normalize_month_columns(
         for col in _MONTH_COLUMNS.get(filename, ()):
             raw = row.get(col) or ""
             if not raw:
+                continue
+            if (filename == "calendar.csv" and col in registries.RELATIVE_DATE_COLUMNS
+                    and (rel := parse_relative_date(raw))):
+                # Relative to a date_marker (#281), resolved by
+                # _resolve_relative_dates. Canonical here, before the lineage
+                # merge keys rows by date, so start+12m and start+1y are one date.
+                row[col] = str(rel)
                 continue
             exact = _keeps_exact_day(filename, col, row)
             try:
@@ -1290,6 +1736,128 @@ def _normalize_vary_dates(rows: list[dict[str, str]]) -> None:
                 pass
 
 
+DATE_REFS = "\0date_refs"
+"""The key under which ``_resolve_relative_dates`` records a calendar row's
+relative dates (#281), ``{column: [marker, months]}`` as JSON, for
+``calendar_event.date_refs_json``. Not a column, like ``ORIGIN``."""
+
+
+def _date_central(row: Mapping[str, str]) -> date | None:
+    """A date-varying row's base-case date (member 0's, ADR-006 §9), or
+    ``None`` when its bounds don't parse (``_validate_calendar_vary`` says
+    why)."""
+    def ordinal(text: str, _role: object = None) -> float:
+        return float(date.fromisoformat(text).toordinal())
+    try:
+        distribution = (row.get("vary_distribution") or "").strip()
+        if distribution == "discrete":
+            day = Discrete(parse_outcomes(row.get("vary_outcomes") or "", ordinal)).central_int()
+        elif distribution in ("uniform", "triangular"):
+            low, high = ordinal(row["vary_low"]), ordinal(row["vary_high"])
+            if distribution == "uniform":
+                day = Uniform(low=low, high=high).central_int()
+            else:
+                mode = ordinal(row["vary_mode"]) if row.get("vary_mode") else (low + high) / 2
+                day = Triangular(low, mode, high).central_int()
+        else:
+            return None
+        return date.fromordinal(day)
+    except (KeyError, ValueError, DistributionError):
+        return None
+
+
+def _resolve_relative_dates(
+    rows: list[dict[str, str]], issues: list[str], unused: list[str],
+) -> None:
+    """Rewrite each calendar date written relative to a ``date_marker`` row
+    (``NAME+2y``, #281) to the date it has against the markers' base case,
+    recording the reference under ``DATE_REFS`` for the ensemble step to
+    recompute from each member's drawn markers. So everything after this
+    reads literal dates, and a plain run needs nothing more.
+
+    A marker's base case is its date, or its distribution's central value
+    when it varies, which is member 0's draw. A marker may itself be relative
+    to another marker; a cycle, or a reference to a name that is no marker,
+    is reported. A marker nothing refers to is reported as unused."""
+    located = list(_located(rows, "calendar.csv"))
+    markers = {
+        (row.get("name") or "").strip(): (where, row) for where, row in located
+        if row.get("kind") == registries.DATE_MARKER_KIND and (row.get("name") or "").strip()
+    }
+    names = {(row.get("name") or "").strip() for _, row in located}
+    refs: dict[int, dict[str, Any]] = {}
+    for where, row in located:
+        found = {}
+        for col in registries.RELATIVE_DATE_COLUMNS:
+            raw = (row.get(col) or "").strip()
+            rel = parse_relative_date(raw) if raw else None
+            if rel is None:
+                continue
+            if rel.anchor not in markers:
+                what = (
+                    f"names '{rel.anchor}', which is not a date_marker" if rel.anchor in names
+                    else f"is not a valid {MONTH_FORMAT_HINT}, nor relative to a date_marker "
+                         f"(NAME, NAME+Nm, NAME-Ny): no date_marker is named '{rel.anchor}'"
+                )
+                issues.append(f"{where} ({row.get('name') or '?'}): {col} '{raw}' {what}")
+                row[col] = ""
+                continue
+            found[col] = rel
+        if found:
+            refs[id(row)] = found
+
+    base: dict[str, date | None] = {}
+
+    def place(row: dict[str, str]) -> None:
+        for col, rel in refs.get(id(row), {}).items():
+            anchor = base.get(rel.anchor)
+            role = registries.RELATIVE_DATE_COLUMNS[col]
+            row[col] = "" if anchor is None else place_month(anchor, rel.months, role).isoformat()
+        if id(row) in refs:
+            row[DATE_REFS] = json.dumps(
+                {c: [r.anchor, r.months] for c, r in refs[id(row)].items()}, separators=(",", ":"),
+            )
+
+    def resolve(name: str, path: tuple[str, ...]) -> date | None:
+        if name in base:
+            return base[name]
+        where, row = markers[name]
+        if name in path:
+            cycle = [*path[path.index(name):], name]
+            issues.append(f"{where} ({name}): date_marker cycle {' -> '.join(cycle)}")
+            base[name] = None
+            return None
+        for rel in refs.get(id(row), {}).values():
+            resolve(rel.anchor, (*path, name))
+        place(row)
+        varying = (row.get("vary_distribution") or "").strip() and (
+            (row.get("vary_target") or "").strip() == "date")
+        if varying:
+            central = base[name] = _date_central(row)
+            if not (row.get("date") or "").strip() and central is not None:
+                # The date of a row whose date varies is a placeholder.
+                row["date"] = central.isoformat()
+        else:
+            try:
+                base[name] = date.fromisoformat(month_end_iso(row.get("date") or ""))
+            except ValueError:
+                base[name] = None
+        return base[name]
+
+    for name in markers:
+        resolve(name, ())
+    for _, row in located:
+        if row.get("kind") != registries.DATE_MARKER_KIND:
+            place(row)
+    referenced = {rel.anchor for found in refs.values() for rel in found.values()}
+    for name, (where, _row) in markers.items():
+        if name not in referenced:
+            unused.append(
+                f"{where} ({name}): no row's date refers to this date_marker yet, so it "
+                "affects nothing (fine for work in progress, or a marker for child scenarios)"
+            )
+
+
 def _find_override_file(
     data_dir: Path, scenario_dirs: list[Path], subfolder: str, filename: str,
 ) -> Path | None:
@@ -1312,6 +1880,9 @@ def _merged_override_files(
     replaces a less specific one of the same name wholesale, not merged row by
     row.
 
+    Under ``aux`` the code repository's ``templates/aux/`` comes first, below
+    the data repo's own (#317).
+
     ``series/`` is scenario-only (``include_shared=False``): growth rates and
     inflation series are per-scenario projections, not tax-law facts, so there
     is no shared ``series/`` at the data repo root -- what's "shared" is
@@ -1319,9 +1890,12 @@ def _merged_override_files(
     other per-scenario file (ADR-003 §4.1d).
     """
     merged: dict[str, Path] = {}
-    tiers = (*((data_dir,) if include_shared else ()), *reversed(scenario_dirs))
+    # The code repository's templates/aux/ is the lowest tier (#317): the
+    # tax-law tables every data repo would otherwise keep a copy of.
+    template = (TEMPLATE_AUX_DIR,) if include_shared and subfolder == "aux" else ()
+    tiers = (*template, *((data_dir,) if include_shared else ()), *reversed(scenario_dirs))
     for d in tiers:
-        folder = d / subfolder
+        folder = d if d == TEMPLATE_AUX_DIR else d / subfolder
         if folder.is_dir():
             for path in folder.glob("*.csv"):
                 merged[path.name] = path
@@ -1362,11 +1936,12 @@ def _read_aux_files(
         cols = registries.AUX_KIND_COLUMNS[kind]
         money_cols = registries.AUX_MONEY_COLUMNS.get(kind, frozenset())
         micros_cols = registries.AUX_MICROS_COLUMNS.get(kind, {})
+        optional_cols = registries.AUX_OPTIONAL_COLUMNS.get(kind, frozenset())
         if _legacy_units_header(csv_path, label, issues):
             continue
         rows = _read_csv(csv_path, issues, label=label)
         for where, row in _located(rows, label):
-            missing = [c for c in cols if c not in row]
+            missing = [c for c in cols if c not in row and c not in optional_cols]
             if missing:
                 issues.append(
                     f"{where}: missing columns {missing}"
@@ -1377,8 +1952,10 @@ def _read_aux_files(
             for c in cols:
                 if c == "effective_date":
                     continue
-                raw = row[c]
-                if c in micros_cols:
+                raw = row.get(c) or ""
+                if c in optional_cols and not raw.strip():
+                    payload[micros_cols[c][0] if c in micros_cols else c] = None
+                elif c in micros_cols:
                     key, unit = micros_cols[c]
                     try:
                         payload[key] = _AUX_MICROS_PARSERS[unit](raw)
@@ -1400,6 +1977,9 @@ def _read_aux_files(
                         payload[c] = None
                 else:
                     payload[c] = _coerce(raw)
+            for c in registries.TAX_GROWTH_SERIES_COLUMNS.get(kind, {}):
+                # Optional (#467): a file without the column holds its figures flat.
+                payload[c] = (row.get(c) or "").strip() or None
             effective = row["effective_date"]
             # Prices are dated by their actual close, so keep the day; every
             # other aux and series row takes effect for a whole month (#34).
@@ -1646,17 +2226,21 @@ def _abbreviate(name: str, width: int) -> str:
     return "_".join(word[:width] for word in _slug(name).split("_"))
 
 
-def growth_rule_name(account: str, lot: str, taken: Collection[str] = ()) -> str:
+def growth_rule_name(
+    account: str, lot: str, taken: Collection[str] = (), *, prefix: str = "growth_",
+) -> str:
     """Name of the rule generated for one lot's growth: ``growth_`` and the account
     and lot with each word trimmed to four letters, so ``Bill Roth Rollover`` /
     ``settlement`` is ``growth_bill_roth_roll_sett``. If that is already ``taken``,
-    words are trimmed less until it is free (the full names, at the widest)."""
+    words are trimmed less until it is free (the full names, at the widest).
+    A lot's payout rules (#468) are named the same way, ``dividends_`` or
+    ``interest_`` instead of ``growth_``."""
     widest = max(len(word) for word in _slug(f"{account}_{lot}").split("_"))
     for width in range(_NAME_WORD_WIDTH, max(widest, _NAME_WORD_WIDTH) + 1):
         parts = [_abbreviate(account, width)]
         if lot != registries.DEFAULT_LOT:
             parts.append(_abbreviate(lot, width))
-        name = "growth_" + "_".join(parts)
+        name = prefix + "_".join(parts)
         if name not in taken:
             return name
     return name
@@ -1701,6 +2285,8 @@ def _expand_account_growth(
         # so Roth and traditional lots in one account grow from different
         # built-ins whatever the account's tax_character says (#224).
         lot_series: list[tuple[str, str, AllocationBlend | None, str]] = []
+        # Each lot's payouts and the built-in account they come from.
+        payouts: dict[str, list[tuple[registries.GrowthCounterparty, LotPayout]]] = {}
         for m in lots_by_account.get(name) or [{}]:
             symbol = m.get("symbol") or ""
             lot = m.get("lot") or registries.DEFAULT_LOT
@@ -1716,8 +2302,30 @@ def _expand_account_growth(
                 ("tax_free" if shelter == "tax_free" else "deferred")
                 if retirement and shelter else character
             )
-            lot_series.append(
-                (lot, series or ("" if blend else account_series), blend, lot_character))
+            grows_at = series or ("" if blend else account_series)
+            lot_series.append((lot, grows_at, blend, lot_character))
+            held = {c for _, weights in weight_sets.get(symbol, ()) for c in weights} if blend else set()
+            if clash := _payout_name_clash({grows_at, symbol, *held}, rate_series):
+                issues.append(f"{where} ({name} / {lot}): {clash}")
+            if lot_character == "gains" and row.get("subkind") == "brokerage_taxable":
+                payouts[lot] = [
+                    (registries.payout_account(p.payer), p)
+                    for p in _lot_payouts(symbol, grows_at, blend, weight_sets, rate_series)
+                ]
+            elif row.get("subkind") == "hsa" and lot_character in registries.SHELTERED_PAYOUT_ACCOUNTS:
+                # An HSA's payouts (#497) are untaxed federally but taxed by
+                # a state that doesn't recognize HSAs, which needs them
+                # whether or not the lot tracks shares.
+                payouts[lot] = [
+                    (registries.hsa_payout_account(p.payer), p)
+                    for p in _lot_payouts(symbol, grows_at, blend, weight_sets, rate_series)
+                ]
+            elif (sheltered := registries.SHELTERED_PAYOUT_ACCOUNTS.get(lot_character)) and m.get("quantity"):
+                # An untaxed lot's payouts (#547) only buy shares, so a lot
+                # that tracks dollars has no use for them.
+                payouts[lot] = [
+                    (sheltered, p) for p in _lot_payouts(symbol, grows_at, blend, weight_sets, rate_series)
+                ]
         growing = [entry for entry in lot_series if entry[1] or entry[2]]
         if not growing:
             if character:
@@ -1741,8 +2349,10 @@ def _expand_account_growth(
                 f"{sorted(registries.GROWTH_COUNTERPARTY_ACCOUNTS)}, got '{unknown[0]}'"
             )
             continue
-        for *_, lot_character in growing:
-            counterparty = registries.GROWTH_COUNTERPARTY_ACCOUNTS[lot_character]
+        needed = [registries.GROWTH_COUNTERPARTY_ACCOUNTS[c] for *_, c in growing] + [
+            payer for lot, *_ in growing for payer, _ in payouts.get(lot, ())
+        ]
+        for counterparty in needed:
             if counterparty.name in account_names:
                 continue
             account_names.add(counterparty.name)
@@ -1752,7 +2362,8 @@ def _expand_account_growth(
                 "owner": "", "tax_treatment": counterparty.tax_treatment,
                 "opened": "", "closed": "", "tags": "",
                 "meta_json": json.dumps(
-                    {"builtin": "growth", "description": counterparty.description},
+                    {"builtin": _builtin_label(counterparty.name),
+                     "description": counterparty.description},
                     separators=(",", ":"),
                 ),
             })
@@ -1761,6 +2372,33 @@ def _expand_account_growth(
             })
         for lot, series, blend, lot_character in growing:
             counterparty = registries.GROWTH_COUNTERPARTY_ACCOUNTS[lot_character]
+            lot_payouts = payouts.get(lot, [])
+            where_lot = f" / {lot}" if lot != registries.DEFAULT_LOT else ""
+            for payer, payout in lot_payouts:
+                spec = payout.spec
+                payout_name = growth_rule_name(name, lot, rule_names, prefix=payout.prefix)
+                rule_names.add(payout_name)
+                scheduled_rows.append({
+                    "name": payout_name,
+                    "from_account": payer.name,
+                    "to_account": name,
+                    "to_lot": lot,
+                    "cadence": "monthly",
+                    "amount_rule_kind": "percent_of_balance",
+                    "series": spec.get("series", ""),
+                    # A payout is never negative (engine): a rate below zero
+                    # is a fall in value, which the growth rule carries.
+                    "params_json": json.dumps({"blend": spec["blend"], "payout": True} if "blend" in spec
+                                              else {"payout": True}, separators=(",", ":")),
+                    # An HSA's payout keeps its lot's growth character, so
+                    # the federal return passes it by (#497).
+                    "tax_character": lot_character if payer.name in _HSA_PAYOUT_NAMES else payer.tax_character,
+                    "start": start,
+                    "description": (
+                        f"{payout.label} on {name}{where_lot}, reinvested ("
+                        + (_describe_blend(spec["blend"]) if "blend" in spec else spec["series"]) + ")"
+                    ),
+                })
             rule_name = growth_rule_name(name, lot, rule_names)
             if rule_name in rule_names:
                 issues.append(
@@ -1777,9 +2415,7 @@ def _expand_account_growth(
                 "cadence": "monthly",
                 "amount_rule_kind": "percent_of_balance",
                 "series": series,
-                "params_json": (
-                    json.dumps({"blend": blend}, separators=(",", ":")) if blend else ""
-                ),
+                "params_json": _growth_params(blend, [p.spec for _, p in lot_payouts]),
                 "tax_character": counterparty.tax_character,
                 "start": start,
                 "description": (
@@ -1788,6 +2424,194 @@ def _expand_account_growth(
                     + f" ({_describe_blend(blend) if blend else series})"
                 ),
             })
+
+
+_GROWTH_NAMES = frozenset(c.name for c in registries.GROWTH_COUNTERPARTY_ACCOUNTS.values())
+_SHELTERED_PAYOUT_NAMES = frozenset(c.name for c in registries.SHELTERED_PAYOUT_ACCOUNTS.values())
+_HSA_PAYOUT_NAMES = frozenset(c.name for c in registries.HSA_PAYOUT_ACCOUNTS.values())
+
+
+def _builtin_label(name: str) -> str:
+    """A built-in account's ``meta_json.builtin``: ``growth``, a taxed
+    ``payout``, or an untaxed lot's ``sheltered_payout`` (#547), which the
+    run treats as growth but which buys shares."""
+    if name in _GROWTH_NAMES:
+        return "growth"
+    return "sheltered_payout" if name in _SHELTERED_PAYOUT_NAMES else "payout"
+
+
+def _growth_params(blend: AllocationBlend | None, less: list[dict[str, Any]]) -> str:
+    """A growth rule's ``params_json``: its blend, if any, and the payouts
+    (#468) taken out of its total return, which the lot gets from its payout
+    rules instead (``engine._amount_percent_of_balance``)."""
+    params: dict[str, Any] = {}
+    if blend:
+        params["blend"] = blend
+    if less:
+        params["less"] = less
+    return json.dumps(params, separators=(",", ":")) if params else ""
+
+
+def _payout_name_clash(names: Collection[str], rate_series: Collection[str | None]) -> str | None:
+    """Why a lot can't read its payouts, if it can't: a series ``x_cg``
+    (or ``x_stcg``) whose dividend yield ``x_cg_yield`` is also ``x``'s
+    long-term (short-term) gain distributions (#547). The file would mean
+    both, so the series needs another name."""
+    for name in sorted(n for n in names if n):
+        for suffix in (registries.CG_YIELD_SUFFIX, registries.STCG_YIELD_SUFFIX):
+            ending = suffix.removesuffix(registries.YIELD_SUFFIX)
+            if name.endswith(ending) and (paid := registries.yield_series(name)) in rate_series:
+                return (f"{name!r} ends in {ending!r}, so {paid!r} would be both its yield and "
+                        f"{name.removesuffix(ending)!r}'s gain distributions; rename the series")
+    return None
+
+
+class LotPayout(NamedTuple):
+    """One payout rule a lot gets (#468, #547): what it is, how a taxable lot
+    is taxed on it, and its rate (``{"series": ...}`` or ``{"blend": ...}``)."""
+
+    prefix: str
+    label: str
+    payer: str
+    """Its key for ``registries.payout_account``, when the lot is taxed."""
+    spec: dict[str, Any]
+
+
+# Each payout series suffix: its rule-name prefix, label and taxable payer,
+# keyed by the character a taxable lot is taxed at. Dividends' character
+# follows the asset class; a gain distribution's is fixed.
+_PAYOUT_KINDS: dict[str, dict[str, tuple[str, str, str]]] = {
+    registries.YIELD_SUFFIX: {
+        registries.QUALIFIED_DIVIDEND: ("dividends_", "Dividends", registries.QUALIFIED_DIVIDEND),
+        "ordinary": ("interest_", "Interest", "ordinary"),
+    },
+    registries.CG_YIELD_SUFFIX: {"ltcg": ("lt_distributions_", "Long-term gain distributions", "ltcg")},
+    registries.STCG_YIELD_SUFFIX: {
+        "ordinary": ("st_distributions_", "Short-term gain distributions", registries.NONQUALIFIED_DIVIDEND)},
+}
+_FUND_ORDINARY_DIVIDENDS = ("ordinary_dividends_", "Non-qualified dividends", registries.NONQUALIFIED_DIVIDEND)
+
+
+def _lot_payouts(
+    symbol: str, series: str, blend: AllocationBlend | None,
+    weight_sets: Mapping[str, list[tuple[str, dict[str, int]]]],
+    rate_series: Collection[str | None],
+) -> list[LotPayout]:
+    """Every payout a lot gets each year (#468, #547, ADR-005 §5): its
+    dividends and interest from ``_yield`` series, then its long-term and
+    short-term gain distributions from ``_cg_yield`` and ``_stcg_yield``."""
+    out = []
+    for suffix, kinds in _PAYOUT_KINDS.items():
+        for character, spec in _lot_payout_specs(suffix, symbol, series, blend, weight_sets, rate_series):
+            kind = (_muni_payout_kind(character) if registries.muni_state(character) is not None
+                    else kinds[character])
+            if symbol and kind[0] == "interest_":
+                # A fund's payout is a dividend on its 1099-DIV, whatever it
+                # holds: only a bond or cash held directly pays interest.
+                kind = _FUND_ORDINARY_DIVIDENDS
+            out.append(LotPayout(*kind, spec))
+    return out
+
+
+def _muni_payout_kind(asset_class: str) -> tuple[str, str, str]:
+    """A municipal bond class's payout (#265): its rule-name prefix, label
+    and payer, the class itself. A fund's is an exempt-interest dividend,
+    still exempt, so unlike other interest it stays itself."""
+    state = registries.muni_state(asset_class)
+    if not state:
+        return "tax_exempt_", "Tax-exempt interest", asset_class
+    return f"tax_exempt_{state.lower()}_", f"Tax-exempt interest ({state} bonds)", asset_class
+
+
+def _muni_fund_payouts(
+    own: str, sets: list[tuple[str, dict[str, int]]],
+) -> list[tuple[str, dict[str, Any]]]:
+    """A fund holding municipal bonds that pays at its own ``own`` yield
+    (#265). Where at least half of it is municipal bonds it pays
+    exempt-interest dividends (IRC §852(b)(5)): each municipal bond class's
+    share of the yield is exempt, by its weight, and the rest is ordinary.
+    Where less is, the fund can't pass the exemption through, so all of it
+    is ordinary. Weighed set by set, as a blend of the one series."""
+    def is_muni(asset_class: str) -> bool:
+        return registries.muni_state(asset_class) is not None
+
+    held = {c for _, weights in sets for c, w in weights.items() if w}
+    by_character: dict[str, AllocationBlend] = {}
+    for as_of, weights in sets:
+        total = sum(weights.values())
+        parts: dict[str, list[list[Any]]] = {}
+        if 2 * sum(w for c, w in weights.items() if is_muni(c)) >= total:
+            for c, w in sorted(weights.items()):
+                if w:
+                    parts.setdefault(c if is_muni(c) else "ordinary", []).append([own, w])
+        elif total:
+            parts["ordinary"] = [[own, total]]
+        for character in {c for c in held if is_muni(c)} | {"ordinary"}:
+            by_character.setdefault(character, []).append([as_of, parts.get(character, [])])
+    return [(character, {"blend": sets_}) for character, sets_ in sorted(by_character.items())
+            if any(slices for _, slices in sets_)]
+
+
+def _lot_payout_specs(
+    suffix: str, symbol: str, series: str, blend: AllocationBlend | None,
+    weight_sets: Mapping[str, list[tuple[str, dict[str, int]]]],
+    rate_series: Collection[str | None],
+) -> list[tuple[str, dict[str, Any]]]:
+    """What a lot pays from the ``suffix`` series, as ``(tax character, rate
+    spec)`` pairs: none, one, or for dividends a qualified and an ordinary part.
+
+    A symbol with its own ``<SYMBOL><suffix>`` series pays at it, a dividend
+    as qualified if everything its allocation holds is stock, else as
+    ordinary. A fund growing at its allocation's blend pays each class's
+    ``<class><suffix>``, dividends split by how each is taxed. A lot growing
+    at one series pays ``<series><suffix>``, a dividend taxed by the series'
+    class. Cash and CDs pay all of their rate as interest. A class with no
+    such series pays nothing.
+    """
+    dividends = suffix == registries.YIELD_SUFFIX
+    if not dividends:
+        fixed = registries.CG_PAYOUT_CHARACTERS[suffix]
+
+    def character_of(asset_class: str) -> str:
+        return registries.payout_character(asset_class) if dividends else fixed
+
+    def class_payout(asset_class: str, grows_at: str) -> str | None:
+        if (yielded := registries.yield_series(asset_class, suffix)) in rate_series:
+            return yielded
+        return grows_at if dividends and asset_class in registries.ALL_PAYOUT_CLASSES else None
+
+    sets = weight_sets.get(symbol) if symbol else None
+    held = {c for _, weights in sets or () for c, w in weights.items() if w}
+    if symbol and (own := registries.yield_series(symbol, suffix)) in rate_series:
+        qualified = bool(held) and held <= registries.QUALIFIED_DIVIDEND_CLASSES
+        character = (registries.QUALIFIED_DIVIDEND if qualified else "ordinary") if dividends else fixed
+        if dividends and sets and any(registries.muni_state(c) is not None for c in held):
+            return _muni_fund_payouts(own, sets)
+        return [(character, {"series": own})]
+    if blend and sets:
+        slice_of = {c: f"{symbol}.{c}" if f"{symbol}.{c}" in rate_series else c for c in held}
+        by_character: dict[str, AllocationBlend] = {}
+        for as_of, weights in sets:
+            parts: dict[str, list[list[Any]]] = {}
+            for c, w in sorted(weights.items()):
+                if w and (paid := class_payout(c, slice_of[c])) is not None:
+                    parts.setdefault(character_of(c), []).append([paid, w])
+            for character in {character_of(c) for c in held}:
+                by_character.setdefault(character, []).append([as_of, parts.get(character, [])])
+        return [
+            (character, {"blend": sets_})
+            for character, sets_ in sorted(by_character.items())
+            if any(slices for _, slices in sets_)
+        ]
+    if not series:
+        return []
+    asset_class = series if series in registries.ASSET_CLASSES else registries.SYMBOL_ASSET_CLASS.get(symbol, "")
+    paid = (own if (own := registries.yield_series(series, suffix)) in rate_series
+            else series if dividends and asset_class in registries.ALL_PAYOUT_CLASSES else None)
+    if paid is None:
+        return []
+    return [(character_of(asset_class) if asset_class else ("ordinary" if dividends else fixed),
+             {"series": paid})]
 
 
 type AllocationBlend = list[list[Any]]
@@ -1800,7 +2624,7 @@ def _allocation_weight_sets(
 ) -> dict[str, list[tuple[str, dict[str, int]]]]:
     """Symbol to its allocation sets, oldest first: ``(as_of, {asset_class: weight
     micros})``. Rows ``_validate_allocations`` rejects are left to its issues."""
-    sets: dict[str, dict[str, dict[str, int]]] = {}
+    rows = []
     for row in allocations:
         symbol, asset_class = row.get("symbol", ""), row.get("asset_class", "")
         if not symbol or asset_class not in registries.ASSET_CLASSES:
@@ -1809,8 +2633,8 @@ def _allocation_weight_sets(
             weight = _percent_to_micros(row.get("weight", ""))
         except ValueError:
             continue
-        sets.setdefault(symbol, {}).setdefault(row.get("as_of", ""), {})[asset_class] = weight
-    return {symbol: sorted(by_date.items()) for symbol, by_date in sets.items()}
+        rows.append((symbol, row.get("as_of", ""), asset_class, weight))
+    return asset_classes.weight_sets(rows)
 
 
 def _allocation_blend(
@@ -1911,7 +2735,12 @@ def _validate_allocations(rows: list[dict[str, str]], issues: list[str]) -> None
         if not symbol:
             issues.append(f"{where}: missing symbol")
             continue
-        _validate_symbol_case(where, symbol, issues)
+        if asset_classes.is_lot_key(symbol):
+            account, _, lot = symbol.partition(":")
+            if not account or not lot or ":" in lot:
+                issues.append(f"{where}: an <account>:<lot> key needs both names, like Asset_IRA:default")
+        else:
+            _validate_symbol_case(where, symbol, issues)
         if as_of:
             try:
                 date.fromisoformat(as_of)
@@ -1920,7 +2749,7 @@ def _validate_allocations(rows: list[dict[str, str]], issues: list[str]) -> None
         if asset_class not in registries.ASSET_CLASSES:
             issues.append(
                 f"{where}: unknown asset_class '{asset_class}'; "
-                f"allowed: {', '.join(registries.ASSET_CLASSES)}"
+                f"allowed: {registries.asset_class_list()}"
             )
         elif (symbol, as_of, asset_class) in seen:
             issues.append(f"{where}: duplicate {asset_class} for as_of '{as_of}'")
@@ -1962,8 +2791,7 @@ def _validate_accounts(
         elif kind == "asset" and subkind in registries.RETIREMENT_LOT_SUBKINDS:
             issues.append(
                 f"{where} ({name}): subkind '{subkind}' is now account subkind "
-                f"'{registries.RETIREMENT_SUBKIND}' with lot subkind '{subkind}' (#217); "
-                "run scripts/migrate_217.py on the data repo"
+                f"'{registries.RETIREMENT_SUBKIND}' with lot subkind '{subkind}' (#217)"
             )
         elif subkind not in valid:
             issues.append(
@@ -2006,6 +2834,11 @@ def _validate_scheduled(
                 "destination chain whose steps recover its basis (tax_character "
                 "home_sale, basis_of the home), take the exclusion (excluded_gain, "
                 "with a maximum) and then the gain (ltcg)"
+            )
+        elif kind == registries.RETIRED_TAX_RULE_KIND:
+            issues.append(
+                f"{where} ({name}): income tax is a jurisdiction file now, not a "
+                f"{kind} rule (#507): taxes/federal.csv or taxes/state.csv"
             )
         elif kind not in registries.AMOUNT_RULE_KINDS:
             issues.append(f"{where} ({name}): unknown amount_rule_kind '{kind}'")
@@ -2247,29 +3080,220 @@ IRMAA_PARAMS = frozenset({"parts", "filing_status_aux"})
 IRMAA_PARTS = ("B+D", "B", "D")
 
 
+FILING_STATUS_RULE_KINDS = frozenset({"irmaa"})
+
+
+def _validate_optional_state_tables(
+    aux_rows: list[tuple[str, str | None, dict[str, Any], str]], issues: list[str],
+) -> None:
+    """A ``state_surcharge``, ``state_local_tax`` (#487), ``state_hsa``
+    (#490) or other optional state table is keyed by state like the brackets
+    it goes with, since one without a state is never read; a ``state_hsa``
+    row's treatment is one the engine knows; a ``state_separate_return``
+    row's ``allowed`` is yes or no (#580), and a state that allows it has
+    ``MFS`` rows in its brackets and standard deduction (the federal one
+    where it has none of its own) at each of their dates, which each
+    spouse's return reads; and a table of bands has every filing status the
+    brackets have at each of its effective dates, since only the latest
+    date's rows are in force, and a year filed under a missing status (the
+    survivor's Single, §4.9) would silently tax nothing."""
+    bracket_statuses = {str(payload.get("filing_status")) for kind, _s, payload, _e in aux_rows
+                        if kind == "state_brackets"}
+    band_statuses: dict[tuple[str, str, str], set[str]] = {}
+    separate: dict[str, dict[str, bool]] = {}
+    nameless: set[str] = set()
+    for kind, state, payload, effective in aux_rows:
+        if kind not in registries.OPTIONAL_STATE_AUX_KINDS:
+            continue
+        file = f"aux/{kind}__{state}.csv" if state is not None else f"aux/{kind}.csv"
+        if not state:
+            if file not in nameless:
+                nameless.add(file)
+                issues.append(f"{file}: name the state, as in {kind}__CA.csv")
+            continue
+        treatment = payload.get("treatment")
+        if kind == registries.STATE_HSA and treatment not in registries.STATE_HSA_TREATMENTS:
+            issues.append(
+                f"{file} ({effective}): treatment {treatment!r} must be one of "
+                f"{', '.join(registries.STATE_HSA_TREATMENTS)}")
+        if kind == registries.STATE_SEPARATE_RETURN:
+            separate.setdefault(state, {})[effective] = _check_yes(
+                f"{file} ({effective})", payload, "allowed", issues)
+        if kind in registries.STATE_BAND_KINDS:
+            band_statuses.setdefault((kind, state, effective), set()).add(
+                str(payload.get("filing_status")))
+    _check_filing_statuses(
+        {(f"aux/{kind}__{state}.csv", effective): found
+         for (kind, state, effective), found in band_statuses.items()},
+        bracket_statuses, "the state brackets have",
+        "a year filed that way would tax nothing here (add a 0% band for a status it doesn't tax)",
+        issues)
+    _check_separate_return_tables(aux_rows, separate, issues)
+
+
+def _check_separate_return_tables(
+    aux_rows: list[tuple[str, str | None, dict[str, Any], str]],
+    allowed: Mapping[str, Mapping[str, bool]], issues: list[str],
+) -> None:
+    """Each state whose ``state_separate_return`` table (``allowed``: yes
+    or no by date) lets spouses file separately on one return (#580) has
+    ``MFS`` rows in its brackets, its long- and short-term gain tables
+    where it has them, and its standard deduction (the federal one while it
+    has none of its own), at each date in force while the table says yes,
+    so a married year doesn't fail mid-run or tax a spouse's gain as no
+    gain. A date in force only while it says no, or before its first row,
+    needs none. (Its surcharge follows from the brackets: a band table has
+    every status they have.)"""
+    dated: dict[tuple[str, str | None], dict[str, set[str]]] = {}
+    for kind, state, payload, effective in aux_rows:
+        if kind in _SEPARATE_RETURN_TABLES:
+            dated.setdefault((kind, state), {}).setdefault(effective, set()).add(
+                str(payload.get("filing_status")))
+    for state in sorted(allowed):
+        yes = _intervals(allowed[state])
+        if not yes:
+            continue
+        # The federal figure stands in where the state has none of its own.
+        own = (registries.STATE_STANDARD_DEDUCTION, state) in dated
+        tables = [("state_brackets", state, yes),
+                  (registries.STATE_LTCG_BRACKETS, state, yes),
+                  (registries.STATE_STCG_BRACKETS, state, yes),
+                  (registries.STATE_STANDARD_DEDUCTION, state, yes),
+                  ("standard_deduction", None, [] if own else yes)]
+        for kind, series, when in tables:
+            file = f"aux/{kind}__{series}.csv" if series else f"aux/{kind}.csv"
+            by_date = dated.get((kind, series), {})
+            for start, end in _intervals(dict.fromkeys(by_date, True)):
+                if "MFS" in by_date[start] or not _overlaps(start, end, when):
+                    continue
+                issues.append(
+                    f"{file} ({start}): no MFS rows, which "
+                    f"aux/{registries.STATE_SEPARATE_RETURN}__{state}.csv (allowed yes) "
+                    "needs for each spouse's separate return")
+
+
+_SEPARATE_RETURN_TABLES = frozenset({
+    "state_brackets", registries.STATE_LTCG_BRACKETS, registries.STATE_STCG_BRACKETS,
+    registries.STATE_STANDARD_DEDUCTION, "standard_deduction"})
+
+
+def _intervals(flags: Mapping[str, bool]) -> list[tuple[str, str | None]]:
+    """The spans ``[start, end)`` of a dated table's dates whose flag is
+    true, each until the next date (None: open-ended)."""
+    dates = sorted(flags)
+    return [(d, dates[i + 1] if i + 1 < len(dates) else None)
+            for i, d in enumerate(dates) if flags[d]]
+
+
+def _overlaps(start: str, end: str | None, spans: list[tuple[str, str | None]]) -> bool:
+    """Whether ``[start, end)`` meets any of ``spans``."""
+    return any((end is None or end > s) and (e is None or start < e) for s, e in spans)
+
+
+def _check_filing_statuses(
+    dated: Mapping[tuple[str, str], set[str]], reference: set[str], having: str,
+    consequence: str, issues: list[str],
+) -> None:
+    """Each ``(file, date)`` in ``dated`` has a row for every filing status
+    in ``reference`` (the ones ``having`` names): only the latest date's
+    rows are in force, so a year filed under a missing status (the
+    survivor's Single, ADR-003 §4.9) would find none."""
+    for (file, effective), found in sorted(dated.items()):
+        missing = sorted(reference - found)
+        if missing:
+            issues.append(
+                f"{file} ({effective}): no rows for filing status {', '.join(missing)}, "
+                f"which {having}; {consequence}")
+
+
+def _validate_filing_status(
+    rows: list[dict[str, str]],
+    tax_rows: list[dict[str, str]],
+    aux_rows: list[tuple[str, str | None, dict[str, Any], str]],
+    scenario_row: dict[str, str], issues: list[str],
+) -> None:
+    """The household's filing status (#317): one ``filing_status`` row per
+    date, and a row in force by the end of the scenario's first year for each
+    rule that taxes by it. The templates ship the file empty, since the
+    status is the household's choice, so a data repo that never set one
+    fails here rather than in the middle of a run (a death still makes a
+    joint filer Single without a row)."""
+    kinds = {"filing_status"}
+    needs: dict[str, str] = {}
+    for where, row in _located(rows, "scheduled.csv"):
+        if row.get("amount_rule_kind") not in FILING_STATUS_RULE_KINDS:
+            continue
+        params = _safe_json(row.get("params_json") or "{}") or {}
+        kind = str(params.get("filing_status_aux", "filing_status"))
+        kinds.add(kind)
+        needs.setdefault(kind, f"{where} ({row.get('name', '')})")
+    for where, row in _located(tax_rows, registries.TAXES_DIR):
+        kind = str(tax_files.params(row).get("filing_status_aux", "filing_status"))
+        kinds.add(kind)
+        needs.setdefault(kind, where)
+    by_kind: dict[str, dict[str, list[str]]] = {}
+    for kind, _series, payload, effective in aux_rows:
+        if kind in kinds:
+            by_kind.setdefault(kind, {}).setdefault(effective, []).append(
+                str(payload.get("filing_status", "")))
+    for kind, dated in sorted(by_kind.items()):
+        for effective, statuses in sorted(dated.items()):
+            if len(statuses) > 1:
+                issues.append(
+                    f"aux/{kind}.csv: {effective} gives {len(statuses)} filing statuses "
+                    f"({', '.join(statuses)}); a date takes one, the household's")
+    start = scenario_row.get("start", "")
+    if len(start) < 4 or not start[:4].isdigit():
+        return  # reported where the start is read
+    year_end = f"{start[:4]}-12-31"
+    for kind, where in sorted(needs.items()):
+        if not any(effective <= year_end for effective in by_kind.get(kind, {})):
+            issues.append(
+                f"{where}: taxes by filing status, but aux/{kind}.csv has no row in force "
+                f"by {year_end}; add one with the household's status (MFJ, Single or MFS)")
+
+
+def _validate_itemized_deductions(
+    aux_rows: list[tuple[str, str | None, dict[str, Any], str]], issues: list[str],
+) -> None:
+    """An itemized-deduction row is one tax year's total, counted in that
+    year only (#370), so a year takes one row."""
+    # By table: a series (`federal_deductions__<series>.csv`, for a
+    # swap_aux_table) is a table of its own, with its own years.
+    years: dict[tuple[str, str, str], list[str]] = {}
+    for kind, series, _payload, effective in aux_rows:
+        if kind in ("federal_deductions", "state_deductions"):
+            years.setdefault((kind, series or "", effective[:4]), []).append(effective[:7])
+    for (kind, series, year), dates in sorted(years.items()):
+        if len(dates) > 1:
+            table = f"{kind}__{series}" if series else kind
+            issues.append(
+                f"aux/{table}.csv: {year} has {len(dates)} rows ({', '.join(dates)}); "
+                "a tax year takes one itemized total")
+
+
 def _validate_irmaa(
     rows: list[dict[str, str]],
+    tax_rows: list[dict[str, str]],
     aux_rows: list[tuple[str, str | None, dict[str, Any], str]],
     persons: list[dict[str, str]], scenario_row: dict[str, str],
-    issues: list[str], warnings: list[str],
+    issues: list[str], warnings: list[str], *, projected_years: Collection[str] = (),
 ) -> None:
     """An ``irmaa`` rule (#253) charges one enrolled person the Medicare
     surcharge, each month, for the tier the household's MAGI two years
     earlier lands in: so it needs a person, a federal tax rule to compute
     MAGI, and an ``irmaa_tiers`` table. The first two premium years read
-    MAGI from before the run, in ``meta_json`` ``irmaa.magi``; a year left
-    out charges nothing, which is worth a warning."""
+    MAGI from before the run, in ``meta_json`` ``irmaa.magi``, or for the
+    year before it, from the run's own tax of it, which a roll's projected
+    year-to-date rows settle (#564); a year with neither charges nothing,
+    which is worth a warning."""
     rules = [(where, row) for where, row in _located(rows, "scheduled.csv")
              if row.get("amount_rule_kind") == "irmaa"]
     if not rules:
         return
     people = {p.get("id", "") for p in persons
               if (p.get("role") or "").strip() in registries.PERSON_ROLES}
-    federal = any(
-        row.get("amount_rule_kind") == "tax_accumulator"
-        and (_safe_json(row.get("params_json")) or {}).get("scope", "federal") == "federal"
-        for row in rows
-    )
+    federal = any(row["name"] == "federal" for row in tax_rows)
     for where, row in rules:
         where = f"{where} ({row.get('name', '')})"
         if row.get("person", "") not in people:
@@ -2280,8 +3304,8 @@ def _validate_irmaa(
             issues.append(f"{where}: irmaa takes no amount; its tier table sets it")
         if not federal:
             issues.append(
-                f"{where}: irmaa reads the MAGI a federal tax_accumulator rule computes, "
-                "and there is none")
+                f"{where}: irmaa reads the MAGI the federal tax computes, "
+                "and there is none (taxes/federal.csv)")
         params = _safe_json(row.get("params_json") or "{}")
         if params is None:
             issues.append(f"{where}: params_json is not a JSON object")
@@ -2293,6 +3317,9 @@ def _validate_irmaa(
                 f"(known: {', '.join(sorted(IRMAA_PARAMS))})")
         if params.get("parts", "B+D") not in IRMAA_PARTS:
             issues.append(f"{where}: parts must be one of {', '.join(IRMAA_PARTS)}")
+        status_aux = params.get("filing_status_aux", "filing_status")
+        if not any(kind == status_aux for kind, _table, _payload, _effective in aux_rows):
+            issues.append(f"{where}: filing_status_aux {status_aux!r} has no aux table")
     tiers = [(table, payload, effective) for kind, table, payload, effective in aux_rows
              if kind == registries.IRMAA_TIERS]
     if not any(table is None for table, _, _ in tiers):
@@ -2306,7 +3333,10 @@ def _validate_irmaa(
         return
     first = int(start[:4])
     meta = json.loads(scenario_row.get("meta_json") or "{}")
-    known = set((meta.get("irmaa") or {}).get("magi") or {})
+    # A malformed irmaa setting is already an issue (_check_irmaa_meta).
+    settings = meta.get("irmaa") if isinstance(meta, dict) else None
+    magi = settings.get("magi") if isinstance(settings, dict) else None
+    known = set(magi) if isinstance(magi, dict) else set()
     for premium_year in (first, first + 1):
         charged = any(
             row.get("start", "")[:4] <= str(premium_year)
@@ -2314,7 +3344,8 @@ def _validate_irmaa(
             for _, row in rules
         )
         magi_year = str(premium_year - 2)
-        if charged and magi_year not in known:
+        settled = magi_year == str(first - 1) and magi_year in projected_years
+        if charged and magi_year not in known and not settled:
             warnings.append(
                 f"scenario.csv meta_json has no irmaa.magi for {magi_year}, before the run "
                 f"starts, so {premium_year} charges no IRMAA surcharge")
@@ -2564,7 +3595,7 @@ def _validate_rmd_rules(
 
 
 FILL_BRACKET_PARAMS = frozenset(
-    {"scope", "max_amount", "max_marginal_rate", "tax_rule", "irmaa_tier"})
+    {"scope", "max_amount", "max_marginal_rate", "irmaa_tier"})
 
 
 def _bracket_rates(
@@ -2579,47 +3610,46 @@ def _bracket_rates(
     return rates
 
 
-def _tax_rule_bracket_table(
-    params: Mapping[str, Any], scope: str, rates: Mapping[tuple[str, str | None], set[int]],
-) -> tuple[str, str | None] | None:
-    """The (aux kind, series) a tax rule reads its brackets from, as
-    ``engine._year_tax_estimate`` picks it, or None when that is decided only
-    at run time (a state rule with several bracket series and none named)."""
-    kind = str(params.get("bracket_aux") or (
-        "federal_brackets" if scope == "federal" else "state_brackets"))
-    series = params.get("bracket_series")
-    if series is None and kind == "state_brackets":
-        named = [s for k, s in rates if k == kind and s is not None]
-        if len(named) != 1:
-            return None
-        series = named[0]
-    return kind, series
+def _tax_rule_bracket_tables(
+    params: Mapping[str, Any], scope: str, states_lived: Sequence[str],
+    rates: Mapping[tuple[str, str | None], set[int]],
+) -> list[tuple[str, tuple[str, str | None]]]:
+    """The (aux kind, series) tables a tax jurisdiction reads its brackets
+    from, as the ``federal`` and ``state_tables`` calculators pick them,
+    each after where it applies: a state's, one for each state the household
+    files in (#509)."""
+    if scope == "federal":
+        series = params.get("bracket_series")
+        return [("", (str(params.get("bracket_aux") or "federal_brackets"),
+                      None if series is None else str(series)))]
+    kind = str(params.get("bracket_aux") or "state_brackets")
+    return [(f" in {states.label(state)}",
+             (kind, states.tax_series(state, has_tables=("state_brackets", state) in rates)))
+            for state in states_lived]
 
 
 def _validate_fill_bracket(
     rows: list[dict[str, str]], chains: dict[str, tuple[str, list[dict[str, str]]]],
-    issues: list[str], *,
+    tax_rows: list[dict[str, str]], issues: list[str], *,
     roth_leaves: frozenset[str], traditional_leaves: frozenset[str],
     bracket_rates: Mapping[tuple[str, str | None], set[int]],
-    irmaa_tiers: bool = False,
+    residence_rows: Sequence[Mapping[str, str]] = (),
+    span: tuple[str, str] = ("", ""),
+    irmaa_tiers: frozenset[int] = frozenset(),
 ) -> None:
     """A ``fill_bracket`` rule (#252) converts from one traditional lot to
     one Roth lot, once a year, to a target that is either a bracket (``rate``)
-    or a taxable income (``amount``), measured with a ``tax_accumulator`` rule
-    of its scope. It has no priority: it always runs after every other rule
+    or a taxable income (``amount``), measured with the tax jurisdiction its
+    ``scope`` names. It has no priority: it always runs after every other rule
     of its month, since the year's RMD has to come out before any of the
     IRA can be converted. Run after the rows' references have been resolved."""
-    tax_rules: list[tuple[str, str, dict[str, Any]]] = []
+    tax_rules = {row["name"]: tax_files.params(row) for row in tax_rows}
     rmd_months: dict[str, list[int]] = {}  # traditional lot -> its RMD rules' months
     for _, row in _located(rows, "scheduled.csv"):
         if row.get("amount_rule_kind") == "rmd" and row.get("month_of_year", "").isdigit():
             source = row.get("from_account", "")
             for leaf in _chain_leaf_names(source, chains) if source in chains else {source}:
                 rmd_months.setdefault(leaf, []).append(int(row["month_of_year"]))
-        if row.get("amount_rule_kind") == "tax_accumulator":
-            params = _safe_json(row.get("params_json")) or {}
-            tax_rules.append(
-                (row.get("name", ""), str(params.get("scope", "federal")), params))
     for where, row in _located(rows, "scheduled.csv"):
         if row.get("amount_rule_kind") != "fill_bracket":
             continue
@@ -2662,7 +3692,11 @@ def _validate_fill_bracket(
         if params is None:
             issues.append(f"{where}: params_json is not a JSON object")
             continue
-        unknown = sorted(set(params) - FILL_BRACKET_PARAMS)
+        if "tax_rule" in params:
+            issues.append(
+                f"{where}: fill_bracket takes no tax_rule: its scope names the tax "
+                "jurisdiction it measures with (#507)")
+        unknown = sorted(set(params) - FILL_BRACKET_PARAMS - {"tax_rule"})
         if unknown:
             issues.append(
                 f"{where}: unknown params_json key(s) {', '.join(unknown)} "
@@ -2685,43 +3719,44 @@ def _validate_fill_bracket(
             if not irmaa_tiers:
                 issues.append(
                     f"{where}: irmaa_tier needs aux/{registries.IRMAA_TIERS}.csv, the tiers to stay within")
-            if not any(s == "federal" for _, s, _ in tax_rules):
+            elif isinstance(tier, int) and not any(t > tier for t in irmaa_tiers):
+                # Staying within the top tier caps nothing; say so rather
+                # than run as if the cap were in force.
                 issues.append(
-                    f"{where}: irmaa_tier measures MAGI with a federal tax_accumulator rule, "
-                    "and there is none")
+                    f"{where}: irmaa_tier {tier} is the top tier or above "
+                    f"(aux/{registries.IRMAA_TIERS}.csv tops out at {max(irmaa_tiers)}), "
+                    "so it caps nothing")
+            if "federal" not in tax_rules:
+                issues.append(
+                    f"{where}: irmaa_tier measures MAGI with the federal tax, "
+                    "and there is none (taxes/federal.csv)")
         if "max_marginal_rate" in params:
             try:
                 if not 0 <= units.percent_to_micros(str(params["max_marginal_rate"])) <= 1_000_000:
                     raise ValueError("must be from 0% to 100%")
             except ValueError as e:
                 issues.append(f"{where}: max_marginal_rate {e}")
-        wanted = params.get("tax_rule")
-        named = [s for n, s, _ in tax_rules if n == wanted]
-        matches = [(n, p) for n, s, p in tax_rules if s == scope and (n == wanted or not wanted)]
-        if wanted and not named:
-            issues.append(f"{where}: tax_rule '{wanted}' is not a tax_accumulator rule")
-        elif wanted and not matches:
+        if scope not in tax_rules:
             issues.append(
-                f"{where}: tax_rule '{wanted}' is a {named[0]} rule, not a {scope} one")
-        elif not matches:
-            issues.append(
-                f"{where}: fill_bracket measures with a {scope} tax_accumulator rule, "
-                "and there is none"
+                f"{where}: fill_bracket measures with the {scope} tax, "
+                f"and there is none (taxes/{scope}.csv)"
             )
-        elif len(matches) > 1:
-            issues.append(
-                f"{where}: there are {len(matches)} {scope} tax_accumulator rules "
-                f"({', '.join(n for n, _ in matches)}); name one with tax_rule in params_json"
-            )
-        table = _tax_rule_bracket_table(matches[0][1], scope, bracket_rates) if len(
-            matches) == 1 else None
-        rates = bracket_rates.get(table) if table else None
+            continue
         rate = row.get("rate_micros")
-        if rate and rates and int(rate) not in rates:
-            issues.append(
-                f"{where}: no {scope} bracket is taxed at {units.micros_to_percent(int(rate))} "
-                f"(rates: {', '.join(units.micros_to_percent(r) for r in sorted(rates))})"
-            )
+        if not rate:
+            continue
+        # A state's rate must be one of each state's the rule converts in
+        # (#509): a move to another state would leave nothing to fill. Only
+        # the years it posts in count.
+        lived = _residence_states(residence_rows, _firing_years(row, *span))
+        for in_state, table in _tax_rule_bracket_tables(tax_rules[scope], scope, lived, bracket_rates):
+            rates = bracket_rates.get(table)
+            if rates and int(rate) not in rates:
+                issues.append(
+                    f"{where}: no {scope} bracket{in_state} is taxed at "
+                    f"{units.micros_to_percent(int(rate))} "
+                    f"(rates: {', '.join(units.micros_to_percent(r) for r in sorted(rates))})"
+                )
 
 
 def _validate_business(
@@ -2797,6 +3832,173 @@ def _validate_business(
                 )
 
 
+def _implying_rules(
+    scheduled_rows: Sequence[Mapping[str, str]], accounts: Sequence[Mapping[str, str]],
+) -> list[Mapping[str, str]]:
+    """The rules whose kind implies an itemized tag (#542,
+    ``registries.IMPLIED_TAX_TAGS``), as the engine reads them: an ``irmaa``
+    rule, and a ``mortgage_payment`` on a ``mortgage`` liability (one
+    amortizing a car loan or a HELOC implies nothing)."""
+    subkind = {a.get("name", ""): a.get("subkind", "") for a in accounts}
+    return [row for row in scheduled_rows
+            if row.get("amount_rule_kind") == "irmaa"
+            or (row.get("amount_rule_kind") == "mortgage_payment"
+                and subkind.get(row.get("to_account", "")) == "mortgage")]
+
+
+def _validate_itemizing_rows(
+    accounts: list[dict[str, str]], scheduled_rows: list[dict[str, str]],
+    ytd_rows: list[dict[str, str]], leaves: _LeafIndex, issues: list[str],
+) -> None:
+    """Spending an itemized line can't read right (#542). A rule paying
+    property tax by its ``property_tax`` character pays from an account
+    named directly: a chain's legs carry each source's withdrawal
+    character, not the rule's. A year_to_date.csv row into an interest
+    account two home mortgages share can't say whose debt its interest was
+    on, which the mortgage debt limit needs."""
+    for where, row in _located(scheduled_rows, "scheduled.csv"):
+        ref = row.get("from_account", "")
+        if row.get("tax_character") == "property_tax" and leaves.account_of.get(ref) is None:
+            issues.append(
+                f"{where} ({row.get('name', '')}): tax_character property_tax must be paid out of "
+                f"an account named directly (from: '{ref}'), as a chain's legs carry their "
+                "source's character; or tag the rule tax:property instead")
+    # Interest account -> its home mortgages' liabilities. Two rules on one
+    # liability (a rate change) are one debt.
+    sharing: dict[str, set[str]] = defaultdict(set)
+    for row in _implying_rules(scheduled_rows, accounts):
+        if row.get("amount_rule_kind") == "mortgage_payment" and row.get("interest_account"):
+            sharing[row["interest_account"]].add(row.get("to_account", ""))
+    for where, row in _located(ytd_rows, "year_to_date.csv"):
+        rules = sorted(sharing.get(row.get("to_account", ""), ()))
+        if len(rules) > 1:
+            issues.append(
+                f"{where} ({row.get('name', '')}): {row.get('to_account')} is the interest account "
+                f"of several home mortgages ({', '.join(rules)}), so the row can't say whose debt "
+                "its interest was on; give each mortgage its own interest account, or use its "
+                "rule's ytd_amount")
+
+
+def _row_tags(row: Mapping[str, str]) -> set[str] | None:
+    """A row's ``tags`` cell as ``role:name`` tags; None when it is
+    malformed, which is reported where the tags are checked."""
+    try:
+        return {f"{role}:{name}" for role, name in registries.parse_tags(row.get("tags", ""))}
+    except ValueError:
+        return None
+
+
+def _validate_income_tax_payments(
+    accounts: list[dict[str, str]], scheduled_rows: list[dict[str, str]],
+    calendar_rows: list[dict[str, str]], ytd_rows: list[dict[str, str]],
+    chains: Mapping[str, tuple[str, list[dict[str, str]]]], leaves: _LeafIndex, issues: list[str],
+) -> None:
+    """Only income tax payments go into an income-tax account (#586,
+    ``registries.INCOME_TAX_SUBKINDS``): withholding, an estimated payment,
+    a settlement, so what went into a jurisdiction's account is what it
+    was paid. Refused there, directly or through a destination chain whose
+    steps reach one: whatever an itemized line or another schedule counts,
+    which isn't income tax: the ``property_tax`` and ``business_expense``
+    characters (a step's own too), an itemizing tag
+    (``registries.ITEMIZING_TAGS``) on the row or the account, the rules
+    whose kind implies one as the engine reads them (``_implying_rules``:
+    an IRMAA surcharge, a home mortgage's interest), and any other
+    ``mortgage_payment``'s interest, which is interest, not tax. Runs after
+    the references are resolved to leaf chains."""
+    income_tax = {a.get("name", ""): a.get("subkind", "") for a in accounts
+                  if a.get("subkind") in registries.INCOME_TAX_SUBKINDS}
+    if not income_tax:
+        return
+    not_tax = ("property_tax", registries.BUSINESS_EXPENSE)
+    for where, row in _located(accounts, "accounts.csv"):
+        if row.get("name") in income_tax and (found := sorted((_row_tags(row) or set())
+                                                              & registries.ITEMIZING_TAGS)):
+            issues.append(
+                f"{where} ({row.get('name')}): a {row.get('subkind')} account takes only income "
+                f"tax payments, which no itemizing tag fits ({' '.join(found)})")
+
+    def reached(ref: str, seen: frozenset[str] = frozenset()) -> list[str]:
+        """The income-tax accounts money paid to ``ref`` can land in: the
+        account itself, or those a destination chain's steps reach."""
+        if ref in chains and ref not in seen:
+            return sorted({account for row in chains[ref][1]
+                           for account in reached(row.get("account_name", ""), seen | {ref})})
+        account = leaves.account_of.get(ref, ref)
+        return [account] if account in income_tax else []
+
+    def refuse(where: str, account: str, why: Sequence[str], property_tax: bool) -> None:
+        hint = (f"pay it into a {registries.PROPERTY_TAX_SUBKIND} account" if property_tax
+                else "pay it into another expense account")
+        issues.append(
+            f"{where}: {account} is a {income_tax[account]} account, which takes only income "
+            f"tax payments (withholding, estimated payments), not spending of "
+            f"{', '.join(why)}; {hint}")
+
+    implying = {id(row) for row in _implying_rules(scheduled_rows, accounts)}
+
+    def check(where: str, row: Mapping[str, str], to_ref: str, also: str = "") -> None:
+        targets = reached(to_ref)
+        if not targets:
+            return
+        why = []
+        character = row.get("tax_character", "")
+        if character in not_tax:
+            why.append(f"tax_character {character}")
+        found = sorted((_row_tags(row) or set()) & registries.ITEMIZING_TAGS)
+        if found:
+            why.append(f"tag {' '.join(found)}")
+        if also:
+            why.append(also)
+        if why:
+            via = f" (through chain {to_ref})" if to_ref in chains else ""
+            for account in targets:
+                refuse(f"{where}{via}", account, why, character == "property_tax"
+                       or registries.ITEMIZED_TAGS["property_tax"] in found)
+
+    for where, row in _located(scheduled_rows, "scheduled.csv"):
+        rule_kind = row.get("amount_rule_kind", "")
+        # A rule kind that implies an itemized tag, as the engine reads it
+        # (an irmaa rule, a home mortgage's interest); a car loan's or a
+        # HELOC's interest implies none, but is interest, not tax.
+        implied = (f"amount_rule_kind {rule_kind} (its {registries.IMPLIED_TAX_TAGS[rule_kind]})"
+                   if id(row) in implying else "")
+        if rule_kind != "mortgage_payment":
+            check(f"{where} ({row.get('name', '')})", row, row.get("to_account", ""), implied)
+        if row.get("interest_account"):
+            check(f"{where} ({row.get('name', '')}) interest_account", row,
+                  row["interest_account"], implied or f"interest (amount_rule_kind {rule_kind})")
+    for where, row in _located(ytd_rows, "year_to_date.csv"):
+        check(f"{where} ({row.get('name', '')})", row, row.get("to_account", ""))
+    for where, row in _located(calendar_rows, "calendar.csv"):
+        if row.get("kind") in ("one_off_transfer", "transfer_balance"):
+            check(where, row, row.get("account_2", ""))
+    # A destination chain's step sets the character of the money it places.
+    for name, (role, rows) in chains.items():
+        for where, row in _located(rows, _chain_label(role, name)):
+            if (character := row.get("tax_character", "")) in not_tax:
+                for account in reached(row.get("account_name", "")):
+                    refuse(where, account, [f"tax_character {character}"], character == "property_tax")
+
+
+def _validate_guard_rails(
+    scenarios_dir: Path, scenario_name: str, accounts: list[dict[str, str]],
+    scheduled_rows: list[dict[str, str]], calendar_rows: list[dict[str, str]],
+    issues: list[str],
+) -> dict[str, dict[str, str]]:
+    """guard_rails.csv (#305). Reports read the rails, and a strategy's
+    trigger (#441) takes the ones it names into the intent; a bad one fails
+    the load like any other row, so `sim check` and every edit command
+    catch it. Returns each good rail's merged row by name."""
+    rows, problems = guard_rails.read_rows(scenarios_dir, scenario_name)
+    rails, more = guard_rails.parse_rows(rows)
+    issues.extend(problems + more)
+    issues.extend(guard_rails.check_references(
+        rails, guard_rails.references_from_rows(accounts, scheduled_rows, calendar_rows)))
+    good = {rail.name for rail in rails}
+    return {row.cells.get("name", ""): dict(row.cells) for row in rows
+            if row.cells.get("name", "") in good}
+
+
 def _validate_year_to_date(
     rows: list[dict[str, str]],
     leaves: _LeafIndex,
@@ -2845,7 +4047,9 @@ _VARY_SHAPE_COLUMNS = ("vary_skew", "vary_tailweight")
 _VARY_OUTCOMES = "vary_outcomes"
 """A `discrete` row's weighted outcomes (#165): parsed whole, not as a bound."""
 
-_VARY_PROCESS_COLUMNS = ("vary_process", "vary_persistence", "vary_innovation_sd")
+_VARY_PROCESS_COLUMNS = (
+    "vary_process", "vary_persistence", "vary_shock_sd", "vary_process_start",
+)
 """A set_rate row's year-by-year path (ADR-006 §4a, #115)."""
 
 _MINUS_100_PERCENT_MICROS = -1_000_000
@@ -2873,6 +4077,10 @@ def _validate_calendar(
             _validate_transfer_balance(row, where, leaves, chain_names, asset_accounts, issues)
         elif kind == "swap_aux_table":
             _validate_swap_aux_table_row(row, where, issues)
+        elif kind == registries.DATE_MARKER_KIND:
+            _validate_date_marker(row, where, issues)
+        if (row.get("vary_resume") or "").strip():
+            _validate_resume(row, where, kind, issues)
         params_json = row.get("params_json") or "{}"
         try:
             if not isinstance(json.loads(params_json), dict):
@@ -2895,6 +4103,71 @@ def _validate_calendar(
             else:
                 seen_names[name] = where
         _validate_calendar_vary(row, where, kind, name, issues)
+
+
+_RESUME_FORBIDDEN_COLUMNS: tuple[str, ...] = (
+    "amount", "vary_target", "vary_distribution", "vary_low", "vary_high", "vary_median",
+    "vary_sd", "vary_skew", "vary_tailweight", "vary_mode", "vary_ramp_months", "vary_outcomes",
+    "vary_process", "vary_persistence", "vary_shock_sd", "vary_process_start",
+    "vary_correlate_with", "vary_correlation", "vary_tail_dependence",
+)
+"""Columns a ``vary_resume`` row (#291) leaves blank: what it puts back is
+whatever governed its series before, so it has no rate, draw or process of
+its own."""
+
+
+def _validate_resume(row: dict[str, str], where: str, kind: str, issues: list[str]) -> None:
+    """A ``vary_resume`` row (#291) is a ``set_rate`` row with no rate or
+    vary_* values of its own, dated after the date it resumes from. Whether
+    its series has a rate before that date is checked with the series."""
+    where = f"{where} ({(row.get('name') or '').strip() or '?'})"
+    if kind != "set_rate":
+        issues.append(f"{where}: vary_resume is only read on a set_rate row (got kind='{kind}')")
+        return
+    stray = [c for c in _RESUME_FORBIDDEN_COLUMNS if (row.get(c) or "").strip()]
+    if stray:
+        issues.append(
+            f"{where}: a vary_resume row has no {', '.join(stray)} -- it puts back what "
+            "governed its series before vary_resume, so it has no rate or draw of its own"
+        )
+    resume, when = (row.get("vary_resume") or "").strip(), (row.get("date") or "").strip()
+    if resume and when and resume >= when:
+        issues.append(
+            f"{where}: vary_resume {resume} must come before the row's own date {when}: "
+            "the row puts back what was in effect the day before vary_resume"
+        )
+
+
+_MARKER_FORBIDDEN_COLUMNS: tuple[str, ...] = (
+    "scheduled_name", "account_1", "lot_1", "account_2", "lot_2", "series", "amount",
+    "param_date", "tax_character", "params_json", "vary_ramp_months",
+    "vary_process", "vary_persistence", "vary_shock_sd", "vary_process_start", "vary_resume",
+)
+"""Columns a ``date_marker`` row (#281) must leave blank: it is a name and a
+date, which may vary and correlate like any date row's, and nothing else."""
+
+
+def _validate_date_marker(row: dict[str, str], where: str, issues: list[str]) -> None:
+    """A ``date_marker`` row (#281) has a name, a date, and nothing an event
+    would read."""
+    name = (row.get("name") or "").strip()
+    where = f"{where} ({name or '?'})"
+    if not name:
+        issues.append(f"{where}: a date_marker row needs a name")
+    elif not is_marker_name(name):
+        issues.append(
+            f"{where}: a date_marker's name starts with a letter or '_', has only letters, digits, "
+            "'_', '.' and '-', and doesn't end in an offset like '-6m' or '+2y', so dates can be "
+            "written from it"
+        )
+    if not (row.get("date") or "").strip() and not (row.get("vary_distribution") or "").strip():
+        issues.append(f"{where}: a date_marker row needs a date")
+    stray = [c for c in _MARKER_FORBIDDEN_COLUMNS if (row.get(c) or "").strip()]
+    if stray:
+        issues.append(
+            f"{where}: a date_marker row has no {', '.join(stray)} -- only a name, a date, "
+            "a description, tags, and a date's vary_* and correlation columns"
+        )
 
 
 def _validate_transfer_balance(
@@ -2945,6 +4218,9 @@ def _validate_swap_aux_table_row(
         return  # malformed JSON is reported by _validate_calendar
     aux_kind = params.get("aux_kind")
     source = params.get("source_series")
+    if aux_kind in registries.STATE_KEYED_AUX_KINDS:
+        issues.append(f"{where}: swap_aux_table of {aux_kind}: {RESIDENCE_RETIRED}")
+        return
     if aux_kind not in registries.SWAPPABLE_AUX_KINDS:
         issues.append(
             f"{where}: swap_aux_table needs params_json aux_kind, one of "
@@ -2966,49 +4242,539 @@ def _validate_swap_aux_table_row(
             issues.append(f"{where}: swap_aux_table takes no {col}; leave it blank")
 
 
+RESIDENCE_RETIRED = (
+    "where the household lives is residence.csv now (#509): set it with `sim tax state` "
+    "and `sim tax move`, or convert a data repo with scripts/migrate_509.py"
+)
+
+
+def _validate_residence(
+    residence_rows: list[dict[str, str]],
+    tax_rows: list[dict[str, str]],
+    aux_rows: list[tuple[str, str | None, dict[str, Any], str]],
+    issues: list[str],
+) -> None:
+    """``residence.csv`` (#509, ADR-003 §4.16): each row a month and a known
+    state, and with a state tax, a row to say where the household files and
+    each state's tables (or a state with no income tax, which reads the 0%
+    ``none`` ones). A county names its ``state_local_tax`` table. The state
+    and local files' retired ``bracket_series`` is refused."""
+    supplied = {(kind, series) for kind, series, *_ in aux_rows}
+    for where, row in _located(residence_rows, registries.RESIDENCE_FILE):
+        unknown = sorted(set(row) - set(registries.RESIDENCE_CSV_HEADER) - {ORIGIN})
+        if unknown:
+            issues.append(f"{where}: unknown column(s) {', '.join(unknown)} "
+                          f"(known: {', '.join(registries.RESIDENCE_CSV_HEADER)})")
+        if not row.get("effective_date"):
+            issues.append(f"{where}: effective_date is required: the month the household "
+                          "lives here from")
+        state = (row.get("state") or "").strip()
+        row["state"] = state
+        known = states.BY_CODE.get(state)
+        if known is None:
+            issues.append(f"{where}: state {state!r} is not a state's or territory's postal code "
+                          "(CA, WA, ...)")
+        elif known.status == states.NOT_SUPPORTED:
+            issues.append(f"{where}: {states.own_tax_code(state)}")
+        elif known.status == states.FEDERAL_RULE and ("state_brackets", state) in supplied:
+            issues.append(
+                f"{where}: the federal tax stands in for {states.label(state)}'s, which copies "
+                f"it, so aux/state_brackets__{state}.csv would tax the same income twice; "
+                "remove it (#491)")
+    has_state = any(row["name"] == "state" for row in tax_rows)
+    for where, row in _located(tax_rows, registries.TAXES_DIR):
+        if row["name"] in ("state", "local") and "bracket_series" in tax_files.params(row):
+            issues.append(f"{where}: params_json takes no 'bracket_series': {RESIDENCE_RETIRED}")
+    if not has_state:
+        return
+    if not residence_rows:
+        issues.append(
+            f"{registries.TAXES_DIR}/state.csv: the scenario doesn't say where the household "
+            f"lives; set it with `sim tax state` ({registries.RESIDENCE_FILE})")
+        return
+    for where, row in _located(residence_rows, registries.RESIDENCE_FILE):
+        state = row["state"]
+        if state not in states.BY_CODE or states.BY_CODE[state].status == states.NOT_SUPPORTED:
+            continue  # refused above
+        series = states.tax_series(state, has_tables=("state_brackets", state) in supplied)
+        if ("state_brackets", series) not in supplied:
+            issues.append(
+                f"{where}: no aux/state_brackets__{series}.csv for {states.label(state)}'s "
+                "income tax; the simulator doesn't ship its tables yet, so add them")
+        county = (row.get("county") or "").strip()
+        if county and (registries.STATE_LOCAL_TAX, county) not in supplied:
+            issues.append(
+                f"{where}: county {county!r} has no aux/{registries.STATE_LOCAL_TAX}__{county}.csv; "
+                "add its local tax (one 0% band per filing status for a county without one), "
+                "or leave county blank")
+
+
+def _residence_states(residence_rows: Sequence[Mapping[str, str]], years: Iterable[int]) -> list[str]:
+    """The states the tax ``years`` are filed in: each year's is the row in
+    force on its December 31, the first row's covering the years before it."""
+    rows = sorted((r["effective_date"], r["state"]) for r in residence_rows
+                  if r.get("effective_date") and r.get("state"))
+    found: list[str] = []
+    for year in years:
+        on = [state for effective, state in rows if effective[:4] <= str(year)]
+        state = on[-1] if on else (rows[0][1] if rows else None)
+        if state is not None and state not in found:
+            found.append(state)
+    return found
+
+
+def _firing_years(row: Mapping[str, str], start: str, end: str) -> list[int]:
+    """The years an annual rule posts in: its ``month_of_year`` (December
+    when blank) within both its own dates and the scenario's."""
+    try:  # parsed as the intent writer does
+        month = int(row.get("month_of_year") or 12)
+    except ValueError:
+        return []  # not a month; the intent writer refuses it
+    lo = max(row.get("start") or "", start)[:7]
+    hi = min(row.get("end") or "9999-12", end or "9999-12")[:7]
+    if not lo or hi < lo:
+        return []
+    return [year for year in range(int(lo[:4]), int(hi[:4]) + 1)
+            if lo <= f"{year:04d}-{month:02d}" <= hi]
+
+
 def _warn_state_standard_deduction(
-    scheduled_rows: list[dict[str, str]],
-    calendar_rows: list[dict[str, str]],
+    tax_rows: list[dict[str, str]],
+    residence_rows: list[dict[str, str]],
     aux_rows: list[tuple[str, str | None, dict[str, Any], str]],
     warnings: list[str],
 ) -> None:
-    """A state tax rule with no state_standard_deduction__<state> table for
-    its brackets' state uses the federal standard deduction (#248), which
-    overstates most states' (California's is about a third of it), so its
-    tax comes out low. A move to a state (a swap_aux_table of its
-    state_brackets) with no such table falls back the same way; without a
-    state tax rule, nothing reads either table, so a move says nothing."""
+    """A state tax with no state_standard_deduction__<state> table for a
+    state the household lives in (#509) uses the federal standard deduction
+    there (#248), which overstates most states' (California's is about a
+    third of it), so its tax comes out low."""
     supplied = {(kind, series) for kind, series, *_ in aux_rows}
-    state_rule = False
-    states = sorted(series for kind, series in supplied
-                    if kind == "state_brackets" and series is not None)
-    for where, row in _located(scheduled_rows, "scheduled.csv"):
-        if row.get("amount_rule_kind") != "tax_accumulator":
+    for where, row in _located(tax_rows, registries.TAXES_DIR):
+        if row["name"] != "state" or "standard_deduction_aux" in tax_files.params(row):
             continue
-        params = _safe_json(row.get("amount_rule_params_json") or row.get("params_json")) or {}
-        if params.get("scope") != "state":
-            continue
-        state_rule = True
-        if "standard_deduction_aux" in params:
-            continue
-        state = params.get("bracket_series") or (states[0] if len(states) == 1 else None)
-        if state is None or (registries.STATE_STANDARD_DEDUCTION, state) in supplied:
-            continue  # no state to name: the run reports the missing bracket_series
-        warnings.append(
-            f"{where} ({row.get('name', '')}): state tax uses the federal standard "
-            f"deduction; add aux/{registries.STATE_STANDARD_DEDUCTION}__{state}.csv "
-            "(effective_date, filing_status, amount) with the state's own"
-        )
-    for where, row in _located(calendar_rows, "calendar.csv") if state_rule else ():
-        params = _safe_json(row.get("params_json")) or {}
-        state = params.get("source_series")
-        if (row.get("kind") == "swap_aux_table" and params.get("aux_kind") == "state_brackets"
-                and isinstance(state, str)
-                and (registries.STATE_STANDARD_DEDUCTION, state) not in supplied):
+        for state in dict.fromkeys(r["state"] for r in residence_rows if r.get("state") in states.BY_CODE):
+            series = states.tax_series(state, has_tables=("state_brackets", state) in supplied)
+            if (registries.STATE_STANDARD_DEDUCTION, series) in supplied:
+                continue
             warnings.append(
-                f"{where}: after the move to {state}, state tax uses the federal standard "
-                f"deduction; add aux/{registries.STATE_STANDARD_DEDUCTION}__{state}.csv"
+                f"{where}: state tax uses the federal standard deduction in "
+                f"{states.label(state)}; add aux/{registries.STATE_STANDARD_DEDUCTION}__{series}.csv "
+                "(effective_date, filing_status, amount) with the state's own"
             )
+
+
+def _warn_hand_typed_deductions(
+    aux_rows: list[tuple[str, str | None, dict[str, Any], str]],
+    scheduled_rows: list[dict[str, str]],
+    accounts: list[dict[str, str]],
+    calendar_rows: list[dict[str, str]],
+    tax_rows: list[dict[str, str]],
+    residence_rows: list[dict[str, str]],
+    warnings: list[str],
+) -> None:
+    """A hand-typed itemized total (``federal_deductions``,
+    ``state_deductions``) for a year whose itemized lines are figured from
+    spending too (#542): one written before they were, a whole Schedule A,
+    counts its mortgage interest, property tax, IRMAA or, federally, state
+    and local income tax twice. Only years the lines are figured in: from
+    the federal limits' first date, and for ``state_deductions`` only where
+    the state lived in that year has limits of its own (or its tax takes
+    the federal ones); a zero total adds nothing. One warning for all such
+    rows. And a state that figures no lines falls back to
+    ``federal_deductions`` when it has no total of its own, which now
+    leaves out what the federal lines figure: one more warning for that."""
+    def first_year(kind: str, series: str | None) -> str | None:
+        dates = [effective for k, s, _payload, effective in aux_rows if k == kind and s == series]
+        return min(dates)[:4] if dates else None
+
+    federal_from = first_year(registries.ITEMIZED_LIMITS, None)
+    if federal_from is None:
+        return
+    supplied = {(kind, series) for kind, series, *_ in aux_rows}
+    state_aux = [tax_files.params(row).get("itemized_limits_aux", registries.STATE_ITEMIZED_LIMITS)
+                 for row in tax_rows if row.get("name") == "state"]
+    income_taxed = any(row.get("name") in ("state", "local") for row in tax_rows)
+
+    def state_from(year: int) -> str | None:
+        """The first year the state lived in in ``year`` figures lines."""
+        if not state_aux:
+            return None
+        if state_aux[0] != registries.STATE_ITEMIZED_LIMITS:
+            return first_year(str(state_aux[0]), None)  # a federal-shaped table
+        found = _residence_states(residence_rows, [year])
+        if not found:
+            return None
+        series = states.tax_series(found[0], has_tables=("state_brackets", found[0]) in supplied)
+        return first_year(registries.STATE_ITEMIZED_LIMITS, series)
+
+    itemized = frozenset(registries.ITEMIZED_TAGS.values())
+
+    def tagged(row: Mapping[str, str]) -> bool:
+        tags = _row_tags(row)
+        if tags is None:
+            return False  # reported where the tags are checked
+        # A taxes_property account is property tax (#586), unless its own
+        # itemizing tag says otherwise (tax:rental: Schedule E's), as the
+        # engine's implied tag is.
+        return bool(tags & itemized) or row.get("tax_character") == "property_tax" \
+            or (row.get("subkind") == registries.PROPERTY_TAX_SUBKIND
+                and not tags & registries.ITEMIZING_TAGS)
+
+    # A retire_scheduled event ends its rule early; the earliest one, as a
+    # warning needn't follow every reopening.
+    retired: dict[str, str] = {}
+    for row in calendar_rows:
+        if row.get("kind") == "retire_scheduled" and (name := row.get("scheduled_name")) and row.get("date"):
+            retired[name] = min(retired.get(name, row["date"]), row["date"])
+    implying = _implying_rules(scheduled_rows, accounts)
+
+    def active(year: str) -> bool:
+        """Whether a rule implying an itemized tag runs in ``year``."""
+        for row in implying:
+            end = min(filter(None, (row.get("end"), retired.get(row.get("name", "")))), default="")
+            if row.get("start", "")[:7] <= f"{year}-12" and (not end or end[:7] >= f"{year}-01"):
+                return True
+        return False
+
+    figured_always = any(tagged(row) for row in (*accounts, *scheduled_rows))
+    found: dict[str, list[str]] = {}
+    for kind, series, payload, effective in aux_rows:
+        if kind not in ("federal_deductions", "state_deductions") or series is not None:
+            continue
+        year = effective[:4]
+        federal = kind == "federal_deductions"
+        lines_from = federal_from if federal else state_from(int(year))
+        if lines_from is None or year < max(lines_from, federal_from) \
+                or payload.get("amount") == 0:
+            continue
+        if figured_always or active(year) or (federal and income_taxed):
+            found.setdefault(kind, []).append(year)
+    if found:
+        where = "; ".join(f"aux/{kind}.csv ({', '.join(sorted(set(years)))})"
+                          for kind, years in sorted(found.items()))
+        warnings.append(
+            f"{where}: the hand-typed total adds to the itemized lines figured from spending "
+            "(a mortgage's interest, IRMAA's surcharges, property tax paid into a "
+            "taxes_property account or tagged tax:property, spending tagged tax:charity or "
+            "tax:medical, and federally the state and local income tax paid); "
+            "leave those out of it, or they count twice")
+    # The state's fallback: with no state_deductions rows at all, a state
+    # that figures no lines takes federal_deductions, the rest only.
+    if not state_aux or any(kind == "state_deductions" and series is None
+                            for kind, series, *_ in aux_rows):
+        return
+    falls_back = sorted({
+        effective[:4] for kind, series, payload, effective in aux_rows
+        if kind == "federal_deductions" and series is None and effective[:4] >= federal_from
+        and payload.get("amount") != 0
+        and ((lines := state_from(int(effective[:4]))) is None or effective[:4] < lines)
+        and (figured_always or active(effective[:4]))})
+    if falls_back:
+        warnings.append(
+            f"aux/federal_deductions.csv ({', '.join(falls_back)}): the state lived in then "
+            "figures no itemized lines and takes this total, which leaves out what the federal "
+            "lines figure from spending; add aux/state_deductions.csv rows with the state's "
+            "whole itemized total, or give taxes/state.csv itemized_limits_aux "
+            "\"itemized_limits\" to figure the federal lines for it")
+
+
+def _check_phase_out(where: str, payload: Mapping[str, Any], issues: list[str],
+                     extra: Iterable[str] = ()) -> None:
+    """A row's phase-out columns (``common.phase_out``; #484, #578) say one
+    shape: to nothing at phaseout_end, or by phaseout_rate per dollar, both
+    from phaseout_start; phaseout_step goes with a rate and phaseout_steps
+    with an end. None of them, nor the ``extra`` columns that belong to the
+    phase-out, without a start."""
+    start, end = payload.get("phaseout_start"), payload.get("phaseout_end")
+    rate = payload.get("phaseout_rate_micros")
+    step, steps = payload.get("phaseout_step"), payload.get("phaseout_steps")
+    _check_not_negative(where, payload, ("phaseout_start", "floor"), issues)
+    if start is None:
+        given = [c for c in ("phaseout_end", "phaseout_rate", "phaseout_step", "phaseout_steps",
+                             "floor", *extra)
+                 if payload.get("phaseout_rate_micros" if c == "phaseout_rate" else c) is not None]
+        if given:
+            issues.append(f"{where}: {', '.join(given)} need a phaseout_start")
+        return
+    if (end is None) == (rate is None):
+        issues.append(f"{where}: give phaseout_end or phaseout_rate with phaseout_start, "
+                      "not both or neither")
+    elif end is not None and end < start:
+        issues.append(f"{where}: phaseout_end is below phaseout_start")
+    elif rate is not None and rate <= 0:
+        issues.append(f"{where}: phaseout_rate must be more than 0%")
+    if step is not None and (rate is None or step <= 0):
+        issues.append(f"{where}: phaseout_step must be more than 0, with a phaseout_rate")
+    if steps is not None and (end is None or not isinstance(steps, int) or steps < 1):
+        issues.append(f"{where}: phaseout_steps must be a whole number of steps, 1 or more, "
+                      "with a phaseout_end")
+    # Indexed apart, the start could pass the end and make a cliff of it.
+    if end is not None and (payload.get("phaseout_start_series") or None) != (
+            payload.get("phaseout_end_series") or None):
+        issues.append(f"{where}: phaseout_start_series and phaseout_end_series must "
+                      "name the same series, or both be blank")
+
+
+def _validate_state_social_security(
+    aux_rows: list[tuple[str, str | None, dict[str, Any], str]],
+    persons: list[dict[str, str]],
+    issues: list[str],
+    warnings: list[str],
+) -> None:
+    """A state_social_security row (#484) phases its exclusion out one way
+    (_check_phase_out), from an age (#581) no other row of its date and
+    filing status starts at."""
+    tiers: set[tuple[str | None, str, str, str]] = set()
+    rated: set[tuple[str | None, str, str]] = set()
+    aged = False
+    for kind, state, payload, effective in aux_rows:
+        if kind != registries.STATE_SOCIAL_SECURITY:
+            continue
+        where = (f"aux/{kind}__{state}.csv" if state else f"aux/{kind}.csv") + (
+            f" ({effective}, {payload.get('filing_status')})")
+        percent = payload.get("exclusion_micros")
+        if percent is not None and not 0 <= percent <= 1_000_000:
+            issues.append(f"{where}: exclusion_percent must be 0% to 100%")
+        _check_phase_out(where, payload, issues)
+        age = _check_min_age(where, payload, issues, fra=True)
+        if age != 0:
+            aged = True
+        tier = (state, effective, str(payload.get("filing_status") or ""))
+        if (*tier, str(age)) in tiers:
+            issues.append(f"{where}: two rows for the same filing status and min_age")
+        tiers.add((*tier, str(age)))
+        if payload.get("phaseout_rate_micros") is not None:
+            # Each row's shares are phased at the household's AGI, so a
+            # rate on two rows would take its reduction twice.
+            if tier in rated:
+                issues.append(f"{where}: phaseout_rate on more than one min_age row; "
+                              "each would take the whole reduction")
+            rated.add(tier)
+    if aged and not any(p.get("birthdate") for p in persons):
+        warnings.append(
+            f"aux/{registries.STATE_SOCIAL_SECURITY}__<state>.csv: rows by min_age need a "
+            "person with a birthdate in persons.csv; without one only rows without "
+            "min_age apply")
+
+
+def _validate_state_standard_deduction(
+    aux_rows: list[tuple[str, str | None, dict[str, Any], str]],
+    issues: list[str],
+) -> None:
+    """A state_standard_deduction row (#578) shrinks one way
+    (_check_phase_out), not below a floor it reaches, testing the AGI
+    phaseout_agi names."""
+    for kind, state, payload, effective in aux_rows:
+        if kind != registries.STATE_STANDARD_DEDUCTION:
+            continue
+        where = (f"aux/{kind}__{state}.csv" if state else f"aux/{kind}.csv") + (
+            f" ({effective}, {payload.get('filing_status')})")
+        _check_not_negative(where, payload, ("amount",), issues)
+        _check_phase_out(where, payload, issues, extra=("phaseout_agi",))
+        floor, amount = payload.get("floor"), payload.get("amount")
+        if floor is not None and amount is not None and floor > amount:
+            issues.append(f"{where}: floor is above amount")
+        agi = payload.get("phaseout_agi")
+        if agi is not None and agi not in registries.STATE_PHASEOUT_AGI:
+            issues.append(f"{where}: phaseout_agi {agi!r} must be one of "
+                          f"{', '.join(registries.STATE_PHASEOUT_AGI)} (blank: state)")
+
+
+def _check_min_age(where: str, payload: Mapping[str, Any], issues: list[str], *,
+                   fra: bool = False) -> int | str:
+    """A ``min_age`` cell, an age in years (59.5), as months; 0 when blank
+    or not an age, which is reported. Where ``fra`` is allowed (#581),
+    :data:`registries.MIN_AGE_FRA` for a cell that says it."""
+    age = payload.get("min_age")
+    if fra and registries.is_fra(age):
+        return registries.MIN_AGE_FRA
+    try:
+        years = 0.0 if age in (None, "") else float(age)
+        if not 0 <= years <= 150:  # also refuses nan and inf
+            raise ValueError(age)
+        return round(years * 12)
+    except (TypeError, ValueError):
+        issues.append(f"{where}: min_age {age!r} must be an age in years, such as 59.5"
+                      + (", or fra" if fra else ""))
+        return 0
+
+
+def _check_filing_status(where: str, payload: Mapping[str, Any], issues: list[str]) -> None:
+    status = payload.get("filing_status")
+    if status not in (None, "") and status not in registries.FILING_STATUSES:
+        issues.append(
+            f"{where}: filing_status {status!r} must be blank (every status) or one of "
+            f"{', '.join(registries.FILING_STATUSES)}"
+        )
+
+
+def _check_yes(where: str, payload: Mapping[str, Any], column: str, issues: list[str]) -> bool:
+    """A yes/no cell: whether it says yes; anything but yes, no, true,
+    false or blank is reported."""
+    value = str(payload.get(column) or "").strip().lower()
+    if value not in ("", "yes", "no", "true", "false"):
+        issues.append(f"{where}: {column} {payload.get(column)!r} must be yes or blank")
+    return value in ("yes", "true")
+
+
+def _check_not_negative(where: str, payload: Mapping[str, Any], columns: Iterable[str],
+                        issues: list[str]) -> None:
+    for column in columns:
+        if (payload.get(column) or 0) < 0:
+            issues.append(f"{where}: {column} must not be negative")
+
+
+def _validate_state_retirement_exclusions(
+    aux_rows: list[tuple[str, str | None, dict[str, Any], str]],
+    issues: list[str],
+) -> None:
+    """A ``state_retirement_exclusion__<state>.csv`` row (#486) names an
+    exclusion, the income it covers, an age it starts at and its limits in
+    forms the run can read, so a typo fails at load rather than excluding
+    nothing."""
+    kind = registries.STATE_RETIREMENT_EXCLUSION
+    incomes = {*registries.STATE_EXCLUSION_INCOME, "all"}
+    tiers: set[tuple[str | None, str, str, str, str]] = set()
+    for row_kind, state, payload, effective in aux_rows:
+        if row_kind != kind:
+            continue
+        where = f"aux/{kind}__{state}.csv ({effective}, {payload.get('name')})"
+        if not state:  # no suffix, or an empty one (state_retirement_exclusion__.csv)
+            issues.append(f"aux/{kind}.csv: name the state, as {kind}__CA.csv")
+            return
+        name = str(payload.get("name") or "").strip()
+        if not name:
+            issues.append(f"{where}: name is blank; rows with the same name are one exclusion")
+        words = [w.strip() for w in str(payload.get("income") or "").replace(",", ";").split(";")]
+        words = [w for w in words if w]
+        bad = [w for w in words if w not in incomes]
+        if not words or bad:
+            issues.append(
+                f"{where}: income {payload.get('income')!r} must list one or more of "
+                f"{', '.join(sorted(incomes))}, separated by ';'"
+            )
+        months = _check_min_age(where, payload, issues)
+        status = payload.get("filing_status")
+        _check_filing_status(where, payload, issues)
+        _check_not_negative(where, payload, ("amount", "income_limit", "phaseout"), issues)
+        if payload.get("phaseout") is not None and payload.get("income_limit") is None:
+            issues.append(f"{where}: a phaseout needs the income_limit it starts at")
+        if _check_yes(where, payload, "less_ss", issues) and payload.get("amount") is None:
+            issues.append(f"{where}: less_ss needs an amount for Social Security to reduce")
+        tier = (state, effective, name, str(status or ""), str(months))
+        if tier in tiers:
+            issues.append(f"{where}: two rows for the same exclusion, filing status and min_age")
+        tiers.add(tier)
+
+
+_STATE_LINES: frozenset[str] = frozenset({
+    "agi", "tax", "taxable_income", "ordinary_taxable", "ordinary_income", "ltcg_taxed",
+    "nol_used", "nol_carryover", "ss_taxable", "ss_benefits", "credits", "deduction",
+    "standard_deduction", "itemized_deduction", *registries.ITEMIZED_LINES,
+    "capital_loss_used", "capital_loss_carryover",
+    "capital_loss_lapsed", "nol_lapsed", "business_net", "hobby_disallowed",
+    "dividends_as_ordinary", "hsa_addback", "hsa_dividends", "muni_interest",
+    "capital_gain_difference", "ltcg_exclusion", "retirement_exclusion", "ss_difference",
+    "ltcg_for_gains_base", "gains_base", "gains_deduction", "gains_tax",
+    "drawdown_tax", "drawdown_base", "tax_paid", "tax_due", "tax_overpaid",
+})
+"""The lines the built-in state calculator writes itself, and the buckets
+the engine's settlement adds beside them, which a ``state_adjustments``
+row can't be named (it would overwrite one, or be overwritten)."""
+
+_LINE_NAME = re.compile(r"^[a-z][a-z0-9_]*$")
+
+
+def _validate_state_adjustments(
+    aux_rows: list[tuple[str, str | None, dict[str, Any], str]],
+    issues: list[str], unused: list[str], *,
+    tax_rows: Sequence[Mapping[str, str]] = (),
+    residence_rows: Sequence[Mapping[str, str]] = (),
+    tags: frozenset[str] = frozenset(),
+) -> None:
+    """A ``state_adjustments__<state>.csv`` row (#511, #488) names a line,
+    its step and base, and the tag its base reads, in forms the run can
+    read. A tag that nothing in the scenario carries, in a state the
+    household lives in, is noted for ``sim check``: the line comes out zero,
+    which is right for a household that doesn't rent but wrong for a
+    misspelt tag."""
+    kind = registries.STATE_ADJUSTMENTS
+    lived = {r.get("state") for r in residence_rows}
+    has_state = any(r.get("name") == "state" for r in tax_rows)
+    seen: set[tuple[str | None, str, str, str]] = set()
+    noted: set[tuple[str | None, str, str]] = set()
+    for row_kind, state, payload, effective in aux_rows:
+        if row_kind != kind:
+            continue
+        name = str(payload.get("name") or "").strip()
+        where = f"aux/{kind}__{state}.csv ({effective}, {name})"
+        if not state:
+            issues.append(f"aux/{kind}.csv: name the state, as {kind}__CA.csv")
+            return
+        if not _LINE_NAME.match(name):
+            issues.append(f"{where}: name must be lower case letters, digits and _, "
+                          "as the return line it becomes (state_<name>)")
+        elif name in _STATE_LINES:
+            issues.append(f"{where}: name '{name}' is a line the state return already has")
+        step, base = payload.get("step"), payload.get("base")
+        if step not in registries.STATE_ADJUSTMENT_STEPS:
+            issues.append(f"{where}: step {step!r} must be one of "
+                          f"{', '.join(registries.STATE_ADJUSTMENT_STEPS)}")
+        if base not in registries.STATE_ADJUSTMENT_BASES:
+            issues.append(f"{where}: base {base!r} must be one of "
+                          f"{', '.join(registries.STATE_ADJUSTMENT_BASES)}")
+        tag = str(payload.get("tag") or "").strip()
+        if base in ("spending", "income"):
+            if not tag:
+                issues.append(f"{where}: base {base} needs the tag it reads, as tax:rent")
+            else:
+                try:
+                    well_formed = len(registries.parse_tags(tag)) == 1
+                except ValueError:
+                    well_formed = False
+                if not well_formed:
+                    issues.append(f"{where}: tag {tag!r} must be one role:name, as tax:rent")
+                elif tag not in tags and state in lived and has_state and (state, name, tag) not in noted:
+                    noted.add((state, name, tag))
+                    unused.append(
+                        f"{where}: no account, scheduled rule or calendar row carries tag "
+                        f"'{tag}', so this line comes out zero (right if the household has "
+                        "none; tag what it pays or receives otherwise)")
+        elif tag:
+            issues.append(f"{where}: base {base} reads no tag; leave tag blank")
+        if base == "filers" and payload.get("amount") is None:
+            issues.append(f"{where}: base filers needs the amount each filer gets")
+        if base == "filers" and payload.get("rate_micros") is not None:
+            issues.append(f"{where}: base filers takes no rate; amount is each filer's")
+        rate = payload.get("rate_micros")
+        if rate is not None and rate <= 0:
+            issues.append(f"{where}: rate must be more than 0%")
+        _check_not_negative(where, payload, ("amount", "income_limit", "phaseout"), issues)
+        if payload.get("phaseout") is not None and payload.get("phaseout_rate_micros") is not None:
+            issues.append(f"{where}: give phaseout or phaseout_rate, not both")
+        if (payload.get("phaseout") is not None or payload.get("phaseout_rate_micros") is not None) \
+                and payload.get("income_limit") is None:
+            issues.append(f"{where}: a phase-out needs the income_limit it starts at")
+        phaseout_rate = payload.get("phaseout_rate_micros")
+        if phaseout_rate is not None and phaseout_rate <= 0:
+            issues.append(f"{where}: phaseout_rate must be more than 0%")
+        _check_min_age(where, payload, issues)
+        _check_yes(where, payload, "per_person", issues)
+        # #579: a refundable line is a credit; less_ss reduces an income
+        # row's cap, so it needs one.
+        if _check_yes(where, payload, "refundable", issues) and step != "credit":
+            issues.append(f"{where}: refundable is for a credit; step is {step!r}")
+        if _check_yes(where, payload, "less_ss", issues):
+            if base != "income":
+                issues.append(f"{where}: less_ss is for base income; base is {base!r}")
+            elif payload.get("amount") is None:
+                issues.append(f"{where}: less_ss needs an amount for Social Security to reduce")
+        _check_filing_status(where, payload, issues)
+        status = payload.get("filing_status")
+        key = (state, effective, name, str(status or ""))
+        if key in seen:
+            issues.append(f"{where}: two rows for the same line and filing status")
+        seen.add(key)
 
 
 def _validate_swap_aux_tables(
@@ -3047,13 +4813,9 @@ def _validate_calendar_vary(
     or an optional process (§4a).
     """
     where = f"{location} ({name or '?'})"
-    for old, new in registries.RENAMED_CALENDAR_COLUMNS.items():
+    for old, (new, why) in registries.RENAMED_CALENDAR_COLUMNS.items():
         if (row.get(old) or "").strip():
-            issues.append(
-                f"{where}: {old} was renamed to {new} (now the median of the truncated "
-                f"distribution, so the base case is exactly the authored value); "
-                f"rename the column"
-            )
+            issues.append(f"{where}: {old} was renamed to {new} ({why}); rename the column")
     distribution = (row.get("vary_distribution") or "").strip()
     target = (row.get("vary_target") or "").strip()
     ramp_months = (row.get("vary_ramp_months") or "").strip()
@@ -3139,13 +4901,25 @@ def _validate_vary_process(
     no path of growth around it can mean."""
     process = (row.get("vary_process") or "").strip()
     raw_phi = (row.get("vary_persistence") or "").strip()
-    raw_sd = (row.get("vary_innovation_sd") or "").strip()
+    raw_sd = (row.get("vary_shock_sd") or "").strip()
+    start = (row.get("vary_process_start") or "").strip()
     if not process:
-        if raw_phi or raw_sd:
+        given = [column for column, raw in (
+            ("vary_persistence", raw_phi), ("vary_shock_sd", raw_sd),
+            ("vary_process_start", start),
+        ) if raw]
+        if given:
             issues.append(
-                f"{where}: vary_persistence/vary_innovation_sd are only read with vary_process"
+                f"{where}: {'/'.join(given)} {'are' if len(given) > 1 else 'is'} "
+                "only read with vary_process"
             )
         return
+    if start and start not in registries.VARY_PROCESS_STARTS:
+        issues.append(
+            f"{where}: unknown vary_process_start '{start}' "
+            f"(one of {sorted(registries.VARY_PROCESS_STARTS)}, or blank for a "
+            "stationary start)"
+        )
     if process not in registries.VARY_PROCESSES:
         issues.append(
             f"{where}: unknown vary_process '{process}' "
@@ -3164,7 +4938,7 @@ def _validate_vary_process(
             "row followed by a later process row for the same series expresses both"
         )
     if not raw_phi or not raw_sd:
-        issues.append(f"{where}: vary_process requires vary_persistence and vary_innovation_sd")
+        issues.append(f"{where}: vary_process requires vary_persistence and vary_shock_sd")
         return
     try:
         phi = float(raw_phi)
@@ -3177,7 +4951,7 @@ def _validate_vary_process(
     # and is already reported.
     if raw_sd.lstrip("-").isdigit() and int(raw_sd) <= 0:
         issues.append(
-            f"{where}: vary_innovation_sd must be positive "
+            f"{where}: vary_shock_sd must be positive "
             f"(got {units.micros_to_percent(int(raw_sd))})"
         )
     if effective_low is not None and effective_low <= _MINUS_100_PERCENT_MICROS:
@@ -3215,9 +4989,10 @@ def _validate_calendar_correlation(
     root nothing depends on it is a warning, for the same reasons.
 
     ``lifespan_links`` (#221) are the varying lifespans' nodes
-    (``lifespan:<person>``), each mapped to its parent (or "") and where to
-    report it: they join the same forest, so a lifespan and a calendar row
-    can name each other."""
+    (``lifespan:<person>``), and the varied strategy parameters'
+    (``strategy:<name>.<param>``, #408), each mapped to its parent (or "")
+    and where to report it: they join the same forest, so a lifespan, a
+    strategy parameter and a calendar row can name each other."""
     lifespan_links = lifespan_links or {}
     nodes: dict[str, int] = {}
     parents: dict[str, str] = {}
@@ -3230,11 +5005,12 @@ def _validate_calendar_correlation(
         where = f"{_where(row, 'calendar.csv', i)} ({name or '?'})"
         is_factor = kind == registries.LATENT_FACTOR_KIND
         varying = bool((row.get("vary_distribution") or "").strip())
-        if name.startswith(registries.LIFESPAN_NODE_PREFIX):
-            issues.append(
-                f"{where}: a calendar row's name can't start with "
-                f"'{registries.LIFESPAN_NODE_PREFIX}', which names a lifespan (#221)"
-            )
+        for prefix, what in ((registries.LIFESPAN_NODE_PREFIX, "a lifespan (#221)"),
+                             (registries.STRATEGY_NODE_PREFIX, "a strategy parameter (#408)")):
+            if name.startswith(prefix):
+                issues.append(
+                    f"{where}: a calendar row's name can't start with '{prefix}', which names {what}"
+                )
         if is_factor:
             if not name:
                 issues.append(f"{where}: a latent_factor row needs a name")
@@ -3498,6 +5274,53 @@ def _safe_json(raw: str | None) -> dict[str, Any] | None:
     return parsed if isinstance(parsed, dict) else None
 
 
+def _validate_inflation_from_start(
+    aux_rows: list[tuple[str, str | None, dict[str, Any], str]],
+    calendar_rows: list[dict[str, str]], start: str, issues: list[str],
+) -> None:
+    """Every inflation series needs a rate in force at the scenario's start:
+    the run grows each one's index from its first month, read or not, so a
+    series whose first row comes later would fail that month (#471). A
+    set_rate or swap_aux_table row in the first month supplies one too: the
+    run applies the month's calendar events before it grows the indexes."""
+    try:
+        first_month = month_end_iso(start)
+    except ValueError:
+        return  # a missing or bad start is reported where it's read
+    first_row: dict[str, str] = {}
+    for kind, series, _, effective in aux_rows:
+        if kind == "inflation" and series is not None:
+            first_row[series] = min(first_row.get(series, effective), effective)
+    covered = {series for series, effective in first_row.items() if effective <= first_month}
+    swaps: list[tuple[str, str]] = []  # (series, source) swapped in the first month
+    for row in calendar_rows:
+        kind = row.get("kind")
+        params = _safe_json(row.get("params_json")) or {}
+        if params.get("aux_kind", "rate") != "inflation" or kind not in ("set_rate", "swap_aux_table"):
+            continue
+        try:
+            if month_end_iso(row.get("date", "")) != first_month:
+                continue
+        except ValueError:
+            continue  # a marker or relative date: not known to be the first month here
+        if kind == "set_rate":
+            if (row.get("amount") or "").strip():
+                covered.add(row.get("series", ""))
+        else:
+            swaps.append((row.get("series", ""), str(params.get("source_series") or "")))
+    # A swap takes over its source's rate in force (ADR-003 §3.5), which a
+    # first-month set_rate or another swap may have supplied.
+    while new_cover := {series for series, source in swaps if source in covered} - covered:
+        covered |= new_cover
+    for series, effective in sorted(first_row.items()):
+        if series not in covered:
+            issues.append(
+                f"inflation__{series}.csv: its first rate is from {effective[:7]}, after the "
+                f"scenario's start ({first_month[:7]}); the run grows every inflation series "
+                f"from the start, so it needs a row on or before {first_month[:7]}"
+            )
+
+
 def _validate_series_references(
     scheduled_rows: list[dict[str, str]],
     calendar_rows: list[dict[str, str]],
@@ -3505,6 +5328,7 @@ def _validate_series_references(
     chains: dict[str, tuple[str, list[dict[str, str]]]],
     issues: list[str],
     unused_warnings: list[str],
+    *, taxed: bool = False,
 ) -> None:
     """Cross-check every `(aux_kind, series)` pair a scheduled.csv rule or a
     chains/*.csv step reads against every pair something actually supplies,
@@ -3557,6 +5381,14 @@ def _validate_series_references(
     for where, row in _located(scheduled_rows, "scheduled.csv"):
         kind = row.get("amount_rule_kind", "")
         series = row.get("series", "")
+        if kind == "percent_of_balance":
+            # A taxable lot's payouts (#468) come out of its growth rule's
+            # total return; they were checked to exist when found.
+            for spec in (_safe_json(row.get("params_json")) or {}).get("less") or ():
+                if spec.get("series"):
+                    demanded.add(("rate", spec["series"]))
+                for _, slices in spec.get("blend") or ():
+                    demanded.update(("rate", slice_series) for slice_series, _ in slices)
         if kind == "percent_of_balance" and not series:
             # A fund's allocation blend (#78) reads each slice's series; they
             # were checked to exist when the blend was built.
@@ -3609,6 +5441,39 @@ def _validate_series_references(
                         f"no series/inflation__{series}.csv in this scenario or a parent"
                     )
 
+    if taxed:
+        # A tax jurisdiction grows each indexed tax table's figures by the series
+        # its rows name (#467), from the month after the table's date, so
+        # the series needs a rate in effect by then.
+        first_rate: dict[str, str] = {}
+        for kind, series, _, effective in aux_rows:
+            if kind == "inflation" and series is not None:
+                first_rate[series] = min(first_rate.get(series, effective), effective)
+        late: set[tuple[str, str]] = set()
+        for kind, table, payload, effective in aux_rows:
+            for column in registries.TAX_GROWTH_SERIES_COLUMNS.get(kind, {}):
+                series = payload.get(column)
+                if not series:
+                    continue
+                demanded.add(("inflation", str(series)))
+                if ("inflation", str(series)) not in supplied:
+                    file = f"{kind}__{table}.csv" if table else f"{kind}.csv"
+                    issues.append(
+                        f"aux/{file} ({effective}, {payload.get('filing_status')}): "
+                        f"{column} '{series}' doesn't exist -- no "
+                        f"series/inflation__{series}.csv in this scenario or a parent"
+                    )
+                    continue
+                growth_from = add_month_ends(parse_day(effective), 1).isoformat()
+                file = f"{kind}__{table}.csv" if table else f"{kind}.csv"
+                if first_rate[str(series)] > growth_from and (file, effective) not in late:
+                    late.add((file, effective))
+                    issues.append(
+                        f"aux/{file} ({effective}): {column} '{series}' has no rate until "
+                        f"{first_rate[str(series)][:7]}, but grows the table from "
+                        f"{growth_from[:7]}; add an earlier rate to inflation__{series}.csv"
+                    )
+
     for where, row in _located(calendar_rows, "calendar.csv"):
         if row.get("kind") != "set_rate":
             continue
@@ -3626,7 +5491,22 @@ def _validate_series_references(
                 "that (aux_kind, series) pair in this scenario or a parent "
                 f"(e.g. series/{aux_kind}__{series}.csv)"
             )
-        elif (aux_kind, series) not in demanded:
+        elif ((row.get("vary_process_start") or "").strip() == "current"
+              and not _rate_in_effect_before(row, aux_kind, series, aux_rows, calendar_rows)):
+            issues.append(
+                f"{where}: vary_process_start 'current' needs a rate in effect before "
+                f"{row.get('date', '')} -- no series/{aux_kind}__{series}.csv entry before "
+                "it, and no earlier set_rate row with a fixed date for that series"
+            )
+        if ((aux_kind, series) in supplied and (resume := (row.get("vary_resume") or "").strip())
+                and not _rate_in_effect_before({"date": resume}, aux_kind, series,
+                                               aux_rows, calendar_rows)):
+            issues.append(
+                f"{where}: vary_resume {resume} needs a rate in effect before it -- no "
+                f"series/{aux_kind}__{series}.csv entry before it, and no earlier set_rate "
+                "row with a fixed date for that series"
+            )
+        if (aux_kind, series) in supplied and (aux_kind, series) not in demanded:
             unused_warnings.append(
                 f"{where}: set_rate series '{series}' under "
                 f"aux_kind '{aux_kind}' is never read by any scheduled.csv "
@@ -3634,6 +5514,244 @@ def _validate_series_references(
                 "cap or account growth series -- this value has no effect "
                 "here, unless a scenario inheriting from this one reads it"
             )
+
+
+def _validate_rate_series_start(
+    scheduled_rows: list[dict[str, str]],
+    calendar_rows: list[dict[str, str]],
+    aux_rows: list[tuple[str, str | None, dict[str, Any], str]],
+    scenario_row: Mapping[str, str],
+    issues: list[str],
+) -> None:
+    """A series a ``percent_of_balance`` rule reads needs a rate in force by
+    the first month the rule reads it, or the run fails that month with "no
+    aux row" (#475). The readers are each lot's growth rule (from
+    ``scenario.start``), hand-written rules (from their ``start`` and first
+    firing), and each slice of a fund's blend (from when its set applies). A
+    ``set_rate`` row with a fixed date also supplies a rate from its month;
+    one whose date varies, or follows a date marker, might land later, so it
+    doesn't count. A series nothing supplies at all is reported by
+    ``_validate_series_references``."""
+    try:
+        run_start = parse_month(scenario_row.get("start", ""))
+        run_end = parse_month(scenario_row.get("end", ""))
+    except ValueError:
+        return  # a missing or bad start or end is reported where it's read
+
+    supplied_from: dict[tuple[str, str], str] = {}
+    for kind, series, _, effective in aux_rows:
+        if series is not None:
+            key = (kind, series)
+            supplied_from[key] = min(supplied_from.get(key, effective), effective)
+    file_from = dict(supplied_from)
+    # The run applies a calendar event only in a month it steps through, so
+    # one dated before the start or after the end never happens; one whose
+    # date varies or follows a date marker could land later than written.
+    fixed_events = [
+        row for row in calendar_rows
+        if (when := row.get("date", ""))
+        and run_start.isoformat()[:7] <= when[:7] <= run_end.isoformat()[:7]
+        and (row.get("vary_target") or "").strip() != "date"
+        and "date" not in (_safe_json(row.get(DATE_REFS)) or {})
+    ]
+    # (target key, date, source key or None for a set_rate)
+    suppliers: list[tuple[tuple[str, str], str, tuple[str, str] | None]] = []
+    for row in fixed_events:
+        series, when = row.get("series", ""), row["date"]
+        params = _safe_json(row.get("params_json")) or {}
+        if not series:
+            continue
+        if row.get("kind") == "set_rate" and not (row.get("vary_resume") or "").strip():
+            suppliers.append(((params.get("aux_kind", "rate"), series), when, None))
+        elif row.get("kind") == "swap_aux_table" and isinstance(
+                source := params.get("source_series"), str):
+            # From its date the series reads as its source, which needs a
+            # rate in force by then or the run fails (ADR-003 §3.5).
+            kind = params.get("aux_kind", "")
+            suppliers.append(((kind, series), when, (kind, source)))
+    # A swap's source may itself be supplied by an earlier set_rate or swap.
+    # The engine applies events by date, then calendar order (their ids), so
+    # walk them that way: a later event can't supply an earlier swap.
+    for key, when, source in sorted(suppliers, key=lambda s: s[1]):
+        if key not in supplied_from or supplied_from[key] <= when:
+            continue
+        if source is None or supplied_from.get(source, "9999") <= when:
+            supplied_from[key] = when
+    # A retire_scheduled event's date, which keeps its day, replaces its
+    # rule's inclusive end when applied (ADR-006 §2), even a later one, so a
+    # second retirement reopens the rule. Only a rule's one fixed, in-run
+    # retirement gives a sure last posting: with more, or one that can move,
+    # the rule may post until the run ends (None).
+    retired: dict[str, date | None] = {}
+    fixed_ids = {id(row) for row in fixed_events}
+    for row in calendar_rows:
+        if row.get("kind") != "retire_scheduled" or not (name := row.get("scheduled_name", "")):
+            continue
+        movable = ((row.get("vary_target") or "").strip() == "date"
+                   or "date" in (_safe_json(row.get(DATE_REFS)) or {}))
+        if id(row) in fixed_ids:
+            try:
+                when_d: date | None = parse_day(row["date"])
+            except ValueError:
+                continue  # reported by _normalize_month_columns
+        elif movable:
+            when_d = None
+        else:
+            continue  # dated before the run, so never applied
+        retired[name] = when_d if name not in retired else None
+
+    # (aux_kind, series) -> (first month read, who reads it then)
+    first_read: dict[tuple[str, str], tuple[str, str]] = {}
+
+    def reads(key: tuple[str, str], month: date, reader: str) -> None:
+        month_s = month.isoformat()
+        if key in supplied_from and (key not in first_read or month_s < first_read[key][0]):
+            first_read[key] = (month_s, reader)
+
+    for where, row in _located(scheduled_rows, "scheduled.csv"):
+        if row.get("amount_rule_kind") != "percent_of_balance":
+            continue
+        params = _safe_json(row.get("amount_rule_params_json") or row.get("params_json")) or {}
+        name = row.get("name", "")
+        window = _first_firing(row, run_start, run_end, retire_moves=name in retired)
+        if retire_day := retired.get(name):
+            window = _retired_window(row, run_start, run_end, retire_day)
+        if window is None:
+            continue
+        first, last = window
+        if ORIGIN in row:
+            reader = f"{where} ({row.get('name', '')})"
+        else:
+            # Validation has rewritten to_account to its leaf, "account:lot".
+            account, _, leaf_lot = row.get("to_account", "").partition(":")
+            lot = leaf_lot or row.get("to_lot") or registries.DEFAULT_LOT
+            what = "the payout rule for" if params.get("payout") else "the growth of"
+            reader = f"{what} {account}" + (
+                f" / {lot}" if lot != registries.DEFAULT_LOT else "")
+        rate_kind = params.get("rate_kind", "rate")
+        # A taxable lot's growth rule also reads its payouts' rates, to take
+        # them out of the total return (#468).
+        specs = [(params, row.get("series", ""), reader)] + [
+            (spec, spec.get("series", ""), f"{reader} (less its payout)")
+            for spec in params.get("less") or ()
+        ]
+        for spec, series, who in specs:
+            if blend := spec.get("blend"):
+                # Growth rules are monthly. A set applies from its as_of (the
+                # first set from the start) until the next set's.
+                for i, (as_of, slices) in enumerate(blend):
+                    begins = first if i == 0 else max(first, parse_month(as_of))
+                    if begins > last or (
+                            i + 1 < len(blend) and begins.isoformat() >= blend[i + 1][0]):
+                        continue  # applies only after the rule stops, or replaced before it's read
+                    for slice_series, _ in slices:
+                        reads((rate_kind, slice_series), begins,
+                              f"{who} ({slice_series} in its blend)")
+            elif series:
+                reads((rate_kind, series), first, who)
+
+    for (kind, series), (month_s, reader) in sorted(first_read.items()):
+        supplied = supplied_from[(kind, series)]
+        if supplied > month_s:
+            issues.append(
+                f"{kind}__{series}.csv: its first rate is from {file_from[(kind, series)][:7]}, "
+                f"but {reader} reads it from {month_s[:7]}; add a row on or before "
+                f"{month_s[:7]}, or a set_rate row with a fixed date by then"
+            )
+
+
+def _last_posting_month(row: Mapping[str, str], retired_on: date) -> date:
+    """The last month a rule retired on ``retired_on`` can post. The engine
+    posts a month's rule at month-end, so one retired mid-month misses that
+    month, but a biweekly rule still pays its paydays up to the day."""
+    month = parse_month(retired_on.isoformat())
+    if retired_on == month or (row.get("cadence") or "") == "biweekly":
+        return month
+    return add_month_ends(month, -1)
+
+
+def _retired_window(
+    row: Mapping[str, str], run_start: date, run_end: date, retired_on: date,
+) -> tuple[date, date] | None:
+    """The first and last months a rule with one fixed retirement can post.
+    The retirement takes effect only on its date: before then the rule keeps
+    its own end. So one retired after that end stops at its end and posts
+    again only in the retirement's own month, if it posts then at all."""
+    last_post = _last_posting_month(row, retired_on)
+    try:
+        own_end = parse_month(row["end"]) if row.get("end") else run_end
+    except ValueError:
+        return None  # reported by _validate_scheduled
+    if last_post <= own_end:
+        return _first_firing(row, run_start, run_end, end=last_post)
+    window = _first_firing(row, run_start, run_end)
+    if window is None and last_post == parse_month(retired_on.isoformat()):
+        window = _first_firing(row, run_start, run_end, end=last_post, after=last_post)
+    return window
+
+
+def _first_firing(
+    row: Mapping[str, str], run_start: date, run_end: date,
+    *, end: date | None = None, retire_moves: bool = False, after: date | None = None,
+) -> tuple[date, date] | None:
+    """The first and last months a scheduled rule can post in the run, or
+    None if it never does: the first is from its start or the scenario's,
+    whichever is later, to the first month its cadence fires; the last is its
+    end (``end`` when a retirement replaces it; the run's end when a
+    retirement may reopen it, ``retire_moves``) or the scenario's, whichever
+    is earlier. ``after`` starts the search no earlier than that month."""
+    from analysis.sim.engine import _cadence_fires  # the engine's own cadence rule
+
+    try:
+        rule_start = parse_month(row.get("start") or run_start.isoformat())
+        rule_end = (run_end if retire_moves else end if end is not None
+                    else parse_month(row["end"]) if row.get("end") else run_end)
+    except ValueError:
+        return None  # reported by _validate_scheduled
+    cadence = row.get("cadence") or "monthly"
+    if cadence not in registries.CADENCES:
+        return None  # reported by _validate_scheduled; the engine's rule would raise
+    try:  # parsed as the intent writer does, so "+6" is June here too
+        moy: int | None = int(row["month_of_year"]) if row.get("month_of_year") else None
+    except ValueError:
+        return None  # not a month; the intent writer refuses it
+    month = max(rule_start, run_start, after or run_start)
+    last = min(rule_end, run_end)
+    for _ in range(12):  # every cadence fires within a year of its start
+        if month > last:
+            return None
+        if cadence == "biweekly" or _cadence_fires(cadence, moy, month, rule_start):
+            return month, last
+        month = add_month_ends(month, 1)
+    return None
+
+
+def _rate_in_effect_before(
+    row: dict[str, str], aux_kind: str, series: str,
+    aux_rows: list[tuple[str, str | None, dict[str, Any], str]],
+    calendar_rows: list[dict[str, str]],
+) -> bool:
+    """Whether something supplies a process row's ``current`` start (#280):
+    an entry of its series file dated before the row, or an earlier
+    ``set_rate`` row for the same series whose date is fixed. A row whose
+    date varies could land after this one, so it doesn't count here; at
+    run time the vary step reads whichever rate is in effect then."""
+    when = row.get("date", "")
+    if not when:
+        return True  # an unreadable date is already reported
+    if any(kind == aux_kind and s == series and effective < when
+           and payload.get("annual_rate_micros") is not None
+           for kind, s, payload, effective in aux_rows):
+        return True
+    for other in calendar_rows:
+        if (other is row or other.get("kind") != "set_rate" or other.get("series") != series
+                or other.get("vary_target") == "date" or not other.get("date")
+                or other["date"] >= when):
+            continue
+        params = _safe_json(other.get("params_json")) or {}
+        if params.get("aux_kind", "rate") == aux_kind:
+            return True
+    return False
 
 
 def _validate_symbol_case(where: str, symbol: str, issues: list[str]) -> None:
@@ -3667,6 +5785,436 @@ def _chain_label(role: str, name: str) -> str:
     return f"chains/{role}/{name}.csv"
 
 
+def _read_lineage_overlay(
+    data_dir: Path, scenarios_dir: Path, scenario_name: str, filename: str,
+    key_columns: tuple[str, ...], issues: list[str], *, replace_whole: bool = False,
+) -> list[dict[str, str]]:
+    """An optional per-scenario CSV merged over the lineage by ``key_columns``
+    (a later scenario's row overlays an earlier one's cells, or with
+    ``replace_whole`` replaces it, so a column its file leaves out is
+    blank), months normalized before the merge so ``2035-01`` and
+    ``2035-01-31`` are one key."""
+    rows: list[dict[str, str]] = []
+    for name in _strict_load_order(scenarios_dir, scenario_name):
+        path = _scenario_dir(scenarios_dir, name) / filename
+        own = _read_csv(path, issues, optional=True, label=_data_label(path, data_dir))
+        _normalize_month_columns(own, filename, issues)
+        # Within one file a repeated key would collapse silently in the merge;
+        # across the lineage it is a sanctioned override.
+        seen: dict[tuple[str, ...], str] = {}
+        for where, row in _located(own, filename):
+            key = tuple(row.get(c, "") for c in key_columns)
+            if key in seen:
+                issues.append(
+                    f"{where}: duplicate {', '.join(key_columns)} {'/'.join(key)} (first seen on {seen[key]})"
+                )
+            else:
+                seen[key] = where
+        # Keys are checked by the file's own validation (a blank as_of is a real key).
+        rows = _merge_scenario_rows(rows, own, key_columns, require_key=False,
+                                    replace_whole=replace_whole)
+    return rows
+
+
+def _read_strategy_files(
+    data_dir: Path, scenarios_dir: Path, scenario_name: str, issues: list[str],
+) -> list[dict[str, str]]:
+    """Each strategy's definition, ``strategies/<name>.csv`` (#408), as the
+    load order leaves it: one row, its ``name`` the file's."""
+    rows: list[dict[str, str]] = []
+    files = strategy_files.lineage_files(
+        scenarios_dir, scenario_name, registries.STRATEGIES_DIR, strict=True)
+    for name, found in sorted(files.items()):
+        label = _data_label(found.path, data_dir)
+        own = _read_csv(found.path, issues, label=label)
+        if problem := strategy_files.name_problem(name):
+            issues.append(f"{label}: {problem}")
+            continue
+        if len(own) != 1:
+            issues.append(f"{label}: a strategy file holds one row, its definition (found {len(own)})")
+            continue
+        if "name" in own[0]:
+            issues.append(f"{label}: no name column: the file's name is the strategy's")
+            continue
+        _normalize_month_columns(own, registries.STRATEGIES_DIR, issues)
+        rows.append({"name": name, **own[0]})
+    return rows
+
+
+def _read_tax_files(
+    data_dir: Path, scenarios_dir: Path, scenario_name: str, issues: list[str],
+) -> list[dict[str, str]]:
+    """Each tax jurisdiction, ``taxes/<name>.csv`` (#507), as the load order
+    leaves it: one row, its ``name`` the file's, in settlement order."""
+    rows: dict[str, dict[str, str]] = {}
+    for name, found in sorted(tax_files.lineage_files(scenarios_dir, scenario_name, strict=True).items()):
+        label = _data_label(found.path, data_dir)
+        own = _read_csv(found.path, issues, label=label)
+        if problem := tax_files.name_problem(name):
+            issues.append(f"{label}: {problem}")
+            continue
+        if len(own) != 1:
+            issues.append(f"{label}: a tax file holds one row, its definition (found {len(own)})")
+            continue
+        if "name" in own[0]:
+            issues.append(f"{label}: no name column: the file's name is the jurisdiction's")
+            continue
+        unknown = sorted(set(own[0]) - set(registries.TAX_CSV_HEADER) - {ORIGIN})
+        if unknown:
+            issues.append(f"{label}: unknown column(s) {', '.join(unknown)} "
+                          f"(known: {', '.join(registries.TAX_CSV_HEADER)})")
+        own[0].setdefault(ORIGIN, label)
+        _normalize_month_columns(own, registries.TAXES_DIR, issues)
+        rows[name] = {"name": name, **own[0]}
+    return [rows[name] for name in registries.TAX_JURISDICTIONS if name in rows]
+
+
+TAX_RETIRED_PARAMS: dict[str, str] = {
+    "scope": "the file's name is its jurisdiction",
+    "year": "a jurisdiction pays the year before each April (schedule)",
+}
+"""``tax_accumulator`` params a jurisdiction file doesn't take (#507), and why."""
+
+
+def tax_calculator_upstream(kind: str, kinds: tax_code.TaxKinds | None = None) -> tuple[str, ...]:
+    """The jurisdictions calculator ``kind`` builds on (#508); none for an
+    unknown kind, which is reported on its own. ``kinds`` are the scenario's,
+    the data repo's included; the built-ins without it."""
+    cls = (kinds.kinds if kinds is not None else tax_code.builtin_kinds()).get(kind)
+    return cls.upstream if cls is not None else ()
+
+
+def _untagged_defaults(cls: type[Any], given: Mapping[str, Any], tags: frozenset[str]) -> list[str]:
+    """A calculator's ``Tag`` params left at their defaults that nothing in
+    the scenario carries (#510): a deduction the household meant to take
+    would otherwise come out zero. A given one was checked with the rest."""
+    units = param_units(cls.Params)
+    out = []
+    for f in dataclasses.fields(cls.Params):
+        unit = units.get(f.name)
+        if unit is None or unit.name != "tag" or f.name in given:
+            continue
+        if isinstance(f.default, str) and f.default not in tags:
+            out.append(f"the {cls.kind} calculator reads tag {f.default!r} (its {f.name!r}), "
+                       "and no account, scheduled rule or calendar row carries it; tag what it "
+                       f"counts, or name another tag in params_json ({f.name!r})")
+    return out
+
+
+def _scenario_tags(
+    accounts: Sequence[Mapping[str, str]], scheduled_rows: Sequence[Mapping[str, str]],
+    calendar_rows: Sequence[Mapping[str, str]],
+) -> frozenset[str]:
+    """Every tag an account, scheduled rule or calendar row carries, as
+    ``role:name``, and the tags a rule kind implies (#542): what a
+    calculator's ``Tag`` param may name (#510). A malformed tag is reported
+    with its row."""
+    out: set[str] = set()
+    for row in (*accounts, *scheduled_rows, *calendar_rows):
+        try:
+            out.update(f"{role}:{name}" for role, name in registries.parse_tags(row.get("tags", "")))
+        except ValueError:
+            continue
+    # The tags a rule kind implies (#542) are carried as surely, and so is
+    # the property tax a taxes_property account implies (#586).
+    out.update(registries.IMPLIED_TAX_TAGS[row["amount_rule_kind"]]
+               for row in _implying_rules(scheduled_rows, accounts))
+    if any(a.get("subkind") == registries.PROPERTY_TAX_SUBKIND for a in accounts):
+        out.add(registries.ITEMIZED_TAGS["property_tax"])
+    return frozenset(out)
+
+
+def _validate_taxes(
+    tax_rows: list[dict[str, str]], leaves: _LeafIndex, chain_names: set[str],
+    accounts: list[dict[str, str]], scenario_row: Mapping[str, str], issues: list[str], *,
+    kinds: tax_code.TaxKinds | None = None, tags: frozenset[str] = frozenset(),
+) -> None:
+    """``taxes/<jurisdiction>.csv`` (#507, ADR-003 §4.15): a calculator kind
+    for the jurisdiction, upstream jurisdictions the scenario has and that
+    settle before it, a source chain or account to pay from, an account to
+    pay into, a known schedule, and calculator params that are a JSON
+    object. Resolves ``source_chain`` and ``destination`` to leaf names in
+    place, and fills a blank ``start`` with the scenario's and a blank
+    ``schedule`` with ``april``. The params are checked against the
+    calculator's ``Params`` (#510) and rewritten in stored units, a ``Tag``
+    param naming a tag some account, rule or calendar row in ``tags``
+    carries."""
+    calculators = kinds if kinds is not None else tax_code.TaxKinds({})
+    defined = [row["name"] for row in tax_rows]
+    account_kinds = {a.get("name", ""): a.get("kind", "") for a in accounts}
+    account_subkinds = {a.get("name", ""): a.get("subkind", "") for a in accounts}
+    paid_into: dict[str, list[str]] = defaultdict(list)
+    for row in tax_rows:
+        where = row.get(ORIGIN) or f"{registries.TAXES_DIR}/{row['name']}.csv"
+        name = row["name"]
+        kind = row.get("kind", "")
+        cls = calculators.kinds.get(kind)
+        if cls is None or cls.jurisdiction != name:
+            fits = sorted(k for k, c in calculators.kinds.items() if c.jurisdiction == name)
+            what = (f"kind {kind!r} computes the {cls.jurisdiction} tax" if cls is not None
+                    else f"no tax calculator kind {kind!r}" if kind else "no kind")
+            issues.append(f"{where}: {what}; the {name} tax takes kind {', '.join(fits)} "
+                          "(`sim tax kinds` lists them)")
+        # A calculator declares the returns it builds on (#508); the column
+        # may only spell that out, and blank takes it.
+        declared = tax_calculator_upstream(kind, calculators)
+        given = (row.get("upstream") or "").split()
+        if given and sorted(given) != sorted(declared):
+            issues.append(
+                f"{where}: upstream must be blank or {' '.join(declared) or 'empty'}: "
+                f"the {kind} calculator builds on {', '.join(declared) or 'no other jurisdiction'}")
+        for up in given or declared:
+            if up == name:
+                issues.append(f"{where}: upstream names the jurisdiction itself")
+            elif up not in defined:
+                issues.append(
+                    f"{where}: the {kind} calculator builds on the {up} tax, and the scenario has "
+                    f"no {registries.TAXES_DIR}/{up}.csv (add it with `sim tax add {up}`)")
+            elif defined.index(up) > defined.index(name):
+                issues.append(f"{where}: upstream {up!r} settles after {name}, so {name} "
+                              "can't build on it")
+        row["upstream"] = " ".join(given or declared)
+        source = row.get("source_chain", "")
+        if not source:
+            issues.append(f"{where}: source_chain names the chain or account the tax is paid from")
+        elif problem := _resolve_ref(row, "source_chain", "", leaves, chain_names):
+            issues.append(f"{where}: source_chain {problem}")
+        destination = row.get("destination", "")
+        if not destination:
+            want = registries.TAX_DESTINATION_SUBKINDS.get(name)
+            issues.append(f"{where}: destination names the expense account the tax is paid into"
+                          + (f", one of subkind {want} (`sim tax edit {name}` can add "
+                             f"Expense_Taxes_{name.capitalize()})" if want else ""))
+        elif destination in chain_names:
+            issues.append(f"{where}: destination '{destination}' is a chain; the tax is paid "
+                          "into an account")
+        elif problem := _resolve_ref(row, "destination", "", leaves, chain_names):
+            issues.append(f"{where}: destination {problem}")
+        elif account_kinds.get(destination) not in (None, "expense"):
+            issues.append(f"{where}: destination '{destination}' is a {account_kinds[destination]} account; "
+                          "the tax is paid into an expense account")
+        elif destination in account_subkinds and name in registries.TAX_DESTINATION_SUBKINDS:
+            # Each tax pays into an account of its own kind (#586), so what
+            # went into it is that tax's payments and nothing else.
+            want = registries.TAX_DESTINATION_SUBKINDS[name]
+            if account_subkinds[destination] != want:
+                issues.append(
+                    f"{where}: destination '{destination}' has subkind "
+                    f"{account_subkinds[destination] or '(blank)'}; the {name} tax is paid into an "
+                    f"expense account of subkind {want} (change the account's subkind in "
+                    f"accounts.csv, or name another)")
+            paid_into[destination].append(name)
+        schedule = row.get("schedule") or registries.TAX_SCHEDULES[0]
+        if schedule not in registries.TAX_SCHEDULES:
+            issues.append(f"{where}: schedule {schedule!r} must be one of "
+                          f"{', '.join(registries.TAX_SCHEDULES)}")
+        row["schedule"] = schedule
+        row["start"] = row.get("start") or scenario_row.get("start", "")
+        if row.get("end") and row["start"] and row["end"] < row["start"]:
+            issues.append(f"{where}: end {row['end'][:7]} is before start {row['start'][:7]}")
+        params = _safe_json(row.get("params_json") or "{}")
+        if params is None:
+            issues.append(f"{where}: params_json is not a JSON object")
+            continue
+        for key, why in TAX_RETIRED_PARAMS.items():
+            if key in params:
+                issues.append(f"{where}: params_json takes no {key!r}: {why}")
+        if cls is None or (cls.jurisdiction != name):
+            continue
+        # The retired params have their own messages (and a state's
+        # bracket_series its own, with the residence).
+        retired = {*TAX_RETIRED_PARAMS, *(("bracket_series",) if name in ("state", "local") else ())}
+        converted, problems = strategy_load.convert_params(
+            cls, {k: v for k, v in params.items() if k not in retired},
+            tags=tags, target_sets=(), accounts={a.get("name", "") for a in accounts},
+            check_types=True, tag_carriers="account, scheduled rule or calendar row")
+        issues.extend(f"{where}: {problem}" for problem in problems)
+        if not problems:
+            problems = _untagged_defaults(cls, converted, tags)
+            issues.extend(f"{where}: {problem}" for problem in problems)
+        if not problems and not set(params) & retired:
+            row["params_json"] = json.dumps(converted, sort_keys=True, separators=(",", ":")) \
+                if converted else ""
+    for destination, names in paid_into.items():
+        if len(names) > 1:
+            issues.append(
+                f"{registries.TAXES_DIR}/: the {', '.join(names[:-1])} and {names[-1]} taxes are "
+                f"{'both' if len(names) == 2 else 'all'} paid into '{destination}'; each tax is "
+                "paid into an account of its own")
+
+
+def _validate_local_tax(
+    tax_rows: list[dict[str, str]],
+    aux_rows: list[tuple[str, str | None, dict[str, Any], str]],
+    issues: list[str],
+) -> None:
+    """A ``state_local_tax__<XX>`` table is read by the local jurisdiction
+    alone (#508), so a scenario with one and no ``taxes/local.csv`` would
+    silently stop paying it."""
+    if any(row["name"] == "local" for row in tax_rows):
+        return
+    tables = sorted({series for kind, series, _p, _e in aux_rows
+                     if kind == registries.STATE_LOCAL_TAX and series})
+    if tables:
+        files = ", ".join(f"aux/{registries.STATE_LOCAL_TAX}__{t}.csv" for t in tables)
+        issues.append(
+            f"{files}: a local income tax is its own jurisdiction now, and the scenario has no "
+            f"{registries.TAXES_DIR}/local.csv; add it with `sim tax add local` (it is paid into "
+            "an account of its own, of subkind taxes_local)")
+
+
+def _read_strategy_vary_files(
+    data_dir: Path, scenarios_dir: Path, scenario_name: str, issues: list[str],
+) -> dict[str, tuple[str, list[tuple[str, dict[str, str]]]]]:
+    """Each strategy's varied parameters, ``strategy_vary/<name>.csv`` (#408),
+    as the load order leaves them: a later scenario's file replaces the
+    earlier one's whole. Each is its label and its rows, located."""
+    files = strategy_files.lineage_files(
+        scenarios_dir, scenario_name, registries.STRATEGY_VARY_DIR, strict=True)
+    out: dict[str, tuple[str, list[tuple[str, dict[str, str]]]]] = {}
+    for name, found in sorted(files.items()):
+        label = _data_label(found.path, data_dir)
+        out[name] = (label, list(_located(_read_csv(found.path, issues, label=label), label)))
+    return out
+
+
+def _validate_strategies(
+    strategy_rows: list[dict[str, str]],
+    target_rows: list[dict[str, str]],
+    sources: Mapping[str, str],
+    *,
+    accounts: list[dict[str, str]],
+    value_rows: list[dict[str, str]],
+    allocations: list[dict[str, str]],
+    chains: dict[str, tuple[str, list[dict[str, str]]]],
+    scheduled_rows: list[dict[str, str]],
+    rails: Mapping[str, Mapping[str, str]],
+    leaves: _LeafIndex,
+    start: str,
+    issues: list[str],
+    unused: list[str],
+    persons: list[dict[str, str]],
+    lifespan_rows: list[dict[str, str]],
+    aux_kinds: frozenset[str],
+    tax_rows: Sequence[Mapping[str, str]] = (),
+    disabled: list[strategy_load.PreparedStrategy] | None = None,
+) -> tuple[strategy_code.StrategyKinds, list[strategy_load.PreparedStrategy]]:
+    """``strategies/<name>.csv`` and ``targets.csv`` (#326, ADR-003 §4.12-4.13).
+
+    The data repo's strategy modules are imported for every load, so a broken
+    one is found at once; it fails only the loads of scenarios that have
+    strategies, and is otherwise reported by ``sim check``."""
+    kinds = strategy_code.strategy_kinds(sources)
+    (issues if strategy_rows else unused).extend(kinds.problems)
+    target_sets = strategy_load.validate_targets(list(_located(target_rows, "targets.csv")), issues)
+    tags: dict[str, frozenset[str]] = {}
+    for a in accounts:
+        try:
+            tags[a["name"]] = frozenset(f"{r}:{n}" for r, n in registries.parse_tags(a.get("tags", "")))
+        except ValueError:
+            tags[a["name"]] = frozenset()  # reported by _validate_accounts
+    rules = []
+    for r in scheduled_rows:
+        try:
+            rule_tags = frozenset(f"{t}:{n}" for t, n in registries.parse_tags(r.get("tags", "")))
+        except ValueError:
+            rule_tags = frozenset()  # reported with the scheduled rows
+        rules.append((r.get("name", ""), r.get("amount_rule_kind", ""), rule_tags))
+    taxes = frozenset(r["name"] for r in tax_rows)
+    by_account = {a["name"]: a for a in accounts}
+    life_tables = {row.get("person", ""): (row.get("life_table") or "").strip() or None for row in lifespan_rows}
+    class_sets = _allocation_class_sets(allocations)
+    grows_at = _lot_growth_series(scheduled_rows, leaves)
+    portfolio_classes: dict[str, set[str]] = {}
+    portfolio_lots: dict[str, list[dict[str, float]]] = {}
+    for m in value_rows:
+        account = by_account.get(m.get("account_name", ""))
+        if account is None or account.get("kind") != "asset":
+            continue
+        weights = asset_classes.class_weights(
+            symbol=m.get("symbol") or None, account=account["name"],
+            lot=m.get("lot") or registries.DEFAULT_LOT, subkind=account.get("subkind", ""),
+            sets=class_sets, date=start,
+            series=grows_at.get((account["name"], m.get("lot") or registries.DEFAULT_LOT)),
+        )
+        for tag in tags.get(account["name"], frozenset()):
+            portfolio_classes.setdefault(tag, set()).update(c for c, w in weights.items() if w > 0)
+            portfolio_lots.setdefault(tag, []).append(dict(weights))
+    scenario = strategy_api.ScenarioView(
+        accounts={a["name"]: (a.get("kind", ""), a.get("subkind", "")) for a in accounts},
+        taxes=taxes,
+        people={p.get("id", ""): ((p.get("role") or "").strip() or None, (p.get("sex") or "").strip() or None,
+                                  life_tables.get(p.get("id", "")))
+                for p in persons},
+        aux=aux_kinds,
+        portfolio_classes={tag: frozenset(classes) for tag, classes in portfolio_classes.items()},
+        portfolio_lots={tag: tuple(lots) for tag, lots in portfolio_lots.items()},
+    )
+    prepared = strategy_load.prepare_strategies(
+        list(_located(strategy_rows, registries.STRATEGIES_DIR)),
+        kinds=kinds, chains=chains, account_names={a["name"] for a in accounts},
+        tags=frozenset().union(*tags.values()), target_sets=target_sets, rules=rules,
+        scenario=scenario, rails=frozenset(rails), issues=issues, disabled=disabled,
+    )
+    lots = [
+        (m["account_name"], m.get("lot") or registries.DEFAULT_LOT, m.get("symbol") or None,
+         by_account[m["account_name"]].get("kind", ""), by_account[m["account_name"]].get("subkind", ""),
+         tags.get(m["account_name"], frozenset()),
+         grows_at.get((m["account_name"], m.get("lot") or registries.DEFAULT_LOT)))
+        for m in value_rows if m.get("account_name") in by_account
+    ]
+    strategy_load.check_portfolio_classes(
+        prepared, kinds=kinds, lots=lots, sets=class_sets,
+        start=start, issues=issues,
+    )
+    known_lots = {(account, lot) for account, lot, *_ in lots}
+    for row in allocations:
+        symbol = row.get("symbol", "")
+        if asset_classes.is_lot_key(symbol):
+            account, _, lot = symbol.partition(":")
+            if account in by_account and (account, lot) not in known_lots:
+                unused.append(f"allocations.csv ({symbol}): {account} has no lot '{lot}' here")
+            elif account not in by_account:
+                # Another scenario's account is fine; a case slip isn't.
+                spelled = next((a for a in by_account if a.casefold() == account.casefold()), None)
+                if spelled is not None:
+                    unused.append(f"allocations.csv ({symbol}): names match as written; did you mean {spelled}?")
+    return kinds, prepared
+
+
+def _lot_growth_series(
+    scheduled_rows: list[dict[str, str]], leaves: _LeafIndex,
+) -> dict[tuple[str, str], str]:
+    """(account, lot) to the rate series its expanded growth rule reads, as
+    the run will see it (``Connection.lot_growth_series``): the lot's own
+    series, else one named for its symbol, else its account's. A lot growing
+    at its allocation's blend has none, and is classed by the allocation."""
+    growth_accounts = {g.name for g in registries.GROWTH_COUNTERPARTY_ACCOUNTS.values()}
+    by_leaf = {
+        row.get("to_account", ""): series
+        for row in scheduled_rows
+        if row.get("from_account") in growth_accounts
+        and row.get("amount_rule_kind") == "percent_of_balance"
+        and (series := (row.get("series") or "").strip())
+    }
+    return {key: by_leaf[leaf] for key, leaf in leaves.leaf_of.items() if leaf in by_leaf}
+
+
+def _allocation_class_sets(
+    allocations: list[dict[str, str]],
+) -> dict[str, list[tuple[str, dict[str, float]]]]:
+    """allocations.csv as ``asset_classes.class_weights`` takes it: symbol (or
+    ``<account>:<lot>`` key) to its weight sets, oldest first."""
+    rows = []
+    for row in allocations:
+        try:
+            weight = _percent_to_micros(row.get("weight", "")) / 1_000_000
+        except ValueError:
+            continue  # reported by _validate_allocations
+        rows.append((row.get("symbol", ""), row.get("as_of", ""), row.get("asset_class", ""), weight))
+    return asset_classes.weight_sets(rows)
+
+
 def _read_chain_files(
     data_dir: Path, scenario_name: str, issues: list[str],
 ) -> dict[str, tuple[str, list[dict[str, str]]]]:
@@ -3682,7 +6230,7 @@ def _read_chain_files(
     scenarios_dir = data_dir / "scenarios"
     chains: dict[str, tuple[str, list[dict[str, str]]]] = {}
     for name in _strict_load_order(scenarios_dir, scenario_name):
-        chains_dir = scenarios_dir / name / "chains"
+        chains_dir = _scenario_dir(scenarios_dir, name) / "chains"
         if not chains_dir.is_dir():
             continue
         for path in sorted(chains_dir.glob("*.csv")):
@@ -3723,6 +6271,7 @@ def _validate_chain_roles(
     calendar_rows: list[dict[str, str]],
     value_rows: list[dict[str, str]],
     issues: list[str],
+    *, tax_rows: Sequence[dict[str, str]] = (),
 ) -> None:
     """Each named chain is used the way its role says (ADR-003 §4.7): a
     source chain is drawn from, a destination chain paid into, and a chain's
@@ -3738,6 +6287,7 @@ def _validate_chain_roles(
     for rows, filename, from_col, to_col in (
         (scheduled_rows, "scheduled.csv", "from_account", "to_account"),
         (calendar_rows, "calendar.csv", "account_1", "account_2"),
+        (tax_rows, registries.TAXES_DIR, "source_chain", "destination"),
     ):
         for where, row in _located(rows, filename):
             where = f"{where} ({row.get('name', '')})" if row.get("name") else where
@@ -3982,7 +6532,7 @@ def _validate_lifespan(
     scenario_start: str,
     issues: list[str],
     *,
-    life_tables: list[tuple[str, dict[str, Any]]] | None = None,
+    life_tables: dict[str | None, list[tuple[str, dict[str, Any]]]] | None = None,
 ) -> dict[str, tuple[str, str]]:
     """lifespan.csv (#221): each row names a person and an ``age_at_death``,
     which becomes the row's ``final_month`` from the person's birthdate. A
@@ -3992,9 +6542,10 @@ def _validate_lifespan(
     ``vary_correlation`` go together, on a varying row, rho in [-1, 1]; the
     parent is checked with the calendar's forest. A ``life_table`` row
     (#222) takes no bounds; its set-forward is solved here from the person's
-    sex and the aux ``life_table`` in ``life_tables`` (effective date,
-    payload), and kept on the row for the writer; ``None`` (a broken table,
-    already reported) skips that.
+    sex and the aux life table the row's ``life_table`` names (#315; blank
+    for the default ``life_table.csv``), out of ``life_tables`` (name ->
+    (effective date, payload)), and kept on the row for the writer; ``None``
+    (a broken table, already reported) skips that.
 
     Returns each varying row's correlation node (``lifespan:<person>``),
     mapped to its parent (or "") and where to report it."""
@@ -4030,10 +6581,23 @@ def _validate_lifespan(
         except ValueError:
             continue  # persons.csv reports the bad birthdate
         _validate_lifespan_vary(row, age, birthdates[person], scenario_start, where, issues, links)
+        table = (row.get("life_table") or "").strip() or None
+        if table is not None and not re.fullmatch(r"[a-z0-9_]+", table):
+            issues.append(
+                f"{where}: life_table must name an aux life_table__<name>.csv in lowercase "
+                f"letters, digits and _ (got '{table}')")
+            continue
+        # Checked for a fixed age too: `sim person show` reads the table.
+        if table is not None and life_tables is not None and table not in life_tables:
+            issues.append(
+                f"{where}: life_table '{table}' needs aux/{life_table.table_file(table)}, "
+                "which isn't in this scenario's lineage")
+            continue
+        row["life_table"] = table or ""
         if (row.get("vary_distribution") or "").strip() == registries.LIFE_TABLE_DISTRIBUTION:
             _solve_life_table(
                 row, sexes[person], birthdates[person], scenario_start, life_tables,
-                where, issues,
+                where, issues, table=table,
             )
     return links
 
@@ -4044,11 +6608,12 @@ _SET_FORWARD_KEY = "life_table_set_forward"
 
 def _solve_life_table(
     row: dict[str, Any], sex: str, birthdate: str, scenario_start: str,
-    life_tables: list[tuple[str, dict[str, Any]]] | None, where: str, issues: list[str],
+    life_tables: dict[str | None, list[tuple[str, dict[str, Any]]]] | None,
+    where: str, issues: list[str], *, table: str | None = None,
 ) -> None:
-    """A ``life_table`` lifespan's set-forward (#222): the one that puts the
-    table's median age at death, given alive at the scenario start, at
-    ``age_at_death``."""
+    """A ``life_table`` lifespan's set-forward (#222): the one that puts
+    ``table``'s median age at death (#315; None for the default table),
+    given alive at the scenario start, at ``age_at_death``."""
     if sex not in registries.PERSON_SEXES:
         issues.append(
             f"{where}: a life_table lifespan needs '{row['person']}'s sex "
@@ -4058,28 +6623,111 @@ def _solve_life_table(
     if not scenario_start or life_tables is None:
         return  # reported where the start or the table is read
     try:
-        table = life_table.life_table_for(life_tables, sex, scenario_start)
+        q = life_table.life_table_for(life_tables.get(table, []), sex, scenario_start, table)
         start = life_table.months_since_birth(birthdate, scenario_start)
         median = round(float(row["age_at_death"]) * 12)
-        row[_SET_FORWARD_KEY] = life_table.solve_set_forward(table, start, median)
+        row[_SET_FORWARD_KEY] = life_table.solve_set_forward(q, start, median)
     except life_table.LifeTableError as e:
         issues.append(f"{where}: life_table age_at_death {row['age_at_death']}: {e}")
     except ValueError:
         return  # the bad birthdate or start is reported where it's read
 
 
+def _validate_itemized_limits(
+    aux_rows: list[tuple[str, str | None, dict[str, Any], str]], issues: list[str],
+) -> None:
+    """An ``itemized_limits`` table (#542) is the federal one, not keyed by a
+    state (another series is one a ``swap_aux_table`` row reads), and
+    each row's figures make sense: no negative dollars, rates of 0% to
+    100%, a SALT floor no higher than its cap, and a SALT phase-down with
+    both its start and its rate. Each of
+    its dates has a row for every filing status the standard deduction
+    has, since only the latest date's rows are in force and a year filed
+    under a missing one (the survivor's Single, §4.9) couldn't be taxed."""
+    keyed: set[str] = set()
+    standard_statuses = {str(payload.get("filing_status")) for kind, _s, payload, _e in aux_rows
+                         if kind == "standard_deduction"}
+    statuses: dict[tuple[str, str | None, str], set[str]] = {}
+    for kind, series, payload, effective in aux_rows:
+        if kind not in (registries.ITEMIZED_LIMITS, registries.STATE_ITEMIZED_LIMITS):
+            continue
+        if kind == registries.ITEMIZED_LIMITS and series in states.BY_CODE:
+            if series not in keyed:
+                keyed.add(series)
+                issues.append(
+                    f"aux/{kind}__{series}.csv: the federal limits aren't keyed by state; a state's "
+                    f"are aux/{registries.STATE_ITEMIZED_LIMITS}__{series}.csv")
+            continue
+        name = f"{kind}__{series}" if series else kind
+        statuses.setdefault((name, series, effective), set()).add(str(payload.get("filing_status")))
+        where = f"aux/{name}.csv ({effective[:7]}, {payload.get('filing_status')})"
+        _check_not_negative(
+            where, payload, ("salt_cap", "salt_floor", "salt_phaseout_start", "mortgage_limit"), issues)
+        for column in ("salt_phaseout_rate", "charity_floor", "charity_limit", "medical_floor"):
+            rate = payload.get(f"{column}_micros")
+            if rate is not None and not 0 <= rate <= 1_000_000:
+                issues.append(f"{where}: {column} must be 0% to 100%")
+        if (payload.get("salt_phaseout_start") is None) != (payload.get("salt_phaseout_rate_micros") is None):
+            issues.append(f"{where}: a SALT phase-down needs both salt_phaseout_start and salt_phaseout_rate")
+        cap, floor = payload.get("salt_cap"), payload.get("salt_floor")
+        if cap is not None and floor is not None and floor > cap:
+            # The phase-down stops at the floor, so a floor above the cap
+            # would raise the cap itself.
+            issues.append(f"{where}: salt_floor can't be above salt_cap")
+        if cap is None and (floor is not None or payload.get("salt_phaseout_start") is not None):
+            # Without a cap there is nothing to phase down or hold up, so
+            # they'd be ignored without a word.
+            issues.append(f"{where}: a salt_floor or SALT phase-down needs a salt_cap")
+    _check_filing_statuses(
+        {(f"aux/{name}.csv", effective[:7]): found
+         for (name, _series, effective), found in statuses.items()},
+        standard_statuses, "the standard deduction has", "a year filed that way couldn't be taxed",
+        issues)
+
+
+def _validate_state_gain_tables(
+    aux_rows: list[tuple[str, str | None, dict[str, Any], str]], issues: list[str],
+) -> None:
+    """A state's gain tables (#485) are named for the state, as its
+    brackets are, and an exclusion row's figures make sense."""
+    kinds = (registries.STATE_LTCG_BRACKETS, registries.STATE_STCG_BRACKETS,
+             registries.STATE_LTCG_EXCLUSION)
+    unnamed: set[str] = set()
+    for kind, series, payload, effective in aux_rows:
+        if kind not in kinds:
+            continue
+        if series is None:
+            if kind not in unnamed:
+                unnamed.add(kind)
+                issues.append(
+                    f"aux/{kind}.csv: name the state, as its brackets are "
+                    f"(aux/{kind}__CA.csv beside aux/state_brackets__CA.csv)"
+                )
+            continue
+        if kind != registries.STATE_LTCG_EXCLUSION:
+            continue
+        where = f"aux/{kind}__{series}.csv ({effective[:7]})"
+        if not 0 <= payload["exclusion_micros"] <= 1_000_000:
+            issues.append(f"{where}: exclusion must be 0% to 100%")
+        low, high = payload.get("min_exclusion"), payload.get("max_exclusion")
+        if (low is not None and low < 0) or (high is not None and high < 0):
+            issues.append(f"{where}: min_exclusion and max_exclusion can't be negative")
+        elif low is not None and high is not None and low > high:
+            issues.append(f"{where}: min_exclusion is more than max_exclusion")
+
+
 def _validate_life_tables(
     aux_rows: list[tuple[str, str | None, dict[str, Any], str]], issues: list[str],
 ) -> bool:
-    """Each ``life_table`` vintage (#222): its ages run 0, 1, 2, ... once
-    each, and every q is a probability. Whether all of them do."""
+    """Each vintage of each life table (#222, #315): its ages run 0, 1, 2,
+    ... once each, and every q is a probability. Whether all of them do."""
     before = len(issues)
-    vintages: dict[str, list[dict[str, Any]]] = {}
-    for kind, _, payload, effective in aux_rows:
+    vintages: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    for kind, name, payload, effective in aux_rows:
         if kind == life_table.LIFE_TABLE_KIND:
-            vintages.setdefault(effective, []).append(payload)
-    for effective, payloads in sorted(vintages.items()):
-        where = f"aux life_table.csv ({effective[:7]})"
+            vintages.setdefault((name or "", effective), []).append(payload)
+    for (name, effective), payloads in sorted(vintages.items()):
+        where = f"aux {life_table.table_file(name)} ({effective[:7]})"
         ages = sorted(p["age"] for p in payloads if isinstance(p["age"], int))
         if len(ages) != len(payloads) or ages != list(range(len(ages))):
             issues.append(f"{where}: ages must be whole numbers 0, 1, 2, ... each once, no gaps")
@@ -4227,12 +6875,15 @@ def _write_intent(
     scenario_row: dict[str, str],
     parents: list[str],
     lineage_order: list[str],
+    mixin_only: bool,
     scheduled_rows: list[dict[str, str]],
     chains: dict[str, tuple[str, list[dict[str, str]]]],
     calendar_rows: list[dict[str, str]],
     lifespan_rows: list[dict[str, str]],
     ytd_rows: list[dict[str, str]],
     money_resolver: _MoneyReferenceResolver,
+    tax_rows: Sequence[dict[str, str]] = (),
+    residence_rows: Sequence[dict[str, str]] = (),
 ) -> dict[str, int]:
     counts: dict[str, int] = {}
     now = _now_iso()
@@ -4408,8 +7059,9 @@ def _write_intent(
             "vary_target, vary_distribution, vary_low, vary_high, vary_median, "
             "vary_sd, vary_skew, vary_tailweight, vary_mode, vary_ramp_months, "
             "vary_correlate_with, vary_correlation, vary_tail_dependence, "
-            "vary_process, vary_persistence, vary_innovation_sd, vary_outcomes) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "vary_process, vary_persistence, vary_shock_sd, vary_process_start, vary_resume, "
+            "vary_outcomes, date_refs_json) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 calendar_id, ce["date"], ce["kind"], ce.get("name") or None,
                 ce.get("scheduled_name") or None,
@@ -4436,8 +7088,11 @@ def _write_intent(
                 _opt_float(ce.get("vary_tail_dependence")),
                 ce.get("vary_process") or None,
                 _opt_float(ce.get("vary_persistence")),
-                _opt_int(ce.get("vary_innovation_sd")),
+                _opt_int(ce.get("vary_shock_sd")),
+                ce.get("vary_process_start") or None,
+                ce.get("vary_resume") or None,
                 ce.get("vary_outcomes") or None,
+                ce.get(DATE_REFS) or None,
             ),
         )
         _insert_tags(con, inserted_id(cur), ce.get("tags", ""),
@@ -4490,6 +7145,18 @@ def _write_intent(
                      tag_cache)
     counts["scheduled_transaction"] = len(scheduled_rows)
 
+    for t in tax_rows:
+        con.execute(
+            "INSERT INTO tax_jurisdiction(name, kind, upstream, source_chain_id, "
+            "destination_chain_id, schedule, start, \"end\", params_json, description) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (t["name"], t["kind"], " ".join((t.get("upstream") or "").split()),
+             chain_ids[t["source_chain"]], chain_ids[t["destination"]], t["schedule"],
+             t["start"], t.get("end") or None, t.get("params_json") or "{}",
+             t.get("description") or ""),
+        )
+    counts["tax_jurisdiction"] = len(tax_rows)
+
     for kind, series, payload, eff in aux_rows:
         con.execute(
             "INSERT INTO aux_table("
@@ -4502,14 +7169,14 @@ def _write_intent(
     cur = con.execute(
         "INSERT INTO scenario("
         "name, description, calendar_id, start, \"end\", "
-        "seed, parents_json, load_order_json, created_at, created_by, meta_json"
-        ") VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+        "seed, parents_json, load_order_json, mixin_only, created_at, created_by, meta_json"
+        ") VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
         (
             scenario_row["name"], scenario_row.get("description") or None,
             calendar_id,
             scenario_row["start"], scenario_row["end"],
             int(scenario_row["seed"]) if scenario_row.get("seed") else None,
-            json.dumps(parents), json.dumps(lineage_order),
+            json.dumps(parents), json.dumps(lineage_order), int(mixin_only),
             now, scenario_row.get("created_by") or "unknown",
             scenario_row.get("meta_json") or "{}",
         ),
@@ -4521,7 +7188,8 @@ def _write_intent(
         con.execute(
             "INSERT INTO person_lifespan(scenario_id, person, age_at_death, final_month, "
             "vary_distribution, vary_low, vary_high, vary_mode, vary_correlate_with, "
-            "vary_correlation, life_table_set_forward) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            "vary_correlation, life_table_set_forward, life_table) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 scenario_id, lf["person"], float(lf["age_at_death"]), lf["final_month"],
                 lf.get("vary_distribution") or None,
@@ -4532,9 +7200,18 @@ def _write_intent(
                 if lf.get("vary_distribution") == "triangular" else None,
                 lf.get("vary_correlate_with") or None, _opt_float(lf.get("vary_correlation")),
                 lf.get(_SET_FORWARD_KEY),
+                (lf.get("life_table") or "").strip() or None,
             ),
         )
     counts["person_lifespan"] = len(lifespan_rows)
+
+    for row in residence_rows:
+        con.execute(
+            "INSERT INTO residence(effective_date, state, county, description) VALUES (?,?,?,?)",
+            (row["effective_date"], row["state"], (row.get("county") or "").strip() or None,
+             row.get("description") or ""),
+        )
+    counts["residence"] = len(residence_rows)
 
     for y in ytd_rows:
         con.execute(

@@ -184,18 +184,14 @@ def lineage_markdown(scenario_row: Mapping[str, Any]) -> str:
     """What a scenario inherits from (ADR-003 §4.5), from its intent/run
     file's ``scenario`` row: its direct parents -- the main parent, then any
     mix-ins -- and, when it has any, the whole load order the loader overlaid,
-    root first. "" for a file written before schema 31, which didn't record
-    it."""
-    parents_json = scenario_row.get("parents_json")
-    if parents_json is None:
-        return ""
-    parents = json.loads(parents_json)
+    root first."""
+    parents = json.loads(scenario_row["parents_json"])
     if not parents:
         return "**Inherits from:** nothing (a root scenario)"
     main, *mixins = parents
     lines = [f"**Parent:** `{main}`"]
     if mixins:
         lines[0] += "; **mix-ins:** " + ", ".join(f"`{m}`" for m in mixins)
-    order = json.loads(scenario_row.get("load_order_json") or "[]")
+    order = json.loads(scenario_row["load_order_json"])
     lines.append("**Load order:** " + " → ".join(f"`{n}`" for n in order))
     return "  \n".join(lines)

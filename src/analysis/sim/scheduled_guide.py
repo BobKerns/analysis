@@ -10,7 +10,7 @@ rule's answers and its row convert column for column.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 
 from analysis.sim import registries
 from analysis.sim.calendar_guide import (
@@ -19,7 +19,8 @@ from analysis.sim.calendar_guide import (
 
 # Every kind's own columns beyond those all rules have, and whether each is
 # required: ADR-003 §2 and §4.6. A column no kind lists here is read by every
-# kind; one that is listed is blanked on a rule of any other kind.
+# kind; one that is listed is blanked on a rule of any other kind, except
+# params_json and person, which any kind may carry.
 KIND_COLUMNS: dict[str, dict[str, bool]] = {
     "fixed_amount": {
         "amount": True, "series": False, "base_date": False, "inflation_cadence": False,
@@ -28,7 +29,6 @@ KIND_COLUMNS: dict[str, dict[str, bool]] = {
     "percent_of_balance": {"series": True},  # its rate series; the engine has no default
     "rmd": {"person": True},
     "ss_benefit": {"person": True, "claim_age": True, "amount": True, "series": True},
-    "tax_accumulator": {"params_json": True},
     "mortgage_payment": {
         "amount": True, "rate": True, "interest_account": True, "ytd_preroll": False,
     },
@@ -46,7 +46,9 @@ assert {kind for kind, columns in KIND_COLUMNS.items()
 
 KIND_ONLY_COLUMNS: frozenset[str] = frozenset(
     column for columns in KIND_COLUMNS.values() for column in columns
-    if column != "params_json"  # every kind may carry extension parameters
+    # Every kind may carry extension parameters, and a person whose death
+    # stops the rule (#256); some kinds require one.
+    if column not in ("params_json", "person")
 )
 
 # What the usual rule of each kind is taxed as (ADR-003 §2); on_death must be
@@ -56,17 +58,42 @@ KIND_TAX_CHARACTER: dict[str, str] = {
     "percent_of_balance": "ordinary",
     "rmd": "tax_deferred_out",
     "ss_benefit": "ss_benefit",
-    "tax_accumulator": "none",
     "mortgage_payment": "none",
     "on_death": "tax_free",
     "fill_bracket": "tax_deferred_out",
-    # Withheld from Social Security, like the premium legs (ADR-003 §2.5.1).
-    "irmaa": "ss_benefit",
+    # Billed (from checking); withheld is ss_benefit, see tax_character_for.
+    "irmaa": "none",
 }
+
+
+# Income accounts whose money is ordinary income wherever a rule moves it
+# from (ADR-003 §2): paid as a fixed amount, a salary is still wages.
+ORDINARY_INCOME_SUBKINDS: frozenset[str] = frozenset({"salary", "pension", "interest"})
+
+
+def tax_character_for(ctx: GuideContext, answers: Mapping[str, object]) -> str:
+    """The usual tax character of the rule ``answers`` describe.
+
+    A ``fixed_amount`` out of a salary, pension or interest income account
+    is ordinary income; out of anything else it moves money already taxed
+    (or not income at all), so ``none``.
+
+    An ``irmaa`` surcharge withheld from Social Security comes out of the
+    benefit's income account (subkind ``ss_benefit``) and counts in gross
+    benefits, as the premium legs do (ADR-003 §2.5.1); billed, from checking
+    or anywhere else, it is no income at all.
+    """
+    kind = str(answers.get("amount_rule_kind", ""))
+    source = ctx.subkinds.get(str(answers.get("from_account")))
+    if kind == "irmaa" and source == "ss_benefit":
+        return "ss_benefit"
+    if kind == "fixed_amount" and source in ORDINARY_INCOME_SUBKINDS:
+        return "ordinary"
+    return KIND_TAX_CHARACTER.get(kind, "")
 
 # Kinds the engine runs only once a year (ADR-003 §2.3, §2.6), and the month
 # each usually fires.
-ANNUAL_KINDS: dict[str, str] = {"rmd": "12", "tax_accumulator": "12", "fill_bracket": "12"}
+ANNUAL_KINDS: dict[str, str] = {"rmd": "12", "fill_bracket": "12"}
 
 # Kinds whose source must be an account, not an interior chain; every kind
 # but fixed_amount needs an account as its destination (the engine's rules).
@@ -171,7 +198,8 @@ RULE = KindSpec(
             "person", "person", option="--person", strict=True,
             required=needs("person"), applies=reads("person"),
             choices=lambda ctx, answers: list(ctx.persons),  # noqa: ARG005
-            help="Whose age or lifespan the rule follows.",
+            help="Whose age or lifespan the rule follows. On any rule, it stops the rule "
+                 "after that person's final month.",
         ),
         Field(
             "claim_age", "claim age (whole years)", type="integer", option="--claim-age",
@@ -210,8 +238,7 @@ RULE = KindSpec(
             "tax_character", "tax character", option="--tax-character", default="none",
             choices=lambda ctx, answers: sorted(registries.TAX_CHARACTERS),  # noqa: ARG005
             strict=True,
-            suggest=lambda ctx, answers: KIND_TAX_CHARACTER.get(  # noqa: ARG005
-                answers.get("amount_rule_kind", "")),
+            suggest=tax_character_for,
         ),
         Field(
             "tax_year", "tax year", type="year", option="--tax-year", required=False,
@@ -240,8 +267,7 @@ RULE = KindSpec(
         Field(
             "params_json", "parameters (JSON object)", type="json", option="--params-json",
             required=needs("params_json"),
-            help='tax_accumulator: e.g. {"year":"previous","scope":"federal"}. '
-                 'rmd drawing from a chain: {"subject_account":"<account>"}.',
+            help='rmd drawing from a chain: {"subject_account":"<account>"}.',
         ),
         Field("tags", "tags", type="tags", option="--tags", required=False,
               help="Space-separated '<role>:<name>' tokens."),

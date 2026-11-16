@@ -29,7 +29,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from analysis.sim.connection import RunConnection
+from analysis.sim.connection import HandleBudget, RunConnection
 from analysis.sim.distributions import (
     Discrete,
     Distribution,
@@ -58,19 +58,21 @@ from analysis.sim.correlation import (
 )
 from analysis.sim.loader import BATCH_MANIFEST_FILENAME, latest_ensemble_batch
 from analysis.sim import units
-from analysis.sim.dates import final_month_for_age
+from analysis.sim.dates import final_month_for_age, place_month
 from analysis.sim.life_table import (
-    LifeTableAge, LifeTableError, life_table_in, months_since_birth,
+    LifeTableAge, LifeTableError, life_table_in, months_since_birth, person_table,
 )
 from analysis.sim.registries import (
+    DATE_MARKER_KIND,
     ENSEMBLE_MODES,
     LATENT_FACTOR_KIND,
     LIFE_TABLE_DISTRIBUTION,
     LIFESPAN_NODE_PREFIX,
     LIFESPAN_TARGET,
     PROCESS_SHOCK_CLAMP,
+    RELATIVE_DATE_COLUMNS,
 )
-from analysis.sim.types import DollarMode
+from analysis.sim.types import Death, DollarMode
 from analysis.sim.schema import connect_sim_file
 
 __all__ = [
@@ -79,7 +81,7 @@ __all__ = [
     "QUINTILES", "REPORT_PERCENTILES", "percentiles", "summary_with_percentiles",
     "write_batch_manifest", "read_batch_manifest", "oat_plan", "build_distribution",
     "factor_reach", "process_path", "varying_names", "lifespan_distribution",
-    "life_table_age",
+    "life_table_age", "strategy_vary_rows", "resolve_strategy_value",
     "correlation_links",
     "members_balance_by_month", "TAIL_LEVELS", "tail_means", "reserve_shares",
     "recipe_reserve", "quantile_deltas", "member_pairs", "paired_deltas",
@@ -180,43 +182,55 @@ def _shape(row: Mapping[str, Any], column: str, default: float) -> float:
     return default if value in (None, "") else float(value)
 
 
-def _row_aux_kind(row: sqlite3.Row) -> str:
+def _row_aux_kind(row: sqlite3.Row | dict[str, Any]) -> str:
     params = json.loads(row["payload_json"] or "{}")
     return params.get("aux_kind", "rate")
 
 
-def _current_rate_value(con: sqlite3.Connection, row: sqlite3.Row) -> int:
+def _current_rate_value(
+    con: sqlite3.Connection, row: sqlite3.Row | dict[str, Any], *, before: bool = False, what: str = "ramp",
+) -> int:
     """The series' latest *known* rate as of ``row``'s own date: the later of
     the (not-yet-run) intent's own `aux_table` baseline and any literal
     (already-resolved, non-varying) `set_rate` calendar_event for the same
-    series and aux_kind dated on or before this row's date.
+    series and aux_kind dated on or before this row's date. With
+    ``before``, strictly before it: the rate in effect on the day before,
+    which a process row's ``current`` start reverts from (ADR-006 §4a).
 
     A rate change the recipe itself already authors earlier in the calendar
     is part of "the current rate", not just the load-time snapshot
     underneath it -- otherwise a ramp starting after such a change would
-    reset to the pre-change value before ascending. This still doesn't
-    pre-simulate the calendar in general: an *unresolved* (still-varying)
-    earlier `set_rate` row is excluded, since its value isn't known yet
-    either (ADR-006's open question on cross-variation ordering beyond the
-    two-pass rule).
+    reset to the pre-change value before ascending. An earlier *varying*
+    row counts once resolved: pass 2 resolves amount rows in date order, so
+    by the time this row is reached an earlier row for its series has its
+    value, and its ramp or path rows are written (their last step is what
+    is in effect). A row on the same date as one in the series file
+    replaces it, as the engine applies it after the file's rows.
     """
     aux_kind = _row_aux_kind(row)
     candidates: list[tuple[str, int]] = []
+    cmp = "<" if before else "<="
 
     aux_found = con.execute(
         "SELECT effective_date, payload_json FROM aux_table "
-        "WHERE kind = ? AND series = ? AND effective_date <= ? "
+        f"WHERE kind = ? AND series = ? AND effective_date {cmp} ? "
         "ORDER BY effective_date DESC LIMIT 1",
         (aux_kind, row["series"], row["date"]),
     ).fetchone()
     if aux_found is not None:
-        candidates.append((aux_found[0], json.loads(aux_found[1])["annual_rate_micros"]))
+        rate = json.loads(aux_found[1]).get("annual_rate_micros")
+        if rate is None:
+            raise EnsembleError(
+                f"{what} on row {row['name']!r}: aux_kind {aux_kind!r} series "
+                f"{row['series']!r} holds no annual rate to start from"
+            )
+        candidates.append((aux_found[0], int(rate)))
 
     for ev_date, ev_amount, ev_payload in con.execute(
         "SELECT date, amount, payload_json FROM calendar_event "
-        "WHERE kind = 'set_rate' AND series = ? AND date <= ? AND id != ? "
+        f"WHERE kind = 'set_rate' AND series = ? AND date {cmp} ? AND id != ? "
         "AND vary_distribution IS NULL AND amount IS NOT NULL "
-        "ORDER BY date DESC",
+        "ORDER BY date DESC, id DESC",
         (row["series"], row["date"], row["id"]),
     ).fetchall():
         if (json.loads(ev_payload or "{}").get("aux_kind", "rate")) == aux_kind:
@@ -225,8 +239,9 @@ def _current_rate_value(con: sqlite3.Connection, row: sqlite3.Row) -> int:
 
     if not candidates:
         raise EnsembleError(
-            f"ramp on row {row['name']!r}: no existing {aux_kind!r} row for "
-            f"series {row['series']!r} on or before {row['date']} to ramp from"
+            f"{what} on row {row['name']!r}: no existing {aux_kind!r} row for "
+            f"series {row['series']!r} {'before' if before else 'on or before'} "
+            f"{row['date']} to start from"
         )
     candidates.sort(key=lambda c: c[0])
     return candidates[-1][1]
@@ -259,13 +274,13 @@ def _apply_ramp(con: sqlite3.Connection, row: sqlite3.Row, target: int, months: 
         )
 
 
-def _process_params(row: sqlite3.Row) -> tuple[float, int] | None:
-    """A process row's ``(phi, innovation SD in micros)`` (ADR-006 §4a), or
-    ``None`` for a held draw. Intent files written before #115 have no
-    process columns at all."""
-    if "vary_process" not in row.keys() or not row["vary_process"]:
+def _process_params(row: sqlite3.Row) -> tuple[float, int, str | None] | None:
+    """A process row's ``(phi, shock SD in micros, start)`` (ADR-006
+    §4a), or ``None`` for a held draw; ``start`` is ``current`` or ``None``
+    for a stationary start."""
+    if not row["vary_process"]:
         return None
-    return float(row["vary_persistence"]), int(row["vary_innovation_sd"])
+    return float(row["vary_persistence"]), int(row["vary_shock_sd"]), row["vary_process_start"] or None
 
 
 def _process_steps(con: sqlite3.Connection, row: sqlite3.Row, end: date) -> list[date]:
@@ -296,23 +311,38 @@ def _process_steps(con: sqlite3.Connection, row: sqlite3.Row, end: date) -> list
         steps.append(step)
 
 
-def process_path(level_micros: int, persistence: float, innovation_sd_micros: int,
-                 shocks: list[float]) -> list[int]:
+def process_path(level_micros: int, persistence: float, shock_sd_micros: int,
+                 shocks: list[float], *, start_micros: int | None = None) -> list[int]:
     """An AR(1) path's yearly rates in micros (ADR-006 §4a), one per shock:
     the log departure ``x`` of a year's growth factor from a held row's
     starts at its stationary spread and carries ``persistence`` of itself
     into each next year, plus that year's shock. All-zero shocks give a flat
     path at the level.
 
+    With ``start_micros`` (a ``current`` start, #280) year 0 is that rate
+    instead, its departure from the level taken whole and year 0's shock
+    unused, so the path reverts from it at ``persistence``; all-zero shocks
+    then give a deterministic decay to the level.
+
     The engine applies a rate ``r`` as ``r/12`` a month, so a year grows by
     ``(1 + r/12)**12``; each rate is chosen so that factor is the level's
     times ``exp(x)``, keeping the path's median compound growth a held
     row's and every month's factor positive."""
     level = level_micros / _MICROS
-    sigma = innovation_sd_micros / _MICROS
+    sigma = shock_sd_micros / _MICROS
     rates: list[int] = []
     x = 0.0
     for k, eps in enumerate(shocks):
+        if k == 0 and start_micros is not None:
+            ratio = (1 + start_micros / _MICROS / 12) / (1 + level / 12)
+            if ratio <= 0:
+                raise EnsembleError(
+                    f"a process can't start at {start_micros / _MICROS:.2%}: "
+                    "a year's growth factor there isn't positive"
+                )
+            x = max(-PROCESS_SHOCK_CLAMP, min(PROCESS_SHOCK_CLAMP, 12 * math.log(ratio)))
+            rates.append(start_micros)
+            continue
         x = (eps * sigma / math.sqrt(1 - persistence ** 2) if k == 0
              else persistence * x + sigma * eps)
         # Overflow protection only: realistic inputs never come near it.
@@ -407,6 +437,80 @@ def _yearly_shocks(
                         noise[name], scores[name], None if nu is None else scale, scores[name] * scale,
                     )
     return shocks, parts, year_scales
+
+
+def _resume_governors(
+    con: sqlite3.Connection, resume_rows: list[sqlite3.Row],
+    process_names: set[str],
+) -> dict[int, str | None]:
+    """For each ``vary_resume`` row (#291), the process row it continues, or
+    ``None`` when a fixed rate governed its series the day before its
+    ``vary_resume`` date (ADR-006 §4b). Called after the date pass, before
+    any ramp or path expands, so every ``set_rate`` row seen is authored.
+
+    What governed is the latest authored ``set_rate`` row for the same
+    ``(aux_kind, series)`` before that date: a process row (a path runs
+    until the next set_rate row), another resume row (whatever it resumed),
+    or anything else, a fixed rate the amount pass reads when it gets
+    there. A member whose drawn dates put ``vary_resume`` on or after the
+    row's own date is an error: it would put back a rate from its own
+    future."""
+    governors: dict[int, str | None] = {}
+    for row in sorted(resume_rows, key=lambda r: (r["date"], r["id"])):
+        resume = row["vary_resume"]
+        if resume >= row["date"]:
+            raise EnsembleError(
+                f"row {row['name'] or row['id']!r}: its drawn dates put vary_resume "
+                f"{resume} on or after the row's own date {row['date']}; widen the "
+                "markers' gap so the episode always ends after it starts"
+            )
+        aux_kind = _row_aux_kind(row)
+        governor: str | None = None
+        for prior in con.execute(
+            "SELECT id, name, payload_json FROM calendar_event "
+            "WHERE kind = 'set_rate' AND series = ? AND date < ? ORDER BY date DESC, id DESC",
+            (row["series"], resume),
+        ):
+            if json.loads(prior["payload_json"] or "{}").get("aux_kind", "rate") != aux_kind:
+                continue
+            if prior["id"] in governors:
+                governor = governors[prior["id"]]
+            elif prior["name"] in process_names:
+                governor = prior["name"]
+            break
+        governors[row["id"]] = governor
+    return governors
+
+
+def _resolve_resume(
+    con: sqlite3.Connection, row: sqlite3.Row, governor: str | None,
+    process_rows: dict[str, tuple[tuple[float, int, str | None], list[date]]],
+    levels: dict[str, int], shocks: dict[str, dict[int, float]],
+    steps: list[date] | None,
+    record_path: Callable[[str, list[date], list[int], bool], None],
+) -> None:
+    """Resolve one ``vary_resume`` row (#291, ADR-006 §4b) in the amount
+    pass's date order. Continuing a process, it starts from the rate in
+    effect, as a ``current`` start does, and reverts to that process's drawn
+    level at its persistence with its own yearly shocks; the path is
+    recorded under the process's name. Otherwise the fixed rate in effect
+    the day before ``vary_resume`` comes back at once."""
+    if governor is None:
+        before = {**dict(row), "date": row["vary_resume"]}
+        rate = _current_rate_value(con, before, before=True, what="resume")
+        con.execute(
+            "UPDATE calendar_event SET amount = ?, vary_resume = NULL WHERE id = ?",
+            (rate, row["id"]),
+        )
+        return
+    assert steps is not None
+    (phi, sd, _start), _ = process_rows[governor]
+    start_micros = _current_rate_value(con, row, before=True, what="resume")
+    rates = process_path(levels[governor], phi, sd, [shocks[governor][s.year] for s in steps],
+                         start_micros=start_micros)
+    _apply_process(con, row, rates, steps)
+    con.execute("UPDATE calendar_event SET vary_resume = NULL WHERE id = ?", (row["id"],))
+    record_path(governor, steps, rates, True)
 
 
 @dataclass(frozen=True)
@@ -520,16 +624,9 @@ def _resolve_lifespan(
     return round(value * 12) / 12, quantile, u
 
 
-def _has_columns(con: sqlite3.Connection, table: str, *columns: str) -> bool:
-    present = {c[1] for c in con.execute(f"PRAGMA table_info({table})")}
-    return set(columns) <= present
-
-
 def _lifespan_rows(con: sqlite3.Connection) -> list[sqlite3.Row]:
     """The varying lifespans (#221), each with its person's birthdate and its
-    correlation node name; none in a file written before schema 40."""
-    if not _has_columns(con, "person_lifespan", "vary_distribution"):
-        return []
+    correlation node name."""
     cur = con.cursor()
     cur.row_factory = sqlite3.Row
     return cur.execute(
@@ -540,39 +637,72 @@ def _lifespan_rows(con: sqlite3.Connection) -> list[sqlite3.Row]:
     ).fetchall()
 
 
+def strategy_vary_rows(con: sqlite3.Connection, *, resolved: bool = False) -> list[sqlite3.Row]:
+    """The varied strategy parameters (#408), each with its strategy's name;
+    with ``resolved``, those a member already drew too."""
+    cur = con.cursor()
+    cur.row_factory = sqlite3.Row
+    where = "" if resolved else "WHERE v.vary_distribution IS NOT NULL "
+    return cur.execute(
+        "SELECT v.*, s.name AS strategy FROM strategy_vary v JOIN strategy s ON s.id = v.strategy_id "
+        f"{where}ORDER BY v.name"
+    ).fetchall()
+
+
+def resolve_strategy_value(
+    row: sqlite3.Row, *, overrides: dict[str, float] | None, seed: int | None, member_index: int,
+    score: float | None, conditional: bool, nu: float | None,
+) -> tuple[float, float | None, float | None]:
+    """A varied strategy parameter's value on one member (#408), by
+    ``_resolve_value``'s rules, but, like a lifespan, its base case (member
+    0, and an OAT member that doesn't move it) is the authored value, not
+    the distribution's median: a member 0 runs the strategy as written. A
+    whole-number parameter (cents, millionths, a count) is rounded."""
+    if overrides is None and member_index != 0 or row["name"] in (overrides or {}) or conditional:
+        value, quantile, u = _resolve_value(
+            row, build_distribution(dict(row), "amount"), as_int=False, overrides=overrides, seed=seed,
+            member_index=member_index, score=score, conditional=conditional, nu=nu,
+        )
+    else:
+        value, quantile, u = row["base"], None, None
+    return (float(round(value)) if row["whole"] else value), quantile, u
+
+
 def varying_names(con: sqlite3.Connection) -> list[str]:
     """Every unresolved varying node in an intent, sorted: the calendar rows
     with `vary_distribution` set, and the varying lifespans' nodes (#221)."""
     names = [name for (name,) in con.execute(
         "SELECT name FROM calendar_event WHERE vary_distribution IS NOT NULL AND name IS NOT NULL"
     )]
-    if _has_columns(con, "person_lifespan", "vary_distribution"):
-        names += [LIFESPAN_NODE_PREFIX + person for (person,) in con.execute(
-            "SELECT person FROM person_lifespan WHERE vary_distribution IS NOT NULL"
-        )]
+    names += [LIFESPAN_NODE_PREFIX + person for (person,) in con.execute(
+        "SELECT person FROM person_lifespan WHERE vary_distribution IS NOT NULL"
+    )]
+    names += [row["name"] for row in strategy_vary_rows(con)]
     return sorted(names)
 
 
 def correlation_links(con: sqlite3.Connection) -> dict[str, Link]:
     """Each varying calendar row's, factor's or lifespan's (#221) link to its
-    correlation parent (ADR-008); tolerant of files from before either set
-    of columns existed."""
-    links: dict[str, Link] = {}
-    if _has_columns(con, "calendar_event", "vary_correlate_with"):
-        links.update({
-            name: Link(parent, rho) for name, parent, rho in con.execute(
-                "SELECT name, vary_correlate_with, vary_correlation FROM calendar_event "
-                "WHERE vary_correlate_with IS NOT NULL AND name IS NOT NULL"
-            )
-        })
-    if _has_columns(con, "person_lifespan", "vary_correlate_with"):
-        links.update({
-            LIFESPAN_NODE_PREFIX + person: Link(parent, rho)
-            for person, parent, rho in con.execute(
-                "SELECT person, vary_correlate_with, vary_correlation FROM person_lifespan "
-                "WHERE vary_correlate_with IS NOT NULL"
-            )
-        })
+    correlation parent (ADR-008)."""
+    links = {
+        name: Link(parent, rho) for name, parent, rho in con.execute(
+            "SELECT name, vary_correlate_with, vary_correlation FROM calendar_event "
+            "WHERE vary_correlate_with IS NOT NULL AND name IS NOT NULL"
+        )
+    }
+    links.update({
+        LIFESPAN_NODE_PREFIX + person: Link(parent, rho)
+        for person, parent, rho in con.execute(
+            "SELECT person, vary_correlate_with, vary_correlation FROM person_lifespan "
+            "WHERE vary_correlate_with IS NOT NULL"
+        )
+    })
+    links.update({
+        name: Link(parent, rho) for name, parent, rho in con.execute(
+            "SELECT name, vary_correlate_with, vary_correlation FROM strategy_vary "
+            "WHERE vary_correlate_with IS NOT NULL"
+        )
+    })
     return links
 
 
@@ -606,7 +736,7 @@ def life_table_age(con: sqlite3.Connection, person: str, set_forward: float) -> 
     if found is None or not found[1] or start is None or set_forward is None:
         raise EnsembleError(f"lifespan of {person!r}: life_table needs a sex and a solved set-forward")
     try:
-        table = life_table_in(con, found[1], start[0])
+        table = life_table_in(con, found[1], start[0], person_table(con, person))
     except LifeTableError as e:
         raise EnsembleError(f"lifespan of {person!r}: {e}") from e
     return LifeTableAge(table, months_since_birth(found[0], start[0]), set_forward)
@@ -626,9 +756,6 @@ def _correlation_links(con: sqlite3.Connection) -> tuple[dict[str, Link], list[s
 def _tail_dependence(con: sqlite3.Connection) -> dict[str, float]:
     """Each t-copula tree's ``nu``, by its root's name (ADR-008 §1). The
     loader allows ``vary_tail_dependence`` only on a root."""
-    columns = {c[1] for c in con.execute("PRAGMA table_info(calendar_event)")}
-    if "vary_tail_dependence" not in columns:  # files written before #68
-        return {}
     return dict(con.execute(
         "SELECT name, vary_tail_dependence FROM calendar_event "
         "WHERE vary_tail_dependence IS NOT NULL AND name IS NOT NULL"
@@ -729,6 +856,58 @@ def _member_scores(
     return scores, set(), noise, scale
 
 
+def _place_relative_dates(
+    con: sqlite3.Connection, draw_date: Callable[[Any], date],
+) -> set[str]:
+    """Resolve every ``date_marker`` row (#281), each after the markers its
+    own dates are written from, drawing those that vary with ``draw_date``;
+    then rewrite every date written relative to a marker (``date_refs_json``)
+    from the marker's resolved date. Returns the markers' names.
+
+    The loader wrote those dates against the markers' base case, so on
+    member 0 this changes nothing; on any other member it moves each with
+    its marker's draw."""
+    con.row_factory = sqlite3.Row
+    markers = {
+        r["name"]: r for r in con.execute(
+            "SELECT * FROM calendar_event WHERE kind = ?", (DATE_MARKER_KIND,),
+        )
+    }
+    resolved: dict[str, date] = {}
+
+    def place(row: sqlite3.Row) -> None:
+        refs = json.loads(row["date_refs_json"] or "{}")
+        for column, (anchor, months) in refs.items():
+            day = place_month(resolved[anchor], months, RELATIVE_DATE_COLUMNS[column])
+            # The column names come from the loader's own fixed list.
+            con.execute(
+                f"UPDATE calendar_event SET {column} = ? WHERE id = ?",
+                (day.isoformat(), row["id"]),
+            )
+
+    def resolve(name: str) -> date:
+        if name not in resolved:
+            row = markers[name]
+            for anchor, _months in json.loads(row["date_refs_json"] or "{}").values():
+                resolve(anchor)  # the loader rejects a cycle
+            place(row)
+            row = con.execute("SELECT * FROM calendar_event WHERE id = ?", (row["id"],)).fetchone()
+            resolved[name] = (
+                draw_date(row) if row["vary_distribution"] is not None
+                else date.fromisoformat(row["date"])
+            )
+        return resolved[name]
+
+    for name in markers:
+        resolve(name)
+    for row in con.execute(
+        "SELECT * FROM calendar_event WHERE date_refs_json IS NOT NULL AND kind != ?",
+        (DATE_MARKER_KIND,),
+    ).fetchall():
+        place(row)
+    return set(markers)
+
+
 def resolve_member(
     recipe_intent_path: Path,
     member_path: Path,
@@ -772,12 +951,13 @@ def resolve_member(
             "SELECT * FROM calendar_event WHERE vary_distribution IS NOT NULL"
         ).fetchall()
         lifespans = _lifespan_rows(con)
+        strategy_params = strategy_vary_rows(con)
         links, factors = _correlation_links(con)
         node_tails = _node_tails(links, tree_members(links) | set(factors), _tail_dependence(con))
         if overrides is not None:
             unknown = (
                 set(overrides) - {r["name"] for r in rows} - {r["name"] for r in lifespans}
-                - set(factors)
+                - {r["name"] for r in strategy_params} - set(factors)
             )
             if unknown:
                 raise EnsembleError(
@@ -793,7 +973,7 @@ def resolve_member(
             str, str, str, float | None, str | None, float | None, float | None, float | None,
         ]] = []
 
-        for row in [r for r in rows if r["vary_target"] == "date"]:
+        def draw_date(row: Any) -> date:  # a sqlite3.Row
             dist = build_distribution(row, "date")
             if not isinstance(dist, Uniform | Triangular | Discrete):
                 # The loader rejects truncated_normal with a date target (its
@@ -816,6 +996,17 @@ def resolve_member(
             draws.append((row["name"], "date", drawn.isoformat(), quantile,
                           row["vary_distribution"], scores.get(row["name"]),
                           noise.get(row["name"]), u))
+            return drawn
+
+        # #281: date markers first, each after any marker it is dated from,
+        # then every date written relative to one, so a varying row's bounds
+        # have moved with its marker before it is drawn.
+        marked = _place_relative_dates(con, draw_date)
+        rows = con.execute(
+            "SELECT * FROM calendar_event WHERE vary_distribution IS NOT NULL"
+        ).fetchall()
+        for row in [r for r in rows if r["vary_target"] == "date" and r["name"] not in marked]:
+            draw_date(row)
 
         for row in lifespans:
             age, quantile, u = _resolve_lifespan(
@@ -833,24 +1024,86 @@ def resolve_member(
                           row["vary_distribution"], scores.get(row["name"]),
                           noise.get(row["name"]), u))
 
+        # #408: each varied strategy parameter goes into its strategy's
+        # params_json, which the engine reads.
+        for row in strategy_params:
+            value, quantile, u = resolve_strategy_value(
+                row, overrides=overrides, seed=seed, member_index=member_index,
+                score=scores.get(row["name"]), conditional=row["name"] in moved,
+                nu=node_tails.get(row["name"]),
+            )
+            drawn: int | float = int(value) if row["whole"] else value
+            params = json.loads(con.execute(
+                "SELECT params_json FROM strategy WHERE id = ?", (row["strategy_id"],)).fetchone()[0])
+            params[row["param"]] = drawn
+            con.execute("UPDATE strategy SET params_json = ? WHERE id = ?",
+                        (json.dumps(params, sort_keys=True, separators=(",", ":")), row["strategy_id"]))
+            con.execute("UPDATE strategy_vary SET vary_distribution = NULL WHERE name = ?", (row["name"],))
+            draws.append((row["name"], row["param"], repr(drawn), quantile, row["vary_distribution"],
+                          scores.get(row["name"]), noise.get(row["name"]), u))
+
         # Process paths (ADR-006 §4a) need the drawn dates (a path stops at the
         # next set_rate for its series), and every yearly shock before the
         # amount pass expands anything.
         end = date.fromisoformat(con.execute('SELECT "end" FROM scenario').fetchone()[0])
+        amount_rows = sorted(
+            (r for r in rows if r["vary_target"] == "amount"), key=lambda r: (r["date"], r["id"]),
+        )
         process_rows = {
             r["name"]: (params, _process_steps(con, r, end))
-            for r in rows if r["vary_target"] == "amount"
-            and (params := _process_params(r)) is not None
+            for r in amount_rows if (params := _process_params(r)) is not None
         }
+        process_years = {name: [s.year for s in steps] for name, (_, steps) in process_rows.items()}
+        # #291: a resume row continuing a process takes that process's own
+        # yearly shocks, so a member matches its no-episode twin again once
+        # the episode's effect decays.
+        resume_rows = con.execute(
+            "SELECT * FROM calendar_event WHERE vary_resume IS NOT NULL"
+        ).fetchall()
+        governors = _resume_governors(con, resume_rows, set(process_rows))
+        resume_steps: dict[int, list[date]] = {}
+        for row in resume_rows:
+            if (governor := governors[row["id"]]) is not None:
+                resume_steps[row["id"]] = _process_steps(con, row, end)
+                process_years[governor] = sorted(
+                    set(process_years[governor]) | {s.year for s in resume_steps[row["id"]]}
+                )
         shocks, shock_parts, year_scales = _yearly_shocks(
-            links, factors, node_tails,
-            {name: [s.year for s in steps] for name, (_, steps) in process_rows.items()},
+            links, factors, node_tails, process_years,
             seed=seed, member_index=member_index,
             flat=overrides is not None or member_index == 0,
         )
 
-        path_shocks: list[tuple[str, int, float | None, float | None, float | None, float, int]] = []
-        for row in [r for r in rows if r["vary_target"] == "amount"]:
+        # (node, year) -> (noise, score, scale, shock, rate)
+        path_shocks: dict[
+            tuple[str, int], tuple[float | None, float | None, float | None, float, int]
+        ] = {}
+        levels: dict[str, int] = {}
+
+        def record_path(name: str, steps: list[date], rates: list[int], current: bool) -> None:
+            parts = shock_parts[name]
+            for k, (step, rate) in enumerate(zip(steps, rates, strict=True)):
+                # A year a resumed path shares with its process's earlier
+                # stretch keeps the earlier entry: that year's rate began there.
+                path_shocks.setdefault((name, step.year), (
+                    parts[step.year].noise, parts[step.year].score, parts[step.year].scale,
+                    # A current start's year 0 takes no shock; its tree's
+                    # draws for that year still stand for the other rows.
+                    0.0 if k == 0 and current else parts[step.year].shock,
+                    rate,
+                ))
+
+        # In date order (#280): a process row starting from the current rate
+        # reads an earlier row for its series, varying or not, once resolved,
+        # and so does a resume row (#291). Each row draws on its own stream,
+        # so the order moves no draw.
+        for row in sorted([*amount_rows, *resume_rows], key=lambda r: (r["date"], r["id"])):
+            if row["vary_resume"] is not None:
+                _resolve_resume(
+                    con, row, governors[row["id"]], process_rows, levels, shocks,
+                    resume_steps.get(row["id"]), record_path,
+                )
+                continue
             dist = build_distribution(row, "amount")
             value, quantile, u = _resolve_value(
                 row, dist, as_int=False, overrides=overrides, seed=seed, member_index=member_index,
@@ -875,16 +1128,17 @@ def resolve_member(
             if row["vary_ramp_months"]:
                 _apply_ramp(con, row, target, int(row["vary_ramp_months"]))
             elif row["name"] in process_rows:
-                (phi, sd), steps = process_rows[row["name"]]
+                (phi, sd, start), steps = process_rows[row["name"]]
                 yearly = shocks[row["name"]]
-                rates = process_path(target, phi, sd, [yearly[s.year] for s in steps])
-                _apply_process(con, row, rates, steps)
-                parts = shock_parts[row["name"]]
-                path_shocks.extend(
-                    (row["name"], step.year, parts[step.year].noise, parts[step.year].score,
-                     parts[step.year].scale, parts[step.year].shock, rate)
-                    for step, rate in zip(steps, rates, strict=True)
+                start_micros = (
+                    _current_rate_value(con, row, before=True, what="process start")
+                    if start == "current" else None
                 )
+                rates = process_path(target, phi, sd, [yearly[s.year] for s in steps],
+                                     start_micros=start_micros)
+                _apply_process(con, row, rates, steps)
+                levels[row["name"]] = target
+                record_path(row["name"], steps, rates, start_micros is not None)
             else:
                 con.execute(
                     "UPDATE calendar_event SET amount = ?, vary_distribution = NULL "
@@ -933,7 +1187,7 @@ def resolve_member(
         con.executemany(
             "INSERT INTO ensemble_path_shock(node, year, noise, score, scale, shock, rate) "
             "VALUES (?, ?, ?, ?, ?, ?, ?)",
-            path_shocks,
+            [(node, year, *rest) for (node, year), rest in path_shocks.items()],
         )
         con.commit()
     finally:
@@ -1003,6 +1257,7 @@ def write_batch_manifest(
     mode: str = "monte_carlo",
     quantiles: tuple[float, ...] | None = None,
     rows: list[str] | None = None,
+    pool: dict[str, Any] | None = None,
 ) -> None:
     """Persist what ``_run_ensemble`` knows that a run file alone can't show:
     how many members were expected, and which ones failed before
@@ -1024,20 +1279,20 @@ def write_batch_manifest(
         # ADR-007 §5: what an OAT batch perturbed, in oat_plan's member order.
         manifest["quantiles"] = list(quantiles or ())
         manifest["rows"] = list(rows or ())
+    if pool is not None:
+        # ADR-009: where a pool batch's members came from.
+        manifest["pool"] = pool
     path.write_text(json.dumps(manifest, indent=2))
 
 
 def read_batch_manifest(batch_dir: Path) -> dict[str, Any] | None:
     """``write_batch_manifest``'s record for this batch, or ``None`` for a
-    batch generated before it existed (or synthesized directly by a test,
-    bypassing ``_run_ensemble``)."""
+    batch without one (interrupted before it was written, or synthesized
+    directly by a test, bypassing ``_run_ensemble``)."""
     path = Path(batch_dir) / BATCH_MANIFEST_FILENAME
     if not path.is_file():
         return None
-    manifest = json.loads(path.read_text())
-    # Batches written before ADR-007 carry no mode; they're all Monte Carlo.
-    manifest.setdefault("mode", "monte_carlo")
-    return manifest
+    return json.loads(path.read_text())
 
 
 def member_run_statuses(batch_dir: Path) -> dict[str, str]:
@@ -1053,12 +1308,19 @@ def member_run_statuses(batch_dir: Path) -> dict[str, str]:
     than deleting it, so its (partial, not reliably comparable) history
     stays inspectable -- so status has to be checked explicitly rather than
     assuming every file found is a succeeded member.
+
+    A member file whose run hasn't written its tables yet (a batch still
+    being built, read without waiting for it, #300) is ``"running"``.
     """
     statuses: dict[str, str] = {}
     for p in sorted(Path(batch_dir).glob("member_*.sqlite3")):
         con = connect_sim_file(p)
         try:
             row = con.execute("SELECT status FROM simulation_run").fetchone()
+        except sqlite3.OperationalError as exc:
+            if "no such table" not in str(exc):
+                raise
+            row = ("running",)  # just created; its run hasn't written its tables
         finally:
             con.close()
         statuses[p.stem] = row[0] if row else "unknown"
@@ -1076,7 +1338,8 @@ def load_ensemble(batch_dir: Path) -> dict[str, RunConnection]:
     connection. A failed member (see ``member_run_statuses``) is excluded --
     it would otherwise distort the mean/range with a partial run -- so
     reporting the failure count/detail alongside a summary means calling
-    ``member_run_statuses`` too.
+    ``member_run_statuses`` too. The connections share a ``HandleBudget``, so
+    only a few dozen hold an open file at once, whatever the batch's size.
     """
     statuses = member_run_statuses(batch_dir)
     if not statuses:
@@ -1087,7 +1350,13 @@ def load_ensemble(batch_dir: Path) -> dict[str, RunConnection]:
             f"no succeeded member run files found under {batch_dir} "
             f"({len(statuses)} present, none succeeded: {statuses})"
         )
-    return {stem: RunConnection(Path(batch_dir) / f"{stem}.sqlite3") for stem in succeeded}
+    # Opened on demand, at most HandleBudget.DEFAULT_LIMIT at a time: a
+    # thousand-member batch would run out of file descriptors (#448).
+    handles = HandleBudget()
+    return {
+        stem: RunConnection(Path(batch_dir) / f"{stem}.sqlite3", handles=handles)
+        for stem in succeeded
+    }
 
 
 def _each_member(
@@ -1202,15 +1471,19 @@ def tail_means(frame: pd.DataFrame, levels: tuple[float, ...] = TAIL_LEVELS) -> 
     columns (one per member), as columns ``cvar05``, ``cvar20``. The worst
     share is rounded up to whole members, at least one. A tail's mean is
     steadier than the single breakpoint at its edge, and says how bad the
-    bad futures are, not just where they start (#163)."""
-    ordered = np.sort(frame.to_numpy(dtype=float), axis=1)
-    n = ordered.shape[1]
-    return pd.DataFrame(
+    bad futures are, not just where they start (#163). A NaN (a member a
+    row doesn't cover, such as a household that has ended) is left out of
+    that row, and a row with no members is NaN."""
+    ordered = np.sort(frame.to_numpy(dtype=float), axis=1)  # NaN sorts last
+    n = (~np.isnan(ordered)).sum(axis=1)
+    taken = np.arange(ordered.shape[1])[None, :]
+    out = {}
+    for q in levels:
         # The epsilon keeps 0.2 * 80 at 16 rather than float-rounding to 17.
-        {f"cvar{q * 100:02g}": ordered[:, :max(1, math.ceil(q * n - 1e-9))].mean(axis=1)
-         for q in levels},
-        index=frame.index,
-    )
+        k = np.maximum(1, np.ceil(q * n - 1e-9)).astype(int)
+        sums = np.where(taken < k[:, None], ordered, 0.0).sum(axis=1)
+        out[f"cvar{q * 100:02g}"] = np.where(n > 0, sums / k, np.nan)
+    return pd.DataFrame(out, index=frame.index)
 
 
 def reserve_shares(frame: pd.DataFrame, reserve: float) -> pd.DataFrame:
@@ -1246,6 +1519,17 @@ def quantile_deltas(
     return percentiles(variant, qs) - percentiles(baseline, qs)
 
 
+def base_case_deaths(connections: Mapping[str, RunConnection]) -> list[Death]:
+    """The deaths an ensemble chart marks (#255): member 0's, the base case,
+    whose lifespans are the authored ages. Other members' vary. None when
+    member 0 isn't among the succeeded members."""
+    for con in connections.values():
+        member = con.ensemble_member()
+        if member is not None and member[0] == 0:
+            return con.deaths()
+    return []
+
+
 def member_pairs(
     baseline: dict[str, RunConnection], variant: dict[str, RunConnection],
 ) -> tuple[list[tuple[str, str]], str | None]:
@@ -1255,21 +1539,13 @@ def member_pairs(
     every row the recipes share (ADR-006 §3). Returns the ``(baseline stem,
     variant stem)`` pairs, or no pairs and the reason they can't be paired."""
 
-    def by_index(connections: dict[str, RunConnection]) -> dict[int, tuple[str, int | None]]:
-        members = {}
-        for stem, con in connections.items():
-            member = con.ensemble_member()
-            if member is not None:
-                members[member[0]] = (stem, member[1])
-        return members
+    from analysis.sim.series_db import pair_members
 
-    left, right = by_index(baseline), by_index(variant)
-    common = sorted(left.keys() & right.keys())
-    if not common:
-        return [], "no member index succeeded in both ensembles"
-    if any(left[i][1] is None or left[i][1] != right[i][1] for i in common):
-        return [], "the recipes have different seeds, so their members drew different futures"
-    return [(left[i][0], right[i][0]) for i in common], None
+    def ids(connections: dict[str, RunConnection]) -> dict[str, tuple[int, int | None]]:
+        return {stem: member for stem, con in connections.items()
+                if (member := con.ensemble_member()) is not None}
+
+    return pair_members(ids(baseline), ids(variant))
 
 
 def paired_deltas(

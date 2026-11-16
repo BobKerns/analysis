@@ -83,7 +83,9 @@ def render(
     script = gzip.decompress(MERMAID_SCRIPT.read_bytes()).decode()
     with sync_playwright() as playwright:
         try:
-            browser = playwright.chromium.launch()
+            # $ANALYSIS_CHROMIUM names a Chromium when Playwright's own download
+            # doesn't match the installed Playwright (the video recordings set it).
+            browser = playwright.chromium.launch(executable_path=os.environ.get("ANALYSIS_CHROMIUM") or None)
         except Error:
             # Playwright's own Chromium isn't installed; an installed Chrome serves.
             try:

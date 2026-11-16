@@ -9,6 +9,7 @@ The ``business_scenarios`` fixture's ``alice_business`` is the example, and
 from __future__ import annotations
 
 import sqlite3
+from contextlib import closing
 from collections.abc import Callable
 from pathlib import Path
 
@@ -17,7 +18,9 @@ import pytest
 from click.testing import CliRunner
 
 from analysis.cli import main
-from analysis.sim.engine import EngineError, _business_result, run_scenario
+from analysis.sim.engine import EngineError, run_scenario
+from analysis.sim.tax_api import TaxError, TaxYear
+from analysis.sim.taxes.common import business_result
 from analysis.sim.loader import LoadError
 
 
@@ -37,7 +40,7 @@ def run_file(
 def run_business(run_file: Callable[[str], Path]) -> Callable[[str], dict[int, dict[str, int]]]:
     """Run a scenario of the private data copy; its federal tax summary by year."""
     def _run(name: str) -> dict[int, dict[str, int]]:
-        with sqlite3.connect(run_file(name)) as con:
+        with closing(sqlite3.connect(run_file(name))) as con:
             summary: dict[int, dict[str, int]] = {}
             for year, bucket, amount in con.execute(
                 "SELECT year, bucket, amount FROM tax_year_summary WHERE bucket LIKE 'federal_%'"
@@ -59,21 +62,47 @@ def test_a_business_loss_offsets_other_income_unless_it_is_a_hobby(
 ) -> None:
     business, hobby = run_business("alice_business")[2029], run_business("alice_business_hobby")[2029]
     # 2029 is a year of expenses and no sales.
-    expenses = -business["schedule_c_net"]
+    expenses = -business["business_net"]
     assert expenses > 0
-    assert business["hobby_expense_disallowed"] == 0
-    assert (hobby["schedule_c_net"], hobby["hobby_expense_disallowed"]) == (0, expenses)
+    assert business["hobby_disallowed"] == 0
+    assert (hobby["business_net"], hobby["hobby_disallowed"]) == (0, expenses)
     # Interest differs a little too: the hobby's higher tax leaves less cash.
     assert hobby["ordinary_income"] - business["ordinary_income"] == pytest.approx(expenses, rel=0.01)
-    assert hobby["tax_liability"] > business["tax_liability"]
+    assert hobby["tax"] > business["tax"]
 
 
 def test_a_hobby_still_pays_tax_on_its_sales(
     run_business: Callable[[str], dict[int, dict[str, int]]],
 ) -> None:
     hobby = run_business("alice_business_hobby")[2030]
-    assert hobby["schedule_c_net"] > 0  # the sales, with no expense against them
-    assert hobby["hobby_expense_disallowed"] > hobby["schedule_c_net"]
+    assert hobby["business_net"] > 0  # the sales, with no expense against them
+    assert hobby["hobby_disallowed"] > hobby["business_net"]
+    assert "se_tax" not in hobby  # a hobby isn't self-employment (#623)
+
+
+def test_a_profit_pays_self_employment_tax_with_the_federal_settlement(
+    business_scenarios: Path, run_file: Callable[[str], Path],
+) -> None:
+    """A profitable year owes self-employment tax (#623), in the federal
+    tax the April settlement pays, and half of it comes off AGI."""
+    path = business_scenarios / "alice_business" / "scheduled.csv"
+    frame = pd.read_csv(path, dtype=str, keep_default_na=False)
+    frame.loc[frame["name"] == "business_sales", "amount"] = "6000.00"
+    frame.to_csv(path, index=False)
+    run = run_file("alice_business")
+    with closing(sqlite3.connect(run)) as con:
+        year = {bucket.removeprefix("federal_"): amount for bucket, amount in con.execute(
+            "SELECT bucket, amount FROM tax_year_summary "
+            "WHERE year = 2031 AND bucket LIKE 'federal_%'")}
+    assert year["business_net"] > 0 < year["se_tax"]
+    assert year["se_tax_deduction"] == year["se_tax"] // 2
+    assert year["tax"] > year["se_tax"]
+    # The settlement squares the year's tax, self-employment tax included.
+    assert year["tax_paid"] + year.get("tax_due", 0) - year.get("tax_overpaid", 0) == year["tax"]
+    result = CliRunner().invoke(
+        main, ["sim", "report", "tax", "--runfile", str(run)])
+    assert result.exit_code == 0, result.output
+    assert "fed_se_tax" in result.output
 
 
 def test_the_tax_report_shows_the_business(run_file: Callable[[str], Path]) -> None:
@@ -95,6 +124,38 @@ def test_the_expense_report_has_a_business_category(run_file: Callable[[str], Pa
     assert "business" in result.output
 
 
+@pytest.mark.slow
+def test_the_proprietors_nol_ends_after_the_year_they_die(
+    business_scenarios: Path, run_file: Callable[[str], Path],
+) -> None:
+    """#277: Alice's business is hers alone, so the NOL she dies with in 2031
+    can be used on that year's return and then ends."""
+    scenario = business_scenarios / "alice_business"
+    one_off = {"cadence": "one_off", "amount_rule_kind": "fixed_amount", "amount": "250000.00",
+               "start": "2030-03-31", "end": "2030-03-31", "meta_json": "{}"}
+    _edit(scenario / "scheduled.csv", [{
+        **one_off, "name": "funding", "from_account": "Income_Inheritance",
+        "to_account": "Asset_Business_Alice", "tax_character": "none", "priority": "100",
+    }, {
+        **one_off, "name": "big_build", "from_account": "Asset_Business_Alice",
+        "to_account": "Expense_Business_Alice", "tax_character": "business_expense",
+        "priority": "200",
+    }])
+    (scenario / "lifespan.csv").write_text(
+        "person,age_at_death,vary_distribution,vary_low,vary_high,vary_mode,"
+        "vary_correlate_with,vary_correlation\nalice,66,,,,,,\n")  # final month 2031-03
+    run = run_file("alice_business")
+    with closing(sqlite3.connect(run)) as con:
+        lines = {(bucket.removeprefix("federal_"), year): amount for year, bucket, amount in con.execute(
+            "SELECT year, bucket, amount FROM tax_year_summary WHERE bucket LIKE 'federal_nol_%'")}
+    assert lines["nol_carryover", 2030] > 0
+    assert lines["nol_carryover", 2031] == 0 < lines["nol_lapsed", 2031]
+    assert lines["nol_used", 2032] == 0
+    result = CliRunner().invoke(main, ["sim", "report", "tax", "--runfile", str(run)])
+    assert result.exit_code == 0, result.output
+    assert "nol_lapsed" in result.output
+
+
 def test_a_loss_larger_than_the_years_income_carries_forward(
     business_scenarios: Path, run_business: Callable[[str], dict[int, dict[str, int]]],
 ) -> None:
@@ -113,20 +174,20 @@ def test_a_loss_larger_than_the_years_income_carries_forward(
     }])
     summary = run_business("alice_business")
     loss_year, next_year = summary[2030], summary[2031]
-    nonbusiness = (loss_year["ordinary_income"] - loss_year["schedule_c_net"]
-                   + loss_year["capital_loss_deduction"] + loss_year["ltcg_income"]
-                   + loss_year["taxable_ss"])
-    carried = -loss_year["schedule_c_net"] - max(0, nonbusiness - loss_year["deduction_used"])
+    nonbusiness = (loss_year["ordinary_income"] - loss_year["business_net"]
+                   + loss_year["capital_loss_used"] + loss_year["ltcg_taxed"]
+                   + loss_year["ss_taxable"])
+    carried = -loss_year["business_net"] - max(0, nonbusiness - loss_year["deduction"])
     assert loss_year["nol_carryover"] == carried > 0
     assert loss_year["taxable_income"] == 0
 
     before_nol = next_year["taxable_income"] + next_year["nol_used"]
     assert next_year["nol_used"] == min(carried, before_nol * 80 // 100)
     assert next_year["nol_carryover"] == carried - next_year["nol_used"] + max(
-        0, -next_year["schedule_c_net"] - max(0, (
-            next_year["ordinary_income"] - next_year["schedule_c_net"]
-            + next_year["capital_loss_deduction"] + next_year["ltcg_income"]
-            + next_year["taxable_ss"]) - next_year["deduction_used"]))
+        0, -next_year["business_net"] - max(0, (
+            next_year["ordinary_income"] - next_year["business_net"]
+            + next_year["capital_loss_used"] + next_year["ltcg_taxed"]
+            + next_year["ss_taxable"]) - next_year["deduction"]))
 
 
 @pytest.mark.parametrize(("csv", "rows", "message"), [
@@ -182,10 +243,9 @@ def test_a_chain_step_takes_no_business_character(
 def test_the_nol_limit_must_be_a_percentage(
     business_scenarios: Path, run_file: Callable[[str], Path],
 ) -> None:
-    path = business_scenarios / "alice_business" / "scheduled.csv"
+    path = business_scenarios / "alice_business" / "taxes" / "federal.csv"
     frame = pd.read_csv(path, dtype=str, keep_default_na=False)
-    frame.loc[frame["name"] == "federal_tax", "params_json"] = (
-        '{"year": "previous", "nol_limit_percent": 150}')
+    frame.loc[0, "params_json"] = '{"nol_limit_percent": 150}'
     frame.to_csv(path, index=False)
     with pytest.raises(EngineError, match="nol_limit_percent must be 0 to 100, got 150"):
         run_file("alice_business")
@@ -208,7 +268,9 @@ def _event(con: sqlite3.Connection, frm: int, to: int, amount: int, character: s
     )
 
 
-def test_each_business_is_judged_by_its_own_account(ledger_con: sqlite3.Connection) -> None:
+def test_each_business_is_judged_by_its_own_account(
+    ledger_con: sqlite3.Connection, tax_year_of: Callable[..., TaxYear],
+) -> None:
     """Two businesses, one a hobby: only the hobby's expenses are disallowed."""
     _account(ledger_con, 1, "business")
     _account(ledger_con, 2, "business", '{"hobby": true}')
@@ -216,15 +278,15 @@ def test_each_business_is_judged_by_its_own_account(ledger_con: sqlite3.Connecti
     _event(ledger_con, 1, 3, 500_00, "business_expense")
     _event(ledger_con, 2, 3, 300_00, "business_expense")
     _event(ledger_con, 3, 2, 100_00, "business_income")
-    assert _business_result(ledger_con, tax_year=2030) == (100_00 - 500_00, 300_00)
-    assert _business_result(ledger_con, tax_year=2031) == (0, 0)
+    assert business_result(tax_year_of(ledger_con, 2030)) == (100_00 - 500_00, 300_00)
+    assert business_result(tax_year_of(ledger_con, 2031)) == (0, 0)
 
 
 def test_the_engine_rejects_a_business_character_off_a_business_account(
-    ledger_con: sqlite3.Connection,
+    ledger_con: sqlite3.Connection, tax_year_of: Callable[..., TaxYear],
 ) -> None:
     _account(ledger_con, 1, "cash")
     _account(ledger_con, 3, "other_expense")
     _event(ledger_con, 1, 3, 500_00, "business_expense")
-    with pytest.raises(EngineError, match="must be paid out of a business account, not 'A1'"):
-        _business_result(ledger_con, tax_year=2030)
+    with pytest.raises(TaxError, match="must be paid out of a business account, not 'A1'"):
+        business_result(tax_year_of(ledger_con, 2030))

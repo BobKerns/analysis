@@ -4,7 +4,7 @@
 > - In Jupyter: right-click on it and select `Open With / Markdown Preview`
 > - In VSCode: Command `Markdown Preview Enhanced: Open Preview` or ⌘⇧V
 
-<!-- cspell:ignore CPIAUCSL PMMS CUUR CWUR SUUR SEEB DPCCRG DPCERG DPCERGM PCEPI histret Asize -->
+<!-- cspell:ignore CPIAUCSL PMMS TB3MS DGS3MO CUUR CWUR SUUR SEEB DPCCRG DPCERG DPCERGM PCEPI histret Asize SASLE SEMF SETE -->
 
 The [ensembles guide](ensembles.md) explains how a varying rate, a
 correlation and tail dependence work. This guide is about the numbers:
@@ -16,6 +16,10 @@ All of it comes from public statistics, through `analysis historical`
 the series and computes every table below. The command
 that produced each table is printed under it, so you can run the same thing
 on other series or years.
+
+[How much information is in the historical series?](historical-information.md)
+checks the templates' choices of memory and shock shape from a different
+direction, with a compression test anyone can rerun.
 
 ## Reading the tables
 
@@ -56,19 +60,19 @@ For example, stocks and CPI-U over their whole history:
 analysis historical --period "All=1900-" Stocks=damodaran:sp500 CPI-U=CUUR0000SA0
 ```
 
-| Series | Row           | amount, vary_median | vary_sd      | vary_persistence | vary_innovation_sd |
-| ------ | ------------- | ------------------- | ------------ | ---------------: | ------------------ |
-| Stocks | held 30 yr    | 10.0%               | 1.3%         |                — | —                  |
-| Stocks | process (ar1) | 10.0%               | 2.0% to 5.5% |             0.00 | 18.9%              |
-| CPI-U  | held 30 yr    | 3.2%                | 1.3%         |                — | —                  |
-| CPI-U  | process (ar1) | 3.2%                | 0.4% to 2.6% |             0.65 | 3.5%               |
+| Series | Row           | amount, vary_median | vary_sd      | vary_persistence | vary_shock_sd |
+| ------ | ------------- | ------------------- | ------------ | ---------------: | ------------- |
+| Stocks | held 30 yr    | 10.0%               | 1.3%         |                — | —             |
+| Stocks | process (ar1) | 10.0%               | 2.0% to 5.5% |             0.00 | 18.9%         |
+| CPI-U  | held 30 yr    | 3.2%                | 1.3%         |                — | —             |
+| CPI-U  | process (ar1) | 3.2%                | 0.4% to 2.6% |             0.65 | 3.5%          |
 
 The stock row as a process, taking the low end of the level's range, is
 then this `calendar.csv` row (with its `vary_correlate_with` and the rest
 as the recipe needs):
 
 ```csv
-date,kind,name,series,amount,vary_target,vary_distribution,vary_median,vary_sd,vary_process,vary_persistence,vary_innovation_sd
+date,kind,name,series,amount,vary_target,vary_distribution,vary_median,vary_sd,vary_process,vary_persistence,vary_shock_sd
 2026-10,set_rate,vary_stock,stock,10.0%,amount,truncated_normal,10.0%,2.0%,ar1,0,18.9%
 ```
 
@@ -102,7 +106,7 @@ After the tables comes a legend, one line per name a value goes by:
 | `vary_sd` (process row) | `--vary-sd` | uncertainty about the long-run rate | process row's `vary_sd` | SD of the level only; from the standard error of the mean up to the 10-year rolling SD. |
 | `vary_process` | `--vary-process` | year-by-year path | — | `ar1` for a path that moves every year around L; blank to hold one draw. |
 | `vary_persistence` | `--vary-persistence` | persistence (φ) | Persistence | How much of one year's deviation carries into the next; a negative value is entered as 0. |
-| `vary_innovation_sd` | `--vary-innovation-sd` | yearly shock size (σ) | Shock SD | SD of one year's surprise in log growth, as a percent. In a tree with tail dependence ν, divide by √(ν / (ν − 2)). |
+| `vary_shock_sd` | `--vary-shock-sd` | yearly shock size (σ) | Shock SD | SD of one year's surprise in log growth, as a percent. In a tree with tail dependence ν, divide by √(ν / (ν − 2)). |
 | `vary_low`, `vary_high` | `--vary-low`, `--vary-high` | bounds on the draw | — | Bound the drawn rate, or a process's level, not its yearly path. Min % and Max % are single years' extremes. |
 | — | — | single-year spread | SD, Median %, Min %, Max % | For reading history; no column takes the single-year SD directly. |
 
@@ -157,7 +161,7 @@ around it year by year ([ADR-006
 
 - **`vary_persistence`:** Persistence, or 0 when it's negative. Near 0 for
   returns; a yield or an inflation rate is better held than given a process.
-- **`vary_innovation_sd`:** Shock SD. Since 1948, stocks' is 15.9 and
+- **`vary_shock_sd`:** [Shock SD](../user-guide.md#g-shock). Since 1948, stocks' is 15.9 and
   T-bonds' 8.2.
 - **The level's `vary_sd`:** only the uncertainty about the long-run rate
   the path compounds to, since the path supplies the yearly spread itself.
@@ -172,16 +176,66 @@ around it year by year ([ADR-006
 
 Each year's shock goes through the row's correlation tree, so two return
 paths under one market factor have correlated years. Member 0's path is
-flat at its level.
+flat at its level, unless it starts at today's rate (next section).
 
 ```sh
 sim ensemble create stock_paths retire_alice
 sim calendar add set-rate 2027-01-31 brokerage_growth 6 --scenario stock_paths \
   --name brokerage_path --vary-target amount \
   --vary-distribution truncated_normal --vary-median 6 --vary-sd 2 \
-  --vary-process ar1 --vary-persistence 0 --vary-innovation-sd 16 \
+  --vary-process ar1 --vary-persistence 0 --vary-shock-sd 16 \
   --vary-correlate-with stock_us_factor --vary-correlation 1.0
 ```
+
+### Today's rate, returning to the long run
+
+A process row normally starts with a year already drawn around its level,
+as if today were an ordinary year. When today isn't (inflation running
+above its long-run rate, say), `--vary-process-start current` starts the
+path at the rate in effect instead, and lets it return to the level at the
+row's persistence ([ADR-006
+§4a](../architecture/ADR-006-ensemble-scenarios.md#4a-processes-a-year-by-year-path-from-one-row)).
+The rate in effect is the series file's latest entry before the row's date,
+or an earlier `set-rate` row's value if one comes later, so "now" lives in
+the series file with the rest of the history:
+
+```sh
+sim ensemble create inflation_now retire_alice
+printf 'effective_date,annual_rate\n2025-01-31,2.5%%\n2026-09-30,3.6%%\n' \
+  > "$ANALYSIS_DATA_DIR/scenarios/inflation_now/series/inflation__cpi.csv"
+sim calendar add set-rate 2026-10-31 cpi 3.2 --aux-kind inflation \
+  --scenario inflation_now --name cpi_now \
+  --vary-target amount --vary-distribution truncated_normal \
+  --vary-median 3.2 --vary-sd 1.0 \
+  --vary-process ar1 --vary-persistence 0.65 --vary-shock-sd 3.5 \
+  --vary-process-start current \
+  --vary-correlate-with cpi_factor --vary-correlation 1.0
+```
+
+- **Year 0 is September's 3.6%**, exactly, in every member. From the next
+  year on, each year keeps 0.65 of the last one's gap from the level, plus
+  that year's shock. Member 0 has no shocks, so its path closes in on 3.2%:
+  3.46%, 3.37%, 3.31% and so on. The other members spread out around that
+  path as the shocks add up.
+- **Persistence sets how long the return takes.** There is no return date
+  to choose. With persistence near 0 (fuel) the rate is back near its level
+  within a year; at 0.7 (shelter, medical care) the gap takes several years
+  to fade. The extra inflation along the way adds to the price level about
+  as much as the gap held for 1/(1 − persistence) years would: about three
+  years at 0.65.
+- **The row's own date doesn't count.** A series entry dated on the row's
+  date is replaced by the row, so the start is the entry before it. An
+  earlier `set-rate` row for the same series counts, and if it varies, its
+  drawn value counts (for a ramp or a process, its last step).
+- **Something must be in effect before the row.** With no series entry and
+  no fixed-date `set-rate` row before it, the load fails. A row whose date
+  varies doesn't count at load, since it could land after the process row.
+- **`ensemble_draw` still records the level**, 3.2% in member 0, so
+  sensitivity reports read the long-run rate as before.
+
+The numbers here are CPI-U's process row from [Suggested row
+values](#suggested-row-values), over all of history. A postwar period
+gives a smaller shock; run `analysis historical` for the period you trust.
 
 ## A long-run rate with episodes on top
 
@@ -229,48 +283,52 @@ bursts (1969–1970, 1973–1975 and 1977–1981) with years of 3% to 5% in
 between, not 17 years at one rate. Medical care was the exception: above 5%
 for 21 straight years, from 1973 to 1993.
 
-A scenario can model that as three rows on the same series: the long-run
-rate, an episode that starts at a varying date, and a return row a fixed
-number of years later. This continues the `inflation_drivers` recipe from
-the ensembles guide, as a separate scenario so it can be compared with the
-recipe, or used as a mix-in:
+A scenario can model that as a date marker for the episode's start, an
+episode row dated from it, and a return row a fixed number of years later.
+This continues the `inflation_drivers` recipe from the ensembles guide, as
+a separate scenario so it can be compared with the recipe, or used as a
+mix-in:
 
 ```sh
 sim ensemble create great_inflation inflation_drivers
-sim calendar add set-rate 2030-01-31 medical 8.2 --aux-kind inflation \
-  --scenario great_inflation --name medical_episode \
-  --vary-target date --vary-distribution uniform \
-  --vary-low 2028-01-31 --vary-high 2036-01-31
-sim calendar add set-rate 2035-01-31 medical 4.2 --aux-kind inflation \
+sim calendar add date-marker medical_episode_start 2032-01 \
+  --scenario great_inflation \
+  --vary-distribution uniform --vary-low 2028-01 --vary-high 2036-01
+sim calendar add set-rate medical_episode_start medical 8.2 --aux-kind inflation \
+  --scenario great_inflation --name medical_episode
+sim calendar add set-rate medical_episode_start+5y medical 4.2 --aux-kind inflation \
   --scenario great_inflation --name medical_return \
-  --vary-target date --vary-distribution uniform \
-  --vary-low 2033-01-31 --vary-high 2041-01-31 \
-  --vary-correlate-with medical_episode --vary-correlation 1.0
+  --vary-target amount --vary-distribution truncated_normal \
+  --vary-median 4.2 --vary-sd 0.5 --vary-process ar1 \
+  --vary-persistence 0.6 --vary-shock-sd 2 --vary-process-start current
 ```
 
 - The episode rate, 8.2%, is medical care's compound rate over the Great
-  Inflation; the return rate, 4.2%, is its long-run rate since 1984.
-- The two date ranges are the same length, five years apart, and
-  correlated at 1.0. Both draws then land at the same point in their
-  ranges, so the episode lasts the same 1,827 days in every member and only
-  its start varies. That is five years to within a day: depending on leap
-  years, the return falls on the fifth anniversary or the day after.
-- The return lands on the long-run median, not on the rate that member drew
-  for `medical_vary`: it reverts toward the middle, as history did. A row
-  varies either its date or its amount, so the episode's rate and the
-  return's rate are fixed here.
-- A date range that runs past the scenario's end makes the episode
-  optional. With `--vary-high 2048-01-31` on a scenario ending in 2040,
-  about 13 of the range's 20 years fall inside the scenario, so the
-  episode starts in about 65% of members; in the rest it never starts. The
-  ranges here were checked on the prototype scenario, where they ran as
-  described. Member 0, the base case, uses the middle of each range, so it
-  has an episode when the middle falls inside the scenario.
+  Inflation; the return level, 4.2%, is its long-run rate since 1984.
+- Both rows are dated from one marker, so the episode lasts exactly five
+  years in every member and only its start varies. Moving the episode is a
+  one-row edit of the marker; `sim calendar rename` of the marker carries
+  the rows with it.
+- The return row starts at the episode's rate and reverts to its level at
+  medical care's persistence, with yearly shocks on top
+  ([Today's rate, returning to the long run](#todays-rate-returning-to-the-long-run)).
+  The marker is what varies, so the return's level can vary too.
+- A marker range that runs past the scenario's end makes the episode
+  optional. With `--vary-high 2048-01` on a scenario ending in 2040, about
+  13 of the range's 20 years fall inside the scenario, so the episode
+  starts in about 65% of members; in the rest, every row dated from the
+  marker falls after the end and does nothing. Member 0, the base case,
+  uses the middle of the range, so it has an episode when the middle falls
+  inside the scenario.
+- A row's own date range can be relative to the marker too
+  (`--vary-low medical_episode_start+4y --vary-high medical_episode_start+7y`
+  on a return row whose date varies), for an episode whose length is
+  uncertain as well.
 
-Separate episode scenarios, one per historical pattern (a Great
-Inflation-style stretch, a short post-pandemic spike), can each be a mix-in
-on the same base, so `base:great_inflation` and `base:pandemic_spike` share
-everything else.
+The templates ship three episodes built this way, one per historical
+pattern, each a mix-in on the same base, so `base:t_great_inflation` and
+`base:t_pandemic_spike` share everything else, and `t_crisis_then_spike`,
+which chains two of them: see [Episodes](#episodes).
 
 ## Inflation metrics compared
 
@@ -442,31 +500,111 @@ so its 10-year SD (2.0 points for CPI-U) is more than three times the
 recent one (0.6). A long-run row calibrated to the recent period, with the
 1970s added as an episode, keeps the two apart.
 
-## The prototype's defaults
+## Template scenarios
 
-The prototype's root scenario, `base`, ships a long-run rate for
-every inflation series this guide compares and every fund asset class,
-and a factor for each one, so a child scenario or mix-in can vary any of
-them with one row. It has no varying rows: every future runs at these
-rates until a scenario says otherwise. They're starting points, meant to
-be overridden; replace a file in the scenario's own `series/`, or add a
-`set-rate` row. CPI is the exception: `inflation__cpi.csv` stays in the
-shared `aux/`, so a scenario replaces it with its own
-`aux/inflation__cpi.csv`, not a `series/` file.
+The analysis repository ships a set of **template scenarios** in
+`templates/scenarios/`, a vetted inflation and market structure to build
+on. They hold no household data. Any data repo can name them as parents or
+mix-ins without a copy: a scenario named `t_...` that isn't in the data
+repo's own `scenarios/` is read from the analysis repository instead
+([ADR-003 §4.5a](../architecture/ADR-003-registries-and-csv-schemas.md#45a-template-scenarios-t_-names)).
+They change only with the code, so a fix to one reaches every data repo
+that builds on it.
 
-The rates are 10-year compound medians from the tables above, leaning
-toward the recent period where it differs, rounded to half a point or so:
+```mermaid
+flowchart TB
+    empty(["t_empty"]) --> if_(["t_inflation_factors"])
+    if_ --> is(["t_inflation_series"])
+    is --> ie(["t_inflation_ensemble"])
+    ie --> ic(["t_inflation_current"])
+    if_ --> mf(["t_market_factors"])
+    mf --> ms(["t_market_series"])
+    ms --> me(["t_market_ensemble"])
+    me --> mc(["t_market_current"])
+    is --> gi(["t_great_inflation"])
+    is --> fc(["t_financial_crisis"])
+    is --> ps(["t_pandemic_spike"])
+    ms -.-> gi
+    ms -.-> fc
+    ms -.-> ps
+    fc --> cs(["t_crisis_then_spike"])
+    ps -.-> cs
+```
+
+`t_empty` at the root is what its name says: no accounts, rules, rates or
+factors, only a start and end date and a seed, so every template loads on
+its own. A template's dates and seed are fallbacks that any data repo
+scenario in the lineage overrides, so having `t_empty` in a lineage or not
+changes nothing. It is also a starting point for a scenario built from
+nothing. Each layer below it adds one thing to the one
+above:
+
+- **`_factors`**: the latent factors and their correlations, and nothing
+  else.
+- **`_series`**: one long-run rate per series. These are the values for a
+  30-year projection. Recent decades weigh more, and past episodes aren't
+  averaged in, so they're a defensible default and a calm background for
+  episodes to play out against. That's a judgment, explained below.
+- **`_ensemble`**: a year-by-year process row per series, so each member
+  draws a long-run level and moves around it every year. An ensemble of 80
+  members.
+- **`_current`**: a thin layer that starts the persistent series at
+  today's rates, holds them, and then lets each return to its long-run
+  level.
+
+Three **episodes** build on both `_series` layers (the dotted lines are
+mix-ins), so mixing one into a scenario on the templates adds only the
+episode, and a fourth puts two of them in one lifetime: see
+[Episodes](#episodes).
+
+**The market factors sit under the inflation factors.** `t_market_factors`
+inherits `t_inflation_factors`, so markets and inflation share one
+correlation tree. Over a decade, short-term interest rates follow core
+inflation (ρ 0.89) and bond yields follow short rates, so
+`interest_rates` hangs under `core_inflation`, with cash and bonds under
+it. Stocks barely follow either, so they get a root of their own,
+`market`. A scenario that inherits both groups, as most useful ensembles
+do, therefore gets correlated inflation, yields and bond returns, with
+stocks drawn independently.
+
+The prototype's root scenario, `base`, builds on `t_inflation_series` and
+`t_market_series` (one parent and one mix-in): the long-run rates and
+the factor tree, with no varying rows, so every future runs at these rates
+until a scenario says otherwise. A scenario that wants the year-by-year
+paths or today's rates adds `t_inflation_current` and `t_market_current`
+(or the `_ensemble` layers) as mix-ins:
+
+```sh
+sim ensemble create alice_now retire_alice t_inflation_current t_market_current
+```
+
+To change a template, derive a scenario from it and override the rows or
+series files there; the templates themselves are read-only from a data
+repo, and an edit or a rename that would change one is refused. A data
+repo folder with a template's name replaces the template whole.
+
+### Long-run rates (`_series`)
+
+CPI-U itself stays in the shared `aux/inflation__cpi.csv`, so a scenario
+replaces it with its own `aux/inflation__cpi.csv`, not a `series/` file.
+
+The rates in `t_inflation_series` and `t_market_series` are 10-year
+compound medians from the tables above, leaning toward the recent period
+where it differs, rounded to half a point or so:
 
 | Series | Rate % | Basis |
 | --- | --: | --- |
-| `inflation__cpi` | 2.5 | CPI-U, 10-year median since 1984 (in shared `aux/`, as before) |
+| `inflation__cpi` | 2.5 | CPI-U, 10-year median since 1984 (in shared `aux/`) |
 | `inflation__cpi_w` | 2.5 | CPI-W, 0.06 below CPI-U since 1983: Social Security COLAs |
 | `inflation__cpi_e` | 2.7 | R-CPI-E, 0.16 above CPI-U since 1983: a retiree's basket |
 | `inflation__chained_cpi` | 2.2 | C-CPI-U, 0.27 below CPI-U since 2000: tax brackets |
 | `inflation__medical` | 3.5 | Medical care: 4.2 since 1984, 3.3 since 2000, 2.8 since 2010 |
 | `inflation__medicare_part_b` | 5.5 | The Part B premium, 1990–2025 |
+| `inflation__prescriptions` | 3.0 | Prescription drugs: 4.1 since 1984, 2.8 since 2000; Medicare's price negotiation pulls down, new drugs push up |
+| `inflation__services` | 3.2 | Services less energy: 3.5 since 1984, 3.1 since 2000. About half is shelter, so use `housing` for rent |
 | `inflation__housing` | 3.2 | Shelter, 10-year median since 1984 |
 | `inflation__education` | 4.0 | Tuition: 5.2 since 1984, 3.0 since 2010 |
+| `inflation__auto_insurance` | 4.5 | Motor vehicle insurance: 5.2 since 1984, 4.9 since 2000, 5.7 since 2010 |
 | `inflation__food` | 2.8 | Food, between the 10-year median and the compound rate |
 | `inflation__fuel` | 2.5 | Energy: 1.9 to 2.4 since 1984, with a 10-point single-year SD |
 | `inflation__apparel` | 0.5 | Apparel, 0.6 since 1984 |
@@ -475,17 +613,29 @@ toward the recent period where it differs, rounded to half a point or so:
 | `rate__stock` | 7.0 | Stock with an unknown US/international split |
 | `rate__bond` | 4.0 | Below the 10-year Treasury's 6.0 since 1984, a falling-rate era |
 | `rate__cash` | 3.0 | T-bills: 3.4 since 1984, 4.0 postwar; money market follows them |
+| `rate__stock_us_yield` | 1.5 | The part of `stock_us` paid as dividends: the S&P 500's dividend yield, 1.2 to 2.0 since 2010 |
+| `rate__stock_intl_yield` | 3.0 | Developed-market stocks pay more of their return as dividends |
+| `rate__stock_yield` | 2.0 | Between the two |
+| `rate__bond_yield` | 4.0 | A bond pays its return as interest: all of `bond`'s long-run level |
 
 ```sh
 uv run scripts/historical_calibration.py --reference CPI-U=CUUR0000SA0 \
   --period "Since 2010=2010-" CPI-U=CUUR0000SA0 Tuition=CUUR0000SEEB Medical=CUUR0000SAM
 ```
 
+A `_yield` series is the part of its class's return that a taxable
+brokerage lot is paid each year, and taxed on that year: stock dividends at
+long-term gain rates, bond interest as ordinary income. The rest is
+appreciation, taxed only at a sale. A class with no `_yield` series is all
+appreciation.
+
 The investment rates are deliberately below their history. Since 1984
 stocks and bonds both rode falling interest rates and rising valuations,
 which can't repeat from today's starting point, and a plan that comes out
 fine at lower returns is the safer one to act on. A scenario that wants
 history can set `rate__stock_us` to 10 or 11.
+
+### The factor tree (`_factors`)
 
 Each series has a factor of its own, `<series>_factor`, linked into a tree
 by the 10-year ρ (from τ) against core CPI, rounded to the coarse values
@@ -499,13 +649,16 @@ flowchart TB
     cpi -->|0.95| cpi_e(["cpi_e_factor"])
     cpi -->|0.95| chained(["chained_cpi_factor"])
     core -->|0.9| housing(["housing_factor"])
+    core -->|0.7| services_all(["services_factor"])
     core -->|0.6| food(["food_factor"])
     core -->|0.6| apparel(["apparel_factor"])
     core -->|0.3| fuel(["fuel_factor"])
+    core -->|0.3| auto_ins(["auto_insurance_factor"])
     core -->|0.6| services(["services_inflation"])
     services -->|0.9| medical(["medical_factor"])
     services -->|0.9| education(["education_factor"])
     medical -->|0.6| part_b(["medicare_part_b_factor"])
+    medical -->|0.5| rx(["prescriptions_factor"])
     core -->|0.9| rates(["interest_rates"])
     rates -->|0.95| cash(["cash_factor"])
     rates -->|0.6| bond(["bond_factor"])
@@ -516,13 +669,23 @@ flowchart TB
 
 - **Inflation:** CPI-U follows core at 0.93, shelter at 0.95, food at 0.71
   and apparel at 0.45 (0.83 postwar). Energy's link is the weakest and
-  least stable (−0.23 since 1984, 0.48 postwar), hence 0.3. CPI-W, R-CPI-E
+  least stable (−0.23 since 1984, 0.48 postwar), hence 0.3. Auto
+  insurance, priced from repair costs, claims and litigation, barely
+  follows CPI-U either (0.24 since 1984, 0.31 since 2010): 0.3 too. Rates
+  also need regulators' approval, filed by each company about once a year.
+  The filings are staggered, which smooths the index somewhat, but they
+  arrive late and in steps rather than tracking costs, hence its large
+  shock and its persistence. CPI-W, R-CPI-E
   and chained CPI track CPI-U at 0.97 to 0.99.
 - **Services:** medical care and tuition follow core at about 0.6 over a
   decade, and share labor-heavy costs, so they sit under the ensembles
   guide's `services_inflation` sub-factor: 0.6 × 0.9 = 0.54 to core. The
   Part B premium follows medical prices and also how much care is used;
-  its 0.6 is a judgment, not a measurement.
+  its 0.6 is a judgment, not a measurement. Prescription drugs barely
+  follow CPI-U (ρ 0.36 since 1984, 0.06 since 2000), so they hang under
+  medical care at 0.5, another judgment. Services less energy, a broad
+  aggregate rather than the labor-heavy cluster, follows CPI-U at 0.67
+  since 1984 and sits under core at 0.7.
 - **Interest rates:** T-bill returns follow core at 0.89 over a decade
   (0.94 postwar), and the 10-year Treasury follows T-bills at 0.91 (0.68
   postwar), so both hang off an `interest_rates` factor under core.
@@ -560,6 +723,185 @@ medical_factor --vary-correlate-with core_inflation --vary-correlation
 
 Until a scenario varies something, `sim check` warns once that the
 factors no row depends on yet affect nothing.
+
+### Year-by-year paths (`_ensemble`)
+
+`t_inflation_ensemble` and `t_market_ensemble` add one `ar1` process row
+per series, dated 2027-01, each at ρ 1.0 to its factor ([A rate that
+moves every year](#a-rate-that-moves-every-year)). The level is drawn
+around the `_series` rate; the persistence (φ) and the shock size come
+from `analysis historical` over 1984 on, the postwar years and 2000 on,
+leaning on the years since 1984. The postwar figures include the Great
+Inflation, which belongs in an episode instead. Every number is a
+judgment from the history beside it:
+
+| Series | Level % | Level SD | φ | Shock SD | φ / shock since 1984 | Postwar | Since 2000 |
+| --- | --: | --: | --: | --: | --- | --- | --- |
+| `cpi` | 2.5 | 0.5 | 0.4 | 1.4 | 0.33 / 1.3 | 0.67 / 2.0 | 0.30 / 1.4 |
+| `cpi_w` | 2.5 | 0.5 | 0.3 | 1.5 | 0.24 / 1.5 | 0.66 / 2.0 | 0.22 / 1.6 |
+| `cpi_e` | 2.7 | 0.5 | 0.4 | 1.2 | 0.44 / 1.2 | from 1983 | 0.38 / 1.3 |
+| `chained_cpi` | 2.2 | 0.5 | 0.35 | 1.3 | 0.37 / 1.3 | from 2000 | same |
+| `housing` | 3.2 | 0.5 | 0.7 | 1.0 | 0.71 / 1.0 | 0.76 / 1.9 | 0.66 / 1.1 |
+| `food` | 2.8 | 0.4 | 0.3 | 1.8 | 0.30 / 1.8 | 0.45 / 3.0 | 0.27 / 2.1 |
+| `apparel` | 0.5 | 0.6 | 0.3 | 2.1 | 0.35 / 2.1 | 0.31 / 2.6 | 0.16 / 2.2 |
+| `auto_insurance` | 4.5 | 1.0 | 0.6 | 3.5 | 0.61 / 3.2 | 0.55 / 4.4 since 2010 | 0.57 / 3.7 |
+| `fuel` | 2.5 | 2.0 | 0 | 10 | 0.00 / 10.3 | 0.06 / 9.5 | 0.00 / 11.1 |
+| `medical` | 3.5 | 0.8 | 0.6 | 1.2 | 0.76 / 1.2 | 0.78 / 1.6 | 0.10 / 1.1 |
+| `education` | 4.0 | 1.0 | 0.9 | 0.7 | 0.93 / 0.7 | 0.94 / 0.9 | 0.90 / 0.7 |
+| `medicare_part_b` | 5.5 | 1.5 | 0.1 | 6.5 | 0.12 / 6.5 | from 1990 | 0.08 / 6.6 |
+| `prescriptions` | 3.0 | 0.8 | 0.4 | 2.0 | 0.67 / 2.1 | 0.81 / 2.1 | 0.13 / 2.0 |
+| `services` | 3.2 | 0.5 | 0.65 | 0.9 | 0.73 / 0.8 | 0.78 / 1.6 (from 1958) | 0.59 / 0.9 |
+| `cash` | 3.0 | 1.0 | 0.85 | 1.3 | 0.88 / 1.3 | 0.90 / 1.3 | 0.73 / 1.3 |
+| `bond` | 4.0 | 1.5 | 0 | 8.5 | 0.00 / 9.5 | 0.00 / 8.2 | 0.00 / 8.7 |
+| `stock_us` | 7.0 | 2.5 | 0 | 16 | 0.00 / 16.1 | 0.00 / 15.9 | 0.00 / 18.0 |
+| `stock_intl` | 7.0 | 3.0 | 0 | 17 | no data | | |
+| `stock` | 7.0 | 2.5 | 0 | 16 | as US | | |
+| `bond_yield` | 4.0 | 1.5 | held | — | | | |
+
+`bond_yield` has no yearly path: it is drawn once per member, at ρ 1.0 to
+`bond_factor` like `bond`'s level, never below 0%, and held, so a member whose bonds return
+more also pays more interest. A bond's yearly swings are price changes,
+which are appreciation. The stock yields are held at their `_series` rates.
+
+```sh
+analysis historical --period "Since 1984=1984-" --period "Postwar=1948-" \
+  --period "Since 2000=2000-" CPI-U=CUUR0000SA0 Medical=CUUR0000SAM \
+  Rx=CUUR0000SEMF01 Services=CUUR0000SASLE AutoIns=CUUR0000SETE \
+  T-bill=damodaran:tbill T-bond=damodaran:tbond Stocks=damodaran:sp500
+```
+
+The level is a truncated normal at its default 3-SD bounds, with no tail
+dependence; a mix-in can add ν to a root factor. Medical care's φ is the
+one with the widest range, 0.76 since 1984 against 0.10 since 2000. Its
+components explain the gap: hospital services kept a persistence near 0.6
+since 2000, while health insurance, which BLS infers from insurers'
+premiums less the claims they paid, swings by up to 27 points a year with
+none, and entered the index only in 2005. The template takes 0.6.
+
+### Today's rates (`_current`)
+
+`t_inflation_current` and `t_market_current` start the persistent series at
+their latest 12-month rates, from the committed data (to August 2026), as
+`series/` files (CPI-U as `aux/inflation__cpi.csv`). They re-date the
+`_ensemble` rows to a `normalization_start` date marker with
+`vary_process_start` `current`, so each rate holds until then and returns
+to its level at its own persistence after ([Today's rate, returning to the
+long run](#todays-rate-returning-to-the-long-run)):
+
+| Series | Today | Source |
+| --- | --: | --- |
+| `cpi` | 3.4% | CPI-U, 12 months to August 2026 |
+| `cpi_w` | 3.5% | CPI-W, the same |
+| `cpi_e` | 3.4% | CPI-U: R-CPI-E isn't monthly here |
+| `chained_cpi` | 3.4% | CPI-U: C-CPI-U's recent months are preliminary |
+| `housing` | 3.0% | Shelter |
+| `education` | 3.4% | Tuition |
+| `services` | 3.0% | Services less energy |
+| `cash` | 4.1% | 3-month T-bill, October 2026: 4.05% discount yield (TB3MS), 4.15% as an investment yield |
+
+- **The hold is political, not statistical.** Rates hold for about three
+  years, on the judgment that no effective policy change comes before
+  then. The budget and the fiscal calendar are the only fixed cues, so the
+  hold ends with federal fiscal year 2030, which starts in October 2029,
+  give or take a few months: `normalization_start` is triangular from
+  June 2029 to March 2030, most likely September 2029 (a rate change at
+  the end of September takes effect in October). The base case, member 0,
+  takes the triangle's median, at the end of October 2029. A different
+  view is a one-row override of the marker, or a sibling `_current`
+  scenario with other rates; a series with less federal influence can be
+  dated earlier, at `normalization_start-3m`.
+- **Medical care isn't held.** Its 1.6% is taken as a short-lived
+  correction (falling drug prices and the insurance measure), not a new
+  trend. An aging population, new treatments and the continuing vertical
+  integration of care keep pushing costs up, and a rate below core
+  inflation isn't sustainable without structural change, so it runs at its
+  3.5% level from 2027. Prescription drugs (−2.9% over the latest 12
+  months, as Medicare's negotiated prices take effect) likewise start at
+  their level, and so does auto insurance, whose 5.1% fall over the
+  latest 12 months follows a 16.5% rise two years earlier.
+- **Series with little persistence keep the ensemble's rows.** Food,
+  apparel, energy and the Part B premium would be back near their levels
+  within a year, and energy's latest 12 months (16%) are a one-year spike
+  that holding for three years would turn into a trend. Bonds and stocks
+  likewise have no current start.
+- **Cash starts at the latest month, not 12 months.** A yield is a
+  reading at one point in time, so `cash` takes the latest month of
+  FRED's 3-month T-bill rate, `TB3MS` (October 2026; it was 3.72% in
+  August). `TB3MS` is a *discount* yield, the bill's discount over its
+  face value; the cash `_ensemble` row returns to Damodaran's series,
+  which since 1982 is an *investment* (bond-equivalent) yield, about 0.1
+  point higher at 4% and 0.2 at 5%. The template converts:
+  `365 × d / (360 − 91 × d)`, so 4.05% becomes 4.15%, close to what
+  money market funds pay before fees. Through 1981 the two series are
+  the same; since then `TB3MS` runs 0.11 point a year below:
+
+  | Series | Years     |   N | Compound % | Median % |  SD | Min % | Max % | Gap vs ref |
+  | ------ | --------- | --: | ---------: | -------: | --: | ----: | ----: | ---------: |
+  | TB3MS  | 1982–2025 |  44 |        3.6 |      3.7 | 2.9 |   0.0 |  10.6 |      -0.11 |
+  | T-bill | 1982–2025 |  44 |        3.7 |      3.9 | 3.0 |   0.0 |  11.1 |       0.00 |
+
+  ```sh
+  uv run analysis historical --reference T-bill=damodaran:tbill \
+    --period "Since 1982=1982-2025" TB3MS=fred:TB3MS@rate T-bill=damodaran:tbill
+  ```
+
+  The long-run tables keep Damodaran's series, which reaches back to 1928.
+
+### Episodes
+
+Three templates add a stretch of trouble on top of the long-run rates.
+Between them they cover three different ways things go wrong, and each is
+a starting point for others. A fourth, `t_crisis_then_spike`, puts two of
+them in one lifetime:
+
+| Template | Kind | History | Length |
+| --- | --- | --- | --- |
+| [`t_great_inflation`](../../templates/scenarios/t_great_inflation/README.md) | dysfunction: policy lets inflation run | 1966–1982 | 8 to 17 years, most likely 12 |
+| [`t_financial_crisis`](../../templates/scenarios/t_financial_crisis/README.md) | fiscal shock: a crash, then near-zero rates | 2008–2019 | 5 to 10 years, most likely 7 |
+| [`t_pandemic_spike`](../../templates/scenarios/t_pandemic_spike/README.md) | external shock: a price spike, then rate hikes | 2021–2023 | 2 to 4 years, most likely 3 |
+| [`t_crisis_then_spike`](../../templates/scenarios/t_crisis_then_spike/README.md) | both: a crisis, then a spike 1 to 10 years after its near-zero rates end | 2008–2023 | the two above, with a gap |
+
+Each one's README lists its rates, taken from the
+[historical episodes](#historical-episodes) below, or inferred where a
+series has no history for the period.
+
+- **Placing one.** Each has a `<episode>_start` date marker, uniform from
+  2031 (after `normalization_start`'s latest date, so the `_current`
+  rows never cut an episode short) to 2064, and an `<episode>_end` marker
+  dated from it. Past a scenario's end, the episode drops out of that
+  member, so a scenario ending in 2060 has no episode in about one member
+  in nine. The base case is the markers' medians: an episode starting
+  late 2047. That's a default to drop in. To look at an episode in a
+  particular period, override the start marker by name in the scenario,
+  with a fixed date or a narrower range; every row of the episode moves
+  with it. The cut-off is the scenario's window on the episode's dates,
+  not a mistake in its chances: the members it drops are the ones whose
+  episode comes after the period the scenario asks about.
+- **What a member runs.** A persistent series starts its episode path
+  from the rate in effect and climbs at its persistence
+  (`vary_process_start` `current`). A series with no persistence (stocks,
+  bonds, energy) starts at its new level at once, so a crash year lasts
+  exactly 12 months. A held row (a crash or rate-shock year, the
+  pandemic's prices) draws one value per member.
+- **The way back.** At the end marker, every series the episode changed
+  goes back to whatever governed it before the episode began (a return row
+  with `vary_resume` set to the start marker). Under the `_ensemble`
+  templates that is the long-run process, resumed from where the episode
+  left it with its own level and yearly shocks, so a scenario's own
+  long-run levels apply and members with and without the episode compare
+  in pairs. Under `base` alone, the series file's rate comes back.
+- **More than one.** Two episodes mixed into one scenario work when their
+  markers keep them apart. Where they overlap, each series follows the
+  latest row, so one episode cuts into the other. `t_crisis_then_spike`
+  does this for a crisis and a spike: it mixes in both and overrides
+  `pandemic_spike_start` to fall 1 to 10 years after
+  `financial_crisis_end`. Its crisis starts from 2031 to 2064 like the
+  others', so a scenario ending in 2060 sees the spike in a bit over half
+  its members; one ending later sees it more often. History often has two episodes in 30 years (1929–1958, and
+  1996–2025 with 2008 and 2021). To compare kinds of trouble, compare
+  `base:t_great_inflation` with `base:t_financial_crisis`.
+- **Within a year.** Rates are yearly, so a crash inside one year (2020's
+  −34% in a month, recovered by December) doesn't show.
 
 ## Historical episodes
 
@@ -739,14 +1081,14 @@ Verified and retrieved on 2026-10-05:
 | [BLS CPI flat files](https://download.bls.gov/pub/time.series/cu/) (`cu` CPI-U, [`cw`](https://download.bls.gov/pub/time.series/cw/) CPI-W, [`su`](https://download.bls.gov/pub/time.series/su/) C-CPI-U) | All CPI series by item and area. CPI-U and CPI-W all items from 1913, core from 1957, medical care from 1935, shelter from 1952, tuition from 1977, C-CPI-U from December 1999. | Monthly, plus annual averages | `bls:ID`, e.g. `bls:CUUR0000SAM`; ids are in each survey's `.series` file |
 | [BLS R-CPI-E](https://www.bls.gov/cpi/research-series/r-cpi-e-home.htm) | CPI for Americans 62 and older: all items and eight major groups, from December 1982 | Monthly | `rcpie:COLUMN`, e.g. `rcpie:Medical care` |
 | [BEA NIPA flat files](https://apps.bea.gov/national/Release/TXT/) | PCE price index (`DPCERG`) and core PCE (`DPCCRG`), from 1959, and every other monthly NIPA series | Monthly | `bea:CODE`; codes are in `SeriesRegister.txt` |
-| [Damodaran, historical returns](https://pages.stern.nyu.edu/~adamodar/New_Home_Page/datafile/histretSP.html) | Annual returns on the S&P 500, small caps, 3-month T-bills (average yield over the year), 10-year T-bonds, Baa corporate bonds, real estate and gold, 1928–2025 (updated January 5, 2026) | Annual | `damodaran:COLUMN` (`sp500`, `small_cap`, `tbill`, `tbond`, `baa_corp`, `real_estate`, `gold`) |
+| [Damodaran, historical returns](https://pages.stern.nyu.edu/~adamodar/New_Home_Page/datafile/histretSP.html) | Annual returns on the S&P 500, small caps, 3-month T-bills (the year's average yield, not a compounded return: `TB3MS`'s discount yield through 1981, then the 3-month constant-maturity investment yield, `DGS3MO`), 10-year T-bonds, Baa corporate bonds, real estate and gold, 1928–2025 (updated January 5, 2026) | Annual | `damodaran:COLUMN` (`sp500`, `small_cap`, `tbill`, `tbond`, `baa_corp`, `real_estate`, `gold`) |
 | [Federal Reserve H.15](https://www.federalreserve.gov/releases/h15/) | Interest rates and Treasury yields, with daily, weekly, monthly and annual averages through the Data Download Program | Daily to annual | `csv:FILE` (reduce to `date,rate`) |
 | [CMS National Health Expenditure data](https://www.cms.gov/data-research/statistics-trends-and-reports/national-health-expenditure-data/historical) | Health spending since 1960 | Annual | `csv:FILE` |
 | [Freddie Mac PMMS](https://www.freddiemac.com/pmms) | Average 30-year fixed mortgage rate (and others), with a historical weekly spreadsheet | Weekly | `csv:FILE` (reduce to `date,rate`) |
 | [Philadelphia Fed, Survey of Professional Forecasters](https://www.philadelphiafed.org/surveys-and-data/real-time-data-research/survey-of-professional-forecasters) | Forecasts of inflation, rates and output, since 1968 | Quarterly | `csv:FILE` (reduce to one row per year) |
 | [Cleveland Fed, inflation expectations](https://www.clevelandfed.org/indicators-and-data/inflation-expectations) | Model expectations of inflation for horizons of 1 to 30 years, back to 1982 | Monthly | `csv:FILE` |
 | [Shiller's long-run data](https://shillerdata.com/) | Monthly stock prices, dividends, earnings, interest rates and CPI, from January 1871 (`ie_data.xls`, an Excel file to save as CSV) | Monthly | `csv:FILE` |
-| [FRED](https://fred.stlouisfed.org/) | Most of the series above under one interface, by FRED id (e.g. `PCEPI`, `CPIAUCSL`); its PCE matches the BEA download | Varies by series | `fred:ID` |
+| [FRED](https://fred.stlouisfed.org/) | Most of the series above under one interface, by FRED id (e.g. `PCEPI`, `CPIAUCSL`); its PCE matches the BEA download. Cached here: `PCEPI`, `DGS10` (daily 10-year yield, from 1962) and `TB3MS` (monthly 3-month T-bill discount yield, from 1934, retrieved 2026-11-04) | Varies by series | `fred:ID` |
 | [SSA COLA history](https://www.ssa.gov/oact/cola/colaseries.html) | Social Security cost-of-living adjustments, 1975–2025. Since 1984 each is the rise in CPI-W's third-quarter average over the previous year's, rounded to 0.1 and never negative; after a zero COLA the base stays at the last COLA's quarter (so 2011 and 2016 are measured over two years). The site refuses scripted downloads, so save the page from a browser | Annual | `csv:FILE` (reduce to `date,rate`) |
 | [Medicare Trustees Report, Table III.C2](https://www.cms.gov/oact/tr/2025) and the [2026 premium fact sheet](https://www.cms.gov/newsroom/fact-sheets/2026-medicare-parts-b-premiums-deductibles) | Standard Part B monthly premium, 1966–2025 (every year from 1990), and $202.90 for 2026. Hold-harmless years (2010, 2011, 2016, 2017) left most enrollees paying less than the standard premium | Annual | `csv:FILE` (`date,value`) |
 

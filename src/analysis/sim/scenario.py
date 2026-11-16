@@ -18,7 +18,19 @@ import pandas as pd
 from analysis.sim.loader import LoadError
 from analysis.sim import chain_edit, registries, units
 from analysis.sim.dates import month_end_iso
-from analysis.sim.lineage import default_description, load_order, parse_parents, read_parents
+from analysis.sim.lineage import (
+    MIXIN_ONLY_DESCRIPTION,
+    default_description,
+    load_order,
+    parse_parents,
+    is_mixin_only,
+    is_pool,
+    lineage_order,
+    is_template,
+    read_parents,
+    scenario_dir,
+    template_names,
+)
 from analysis.sim.loader import ScenarioRef, list_scenario_names, resolve_scenario_name
 from analysis.sim.readme import parse_readme_summary
 from analysis.sim import cli
@@ -43,8 +55,12 @@ Each file has two columns:
 - `annual_rate`: the annual rate as a percent, with its sign (`4.5%`).
 
 A file here replaces the parent scenario's file of the same name; a series
-with no file here is inherited from the parent. CPI is the exception: it
+with no file here is inherited from the parent. A file with only its
+header empties the series: this scenario has none, and a scenario built on
+it that reads the series must supply its own. CPI is the exception: it
 lives in `aux/inflation__cpi.csv`, not here.
+
+`sim series list|show|add|edit|delete|revert` read and change these files.
 
 Details: ADR-003 sections 4.1d and 4.4 in the analysis code repository.
 """
@@ -89,7 +105,12 @@ def scenario_readme(name: str, description: str, parents: list[str]) -> str:
     ))
 
 
-def create_scenario(data_dir: Path, name: str, parent: str | ScenarioRef,
+def current_user() -> str:
+    """Who a new scenario's ``created_by`` names."""
+    return os.environ.get("ANALYSIS_USER") or os.environ.get("USER") or "unknown"
+
+
+def create_scenario(data_dir: Path, name: str, parent: str | ScenarioRef | None,
                     description: str | None = None,
                     intent_dir: Path | None = None,
                     mixins: Sequence[str] = (),
@@ -98,7 +119,9 @@ def create_scenario(data_dir: Path, name: str, parent: str | ScenarioRef,
     Create a new scenario with the given name, parent, and optional description.
 
     ``mixins`` are further parents applied after ``parent``'s line, in order
-    (ADR-003 §4.5); ``parent_scenario`` records them colon-separated.
+    (ADR-003 §4.5); ``parent_scenario`` records them colon-separated. With
+    no ``parent`` (and no mix-ins), or only mix-in only ones, it is a mix-in
+    only scenario (#259, #324).
 
     ``ensemble_size`` is written to ``meta_json`` when given; left out, it is
     inherited from the parents (ADR-006 §7), and 0 makes a scenario that is
@@ -111,9 +134,13 @@ def create_scenario(data_dir: Path, name: str, parent: str | ScenarioRef,
         raise LoadError(f"invalid scenario name: {name}")
     match parent:
         case ScenarioRef():
-            parent_ref = parent
+            parent_names = [parent.name]
         case str():
-            parent_ref = resolve_scenario_name(data_dir, parent, intent_dir=intent_dir)
+            parent_names = [resolve_scenario_name(data_dir, parent, intent_dir=intent_dir).name]
+        case None if not mixins:
+            parent_names = []
+        case None:
+            raise LoadError("mix-ins need a parent to be mixed into")
         case _:
             raise LoadError(f"invalid parent type: {type(parent)}")
     mixin_names = [
@@ -125,7 +152,7 @@ def create_scenario(data_dir: Path, name: str, parent: str | ScenarioRef,
     if target.exists():
         raise LoadError(f"scenario already exists: {target}")
     target.mkdir(parents=True, exist_ok=True)
-    parents = [parent_ref.name, *mixin_names]
+    parents = [*parent_names, *mixin_names]
 
     skeletons: dict[str, tuple[str, ...]] = {
         "accounts.csv": registries.ACCOUNTS_CSV_HEADER,
@@ -144,7 +171,7 @@ def create_scenario(data_dir: Path, name: str, parent: str | ScenarioRef,
         role_dir = target / "chains" / role
         role_dir.mkdir(parents=True)
         (role_dir / ".gitignore").write_text("", encoding="utf-8")
-    description = description or default_description(parents)
+    description = description or (default_description(parents) if parents else MIXIN_ONLY_DESCRIPTION)
     (target / "README.md").write_text(scenario_readme(name, description, parents), encoding="utf-8")
 
     pd.DataFrame(columns=[  # the example is a source chain, which takes no tax columns
@@ -159,9 +186,7 @@ def create_scenario(data_dir: Path, name: str, parent: str | ScenarioRef,
             "name": name,
             "description": description,
             "parent_scenario": ":".join(parents),
-            "created_by": os.environ.get("ANALYSIS_USER")
-            or os.environ.get("USER")
-            or "unknown",
+            "created_by": current_user(),
             "meta_json": json.dumps(
                 {} if ensemble_size is None else {"ensemble_size": ensemble_size},
                 separators=(",", ":"),
@@ -205,15 +230,35 @@ class ScenarioSummary:
     ensemble_size: ScenarioValue | None = None
     """``None`` when the merged ``meta_json.ensemble_size`` is absent or 0:
     the scenario is not an ensemble (ADR-006 §7)."""
+    mixin_only: bool = False
+    """No start or end anywhere in its lineage: only for mixing into others
+    (#259, #324)."""
+    pool: tuple[str, ...] | None = None
+    """A pool's components, each with its weight (``e_a 60%``), ADR-009;
+    ``None`` for any other scenario. A pool's dates, seed and size come from
+    its components, so they show as inherited."""
 
     @property
     def is_ensemble(self) -> bool:
         return self.ensemble_size is not None
 
 
-def scenario_summaries(data_dir: Path, scenarios_dir: Path | None = None) -> list[ScenarioSummary]:
+def scenario_list_names(
+    data_dir: Path, scenarios_dir: Path | None = None, *, templates: bool = False,
+) -> list[str]:
+    """``sim scenario list``'s names: the data repo's own, and with
+    ``templates`` the template scenarios it has no folder for, sorted."""
+    scenarios = scenarios_dir if scenarios_dir is not None else Path(data_dir) / "scenarios"
+    names = list_scenario_names(data_dir, scenarios)
+    return sorted([*names, *template_names(scenarios)]) if templates else names
+
+
+def scenario_summaries(
+    data_dir: Path, scenarios_dir: Path | None = None, *, templates: bool = False,
+) -> list[ScenarioSummary]:
     """Every scenario folder's name, parents, one-line description, and start
-    and end months, sorted.
+    and end months, sorted; with ``templates``, the template scenarios the
+    data repo reads from the code repository too (ADR-003 §4.5a).
 
     Read straight from the folders rather than loaded, so it is quick and
     still lists a scenario that wouldn't load. The description follows the
@@ -223,29 +268,108 @@ def scenario_summaries(data_dir: Path, scenarios_dir: Path | None = None) -> lis
     field-by-field merge down the load order (ADR-003 §4.5).
     """
     scenarios = scenarios_dir if scenarios_dir is not None else Path(data_dir) / "scenarios"
-    summaries = []
-    for name in list_scenario_names(data_dir, scenarios):
-        rows = {n: _scenario_row(scenarios / n) for n in load_order(scenarios, name)}
-        summaries.append(ScenarioSummary(
-            name=name,
-            parents=read_parents(scenarios / name),
-            description=_one_line_description(scenarios / name, rows[name]),
-            start=_merged_date(rows, name, "start"),
-            end=_merged_date(rows, name, "end"),
-            seed=_merged_seed(rows, name),
-            ensemble_size=_merged_ensemble_size(rows, name),
-        ))
-    return summaries
+    return [scenario_summary(data_dir, scenarios, name)
+            for name in scenario_list_names(data_dir, scenarios, templates=templates)]
+
+
+def scenario_summary(data_dir: Path, scenarios: Path, name: str) -> ScenarioSummary:
+    """One scenario's :func:`scenario_summaries` entry, without reading the
+    others: for a caller that wants just this one (#433)."""
+    if is_pool(scenarios, name):
+        return _pool_summary(data_dir, scenarios, name)
+    mixin_only = is_mixin_only(scenarios, name)
+    # A mix-in only scenario's own lineage's values, not those of the
+    # template it is checked on: mixed in, only its lineage applies.
+    order = lineage_order(scenarios, name) if mixin_only else load_order(scenarios, name)
+    rows = {n: _scenario_row(scenario_dir(scenarios, n)) for n in order}
+    return ScenarioSummary(
+        mixin_only=mixin_only,
+        name=name,
+        parents=read_parents(scenario_dir(scenarios, name)),
+        description=_one_line_description(scenario_dir(scenarios, name), rows[name]),
+        start=_merged_date(_templates_first(scenarios, rows), name, "start"),
+        end=_merged_date(_templates_first(scenarios, rows), name, "end"),
+        seed=_merged_seed(_templates_first(scenarios, rows), name),
+        ensemble_size=_merged_ensemble_size(rows, name),
+    )
+
+
+def _pool_summary(data_dir: Path, scenarios: Path, name: str) -> ScenarioSummary:
+    """A pool's listing (ADR-009): its components with their weights; the
+    dates and seed its components share; its own size, or the smallest
+    component's."""
+    from analysis.sim.pool import PoolError, read_pool
+
+    folder = scenario_dir(scenarios, name)
+    description = _one_line_description(folder, _scenario_row(folder))
+    try:
+        pool = read_pool(scenarios, name)
+    except PoolError:
+        return ScenarioSummary(name=name, parents=[], description=description, pool=())
+    seed, size = ensemble_settings(data_dir, name)
+    # The months, not who set them: one component may set a month another inherits.
+    spans = {(s.month if s else None, e.month if e else None) for s, e in (
+        scenario_span(data_dir, c) for c in pool.components
+        if scenario_dir(scenarios, c).is_dir() and not is_pool(scenarios, c))}
+    start, end = spans.pop() if len(spans) == 1 else (None, None)
+    return ScenarioSummary(
+        name=name, parents=[], description=description,
+        start=ScenarioDate(start, inherited=True) if start else None,
+        end=ScenarioDate(end, inherited=True) if end else None,
+        seed=seed, ensemble_size=size,
+        pool=tuple(f"{c} {pool.weight_text(c)}" for c in pool.components),
+    )
 
 
 def ensemble_settings(
     data_dir: Path, name: str,
 ) -> tuple[ScenarioValue | None, ScenarioValue | None]:
     """Scenario ``name``'s merged ``(seed, ensemble_size)``, as
+    :func:`scenario_summaries` reports them. A pool's (ADR-009) are its
+    components' shared seed, if they share one, and its own size, else the
+    smallest component's."""
+    scenarios = Path(data_dir) / "scenarios"
+    if is_pool(scenarios, name):
+        return _pool_settings(data_dir, name)
+    rows = {n: _scenario_row(scenario_dir(scenarios, n)) for n in load_order(scenarios, name)}
+    return _merged_seed(_templates_first(scenarios, rows), name), _merged_ensemble_size(rows, name)
+
+
+def _pool_settings(data_dir: Path, name: str) -> tuple[ScenarioValue | None, ScenarioValue | None]:
+    from analysis.sim.pool import PoolError, read_pool
+
+    scenarios = Path(data_dir) / "scenarios"
+    try:
+        pool = read_pool(scenarios, name)
+    except PoolError:
+        return None, None
+    settings = [ensemble_settings(data_dir, c) for c in pool.components
+                if scenario_dir(scenarios, c).is_dir() and not is_pool(scenarios, c)]
+    seeds = {seed.value if seed else None for seed, _size in settings}
+    seed = seeds.pop() if len(seeds) == 1 else None
+    sizes = [size.value for _seed, size in settings if size is not None]
+    if pool.size is not None:
+        size_value: ScenarioValue | None = ScenarioValue(pool.size, inherited=False)
+    else:
+        size_value = ScenarioValue(min(sizes), inherited=True) if sizes else None
+    return (None if seed is None else ScenarioValue(seed, inherited=True)), size_value
+
+
+def scenario_span(data_dir: Path, name: str) -> tuple[ScenarioDate | None, ScenarioDate | None]:
+    """Scenario ``name``'s merged ``(start, end)`` months, as
     :func:`scenario_summaries` reports them."""
     scenarios = Path(data_dir) / "scenarios"
-    rows = {n: _scenario_row(scenarios / n) for n in load_order(scenarios, name)}
-    return _merged_seed(rows, name), _merged_ensemble_size(rows, name)
+    rows = _templates_first(scenarios, {
+        n: _scenario_row(scenario_dir(scenarios, n)) for n in load_order(scenarios, name)})
+    return _merged_date(rows, name, "start"), _merged_date(rows, name, "end")
+
+
+def _templates_first(scenarios: Path, rows: dict[str, dict[str, str]]) -> dict[str, dict[str, str]]:
+    """``rows`` with the template scenarios moved ahead of the rest, each
+    group in load order: a template's start, end and seed are fallbacks
+    that any data repo scenario in the lineage overrides (ADR-003 §4.5a), as
+    the loader merges them."""
+    return dict(sorted(rows.items(), key=lambda item: not is_template(scenarios, item[0])))
 
 
 def _scenario_row(scenario_dir: Path) -> dict[str, str]:

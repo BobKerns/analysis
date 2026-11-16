@@ -1,0 +1,7 @@
+{
+  "name": "finance-research",
+  "version": "0.1.0",
+  "description": "Tear sheets on funds, ETFs and companies from free public sources, with the fund's asset-class mix ready for the simulator's allocations.csv.",
+  "author": {"name": "BobKerns", "url": "https://github.com/BobKerns"},
+  "license": "MIT AND Apache-2.0"
+}

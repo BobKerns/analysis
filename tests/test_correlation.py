@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import math
 import random
+import re
 import sqlite3
 from collections.abc import Callable
 from pathlib import Path
@@ -710,6 +711,7 @@ def test_monte_carlo_report_ranks_by_srrc_and_shows_factors_and_scores(
     assert "ranked and pinned by SRRC" in result.output
     assert "status (srrc^2 vs 5%, every year):" in result.output
     assert "economy (factor)" in result.output
+    assert re.search(r"prcc=\S+ \[\S+, \S+\]", result.output)  # with its interval (#438)
     assert "correlations achieved (rho from the scores' Kendall tau) vs expected:" in result.output
     assert "tied_rate ~ economy" in result.output or "economy ~ tied_rate" in result.output
     report = sensitivity.mc_report(correlated_mc_batch)

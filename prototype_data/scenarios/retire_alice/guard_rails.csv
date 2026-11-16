@@ -1,0 +1,5 @@
+name,measure,select,portfolio,side,threshold,basis,sense,start,end,description
+four_percent,withdrawals,,,above,4%,initial_portfolio,negative,2031-01,,"Bengen's 4% rule: 4% of the portfolio at retirement, raised with CPI"
+gk_upper,withdrawals,,,above,6%,portfolio,negative,2031-01,,Guyton-Klinger upper rail: a 5% initial rate plus 20%
+gk_lower,withdrawals,,,below,4%,portfolio,positive,2031-01,,"Guyton-Klinger lower rail: a 5% initial rate less 20%, so room to spend more"
+budget,spending,,,above,85000.00,cpi_constant,negative,2031-01,,Spending budget in today's dollars

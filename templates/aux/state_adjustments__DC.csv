@@ -1,0 +1,4 @@
+effective_date,name,step,base,amount,min_age,filing_status,amount_series
+2026-01-31,age_65_deduction,deduction,filers,2050.00,65,Single,cpi
+2026-01-31,age_65_deduction,deduction,filers,1650.00,65,MFJ,cpi
+2026-01-31,age_65_deduction,deduction,filers,1650.00,65,MFS,cpi

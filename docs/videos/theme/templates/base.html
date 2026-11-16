@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="{{ lang }}">
+<head>
+<meta charset="utf-8">
+<style>
+{{ theme_css | safe }}
+html, body { margin: 0; width: var(--width); height: var(--height); overflow: hidden; }
+body {
+  background: radial-gradient(circle at 72% 38%, var(--surface) 0%, var(--bg) 68%);
+  color: var(--ink);
+  font-family: var(--font-body);
+  position: relative;
+}
+.ground {
+  position: absolute; left: 0; right: 0; bottom: 0; height: 150px;
+  background: var(--ground);
+  border-top: 8px solid color-mix(in srgb, var(--ground) 70%, white);
+}
+.series {
+  font-family: var(--font-heading); font-weight: 600;
+  font-size: 34px; letter-spacing: 0.22em; text-transform: uppercase;
+  color: var(--accent);
+}
+svg.character, svg.prop { display: block; width: 100%; height: auto; }
+{% block style %}{% endblock %}
+</style>
+</head>
+<body>
+{% block body %}{% endblock %}
+</body>
+</html>

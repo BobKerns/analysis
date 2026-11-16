@@ -437,10 +437,7 @@ class JsonStateStore:
                         logger,
                         message,
                         event,
-                        CASE
-                            WHEN user IS NULL OR TRIM(user) = '' THEN 'rwk'
-                            ELSE user
-                        END,
+                        COALESCE(user, ''),
                         payload_json
                     FROM events;
 
@@ -452,8 +449,11 @@ class JsonStateStore:
                     "CREATE INDEX IF NOT EXISTS idx_events_event_ts ON events(event, ts)"
                 )
 
+            # Events from before the column existed were all the operator's;
+            # credit them the way new events are credited.
             self._conn.execute(
-                "UPDATE events SET user = 'rwk' WHERE user IS NULL OR TRIM(user) = ''"
+                "UPDATE events SET user = ? WHERE user IS NULL OR TRIM(user) = ''",
+                (os.getenv("ANALYSIS_USER") or os.getenv("USER", ""),),
             )
 
 

@@ -56,12 +56,16 @@ own data, that setup belongs in a fixture instead.
 """
 
 from __future__ import annotations
-from collections.abc import Callable, Generator
+from collections.abc import Callable, Generator, Mapping, Sequence
 import json
+from contextlib import closing
+import os
 from pathlib import Path
 import shutil
 import sqlite3
+import sys
 import warnings
+from typing import Any
 
 import git
 import pandas as pd
@@ -69,15 +73,16 @@ import pytest
 
 from analysis.sim import scenario
 from analysis.sim.connection import RunConnection, ScenarioConnection, open_scenario, open_run
-from analysis.sim.engine import run_scenario
+from analysis.sim.engine import _load_aux, _tax_year, run_scenario
 from analysis.sim.ensemble import resolve_member
 from analysis.sim.schema import apply_run_schema
-from analysis.sim.loader import LoadResult, ScenarioRef, load_scenario, resolve_scenario_name
+from analysis.sim.tax_api import TaxYear
+from analysis.sim.loader import LoadResult, ScenarioRef, latest_run_path, load_scenario, resolve_scenario_name
 from analysis.sim.notebook_ui.pickers import MultiScenarioConnections, multi_scenario_picker
 from analysis.sim.provenance import CodeStamps
 from analysis.sim.registries import (
-    ACCOUNT_LOTS_CSV_HEADER, ASSET_CLASSES, CALENDAR_HEADER, SCENARIO_HEADER,
-    SCHEDULED_CSV_HEADER,
+    ACCOUNT_LOTS_CSV_HEADER, CALENDAR_HEADER, GUARD_RAILS_CSV_HEADER, SCENARIO_HEADER,
+    RESIDENCE_CSV_HEADER, RESIDENCE_FILE, SCHEDULED_CSV_HEADER, TAX_CSV_HEADER,
 )
 
 _ANALYSIS_ENV_VARS = (
@@ -87,9 +92,26 @@ _ANALYSIS_ENV_VARS = (
 
 
 @pytest.fixture(autouse=True)
-def _no_ambient_analysis_env(monkeypatch: pytest.MonkeyPatch) -> None:
+def _no_ambient_analysis_env(
+    monkeypatch: pytest.MonkeyPatch, tmp_path_factory: pytest.TempPathFactory,
+) -> None:
     for name in _ANALYSIS_ENV_VARS:
         monkeypatch.delenv(name, raising=False)
+    # Without $ANALYSIS_DATA_DIR the notebook widgets fall back to the
+    # checkout's data/shared/sim: on a dev machine, the real data repo,
+    # whose disabled scenarios once hid a test's recipe (#401).
+    monkeypatch.setattr(
+        "analysis.sim.notebook_ui.pickers._checkout_data_dir",
+        lambda: tmp_path_factory.getbasetemp() / "no-checkout-data" / "sim")
+    # No test starts or waits on a background builder (#300) unless it
+    # turns the builder back on itself.
+    monkeypatch.setenv("ANALYSIS_BUILDER", "off")
+    monkeypatch.delenv("ANALYSIS_BUILDER_CHILD", raising=False)
+    # Nor fetches prices or installs a timer (#560), even with the builder on:
+    # a test that does turns this off and passes a fake provider.
+    monkeypatch.setenv("ANALYSIS_PRICE_FETCH", "off")
+    # Nor rolls scenarios forward at night (#564).
+    monkeypatch.setenv("ANALYSIS_ROLL", "off")
 
 
 _STABLE_CODE_STAMPS = CodeStamps(version="0" * 40, dirty=False, repo_path="CODE_REPO")
@@ -153,6 +175,19 @@ def _no_current_scenario_writes(
 
 
 @pytest.fixture(autouse=True)
+def _no_working_set_writes(
+    request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Make writing the working set (#322) a no-op, for the reason above:
+    any command naming a scenario, any edit and any notebook pick writes it
+    into the ``state/`` beside the data dir. Tests of the working set opt back in with
+    ``@pytest.mark.uses_working_set_write``."""
+    if request.node.get_closest_marker("uses_working_set_write"):
+        return
+    monkeypatch.setattr("analysis.sim.working_set._write", lambda *args, **kwargs: None)
+
+
+@pytest.fixture(autouse=True)
 def _one_cpu_for_default_jobs(
     request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -179,14 +214,17 @@ def _negative_balance_is_an_error(request: pytest.FixtureRequest) -> Generator[N
     exercising, not a deliberate outcome -- better to fail loudly at the
     test that caused it than let it slip into the warnings summary at the
     end of the run, one of a pile easy to stop reading closely. A test that
-    genuinely wants the old warn-and-continue behavior (verifying the
-    warning itself, or deliberately modeling a shortfall) opts back in with
-    ``@pytest.mark.allow_negative_balance``. This is a test-suite-only
-    policy -- ``engine.py`` itself is untouched, so a real ``sim run``
-    still only warns.
+    deliberately models a shortfall marks itself
+    ``@pytest.mark.allow_negative_balance``: the warning is then expected,
+    so it is captured and must fire (a marker on a test that no longer
+    runs short fails, rather than going stale). A test checking the
+    warning's own text uses ``pytest.warns`` and needs no marker. This is a
+    test-suite-only policy -- ``engine.py`` itself is untouched, so a real
+    ``sim run`` still only warns.
     """
     if request.node.get_closest_marker("allow_negative_balance"):
-        yield
+        with pytest.warns(RuntimeWarning, match="went negative"):
+            yield
         return
     with warnings.catch_warnings():
         warnings.filterwarnings("error", category=RuntimeWarning, message=".*went negative.*")
@@ -234,12 +272,53 @@ def test_scenarios_dir(test_data_dir: Path) -> Path:
 
 
 @pytest.fixture(scope="function")
+def template_data_dir(tmp_path: Path, repo_root: Path) -> Path:
+    """A private data repo built as ``scripts/link-data.sh --template``
+    builds one: ``templates/`` copied whole, less its ``t_`` template
+    scenarios, which the loader reads from the code repository instead."""
+    from analysis.sim.lineage import is_template_name
+
+    data_dir = tmp_path / "sim"
+    shutil.copytree(repo_root / "templates", data_dir,
+                    ignore=lambda folder, names: [n for n in names if is_template_name(n)]
+                    if Path(folder).name == "scenarios" else [])
+    return data_dir
+
+
+@pytest.fixture(scope="function")
+def local_templates(test_scenarios_dir: Path) -> Path:
+    """The private data copy with the code repository's template scenarios
+    copied into its own ``scenarios/``, so they're ordinary, editable
+    scenarios there (a data repo's folder replaces a template whole)."""
+    from analysis.sim.lineage import TEMPLATE_SCENARIOS_DIR, is_template_name
+
+    for folder in TEMPLATE_SCENARIOS_DIR.iterdir():
+        if folder.is_dir() and is_template_name(folder.name):
+            shutil.copytree(folder, test_scenarios_dir / folder.name)
+    return test_scenarios_dir
+
+
+@pytest.fixture(scope="function")
 def empty_scenarios_dir(test_scenarios_dir: Path) -> Path:
     """The private data copy's ``scenarios/``, emptied: a data repo with no
     scenarios yet. Remove the folder itself for one with no ``scenarios/``."""
     shutil.rmtree(test_scenarios_dir)
     test_scenarios_dir.mkdir()
     return test_scenarios_dir
+
+@pytest.fixture(scope="function")
+def new_scenario_file(empty_scenarios_dir: Path) -> Callable[[str, str, str], Path]:
+    """``new_scenario_file(scenario, filename, text)``: write one file of a
+    scenario (``taxes/state.csv``, say) into ``empty_scenarios_dir``, the
+    folders made as needed, for a data repo built file by file, such as one
+    a migration script reads; the data repo is ``test_data_dir``."""
+    def write(scenario: str, filename: str, text: str) -> Path:
+        path = empty_scenarios_dir / scenario / filename
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+        return path
+    return write
+
 
 @pytest.fixture(scope="function")
 def state_dir(tmp_path: Path) -> Generator[Path]:
@@ -447,6 +526,19 @@ def prototype_data(repo_root: Path) -> Path:
     return repo_root / "prototype_data"
 
 
+@pytest.fixture(scope="function")
+def videos_root(tmp_path: Path, repo_root: Path) -> Path:
+    """A private docs/videos: the repo's theme, assets and YouTube settings, no videos yet.
+
+    Tests write a video folder (``videos_root / "01-x" / "script.md"``) into it.
+    """
+    root = tmp_path / "videos"
+    for part in ("theme", "assets"):
+        shutil.copytree(repo_root / "docs" / "videos" / part, root / part)
+    shutil.copy(repo_root / "docs" / "videos" / "youtube.toml", root / "youtube.toml")
+    return root
+
+
 @pytest.fixture(scope="session")
 def variant_a_scenario_create(data_dir: Path) -> Path:
     """Fixture to provide the path to the variant_a scenario within the data directory."""
@@ -501,7 +593,7 @@ def lot_variant_runs(
     )
     (variant_dir / "year_to_date.csv").write_text(
         "name,from_account,from_lot,to_account,to_lot,amount,tax_character,year,description\n"
-        "prior_ordinary_wages,Income_Salary_Alice,,Asset_Checking,,70000.00,ordinary,,\n"
+        "prior_wages_alice,Income_Salary_Alice,,Asset_Checking,,70000.00,ordinary,,\n"
     )
     loaded = load_scenario(test_data_dir, "variant", intent_dir=intent_dir,
                            scenarios_dir=test_scenarios_dir, allow_dirty_data=True)
@@ -575,6 +667,44 @@ def ledger_con() -> Generator[sqlite3.Connection]:
         con.close()
 
 
+@pytest.fixture(scope="session")
+def post_transfer() -> Callable[..., None]:
+    """``post_transfer(con, year, frm, to, amount, character)``: a rule's
+    transfer of ``amount`` cents from account ``frm`` to ``to`` on June 30 of
+    ``year``, in ``ledger_con`` (whose lot ids are the account ids)."""
+    def post(con: sqlite3.Connection, year: int, frm: int, to: int, amount: int,
+             character: str) -> None:
+        con.execute(
+            "INSERT INTO transfer_event(step_id, date, from_account, to_account, from_lot_id, "
+            "to_lot_id, amount, requested_cents, remainder_cents, tax_character, reason_kind) "
+            "VALUES (1, ?, ?, ?, ?, ?, ?, ?, 0, ?, 'rule')",
+            (f"{year}-06-30", frm, to, frm, to, amount, amount, character),
+        )
+    return post
+
+
+@pytest.fixture(scope="session")
+def set_residence() -> Callable[..., None]:
+    """``set_residence(con, ("2026-01-31", "CA", None), ...)``: where the
+    household lives in a run file or ``ledger_con`` (#509), replacing what it
+    had: rows of (month end from, state, county)."""
+    def write(con: sqlite3.Connection, *rows: tuple[str, str, str | None]) -> None:
+        con.execute("DELETE FROM residence")
+        con.executemany("INSERT INTO residence(effective_date, state, county) VALUES (?, ?, ?)",
+                        rows)
+    return write
+
+
+@pytest.fixture(scope="session")
+def tax_year_of() -> Callable[..., TaxYear]:
+    """``tax_year_of(con, year, scope="federal", **params)``: tax year
+    ``year`` of a run file or ``ledger_con`` as a tax calculator sees it
+    (#507), for testing the calculators' pieces on a ledger built by hand."""
+    def build(con: sqlite3.Connection, year: int, scope: str = "federal", **params: Any) -> TaxYear:
+        return _tax_year(con, {"scope": scope, **params}, aux=_load_aux(con), tax_year=year, tid=0)
+    return build
+
+
 @pytest.fixture(scope="function")
 def retire_alice_csv(test_scenarios_dir: Path) -> Callable[[str], Path]:
     """Path of one of the private retire_alice copy's scenario files, for tests
@@ -591,9 +721,14 @@ _LIFESPAN_HEADER = (
 @pytest.fixture(scope="function")
 def write_lifespans(retire_alice_csv: Callable[[str], Path]) -> Callable[..., None]:
     """Write the private retire_alice copy's lifespan.csv (#221) from rows of
-    its cells, after the header: ``write_lifespans("alice,80,life_table,,,,,")``."""
+    its cells, after the header: ``write_lifespans("alice,80,life_table,,,,,")``,
+    or with a ninth cell naming a life table, ``"alice,90,life_table,,,,,,jp"``."""
     def _write(*rows: str) -> None:
-        retire_alice_csv("lifespan.csv").write_text(_LIFESPAN_HEADER + "".join(f"{r}\n" for r in rows))
+        # A row with a ninth cell gives the optional life_table (#315).
+        header = _LIFESPAN_HEADER
+        if any(r.count(",") == 8 for r in rows):
+            header = header.replace("\n", ",life_table\n")
+        retire_alice_csv("lifespan.csv").write_text(header + "".join(f"{r}\n" for r in rows))
     return _write
 
 
@@ -604,7 +739,7 @@ def fund_asset_savings(test_scenarios_dir: Path) -> Callable[[str], None]:
 
     retire_alice is funded to run its own base scenario through 2040
     without Asset_Checking going negative, but several tests add an extra
-    expense it wasn't sized for (a federal tax payment via tax_accumulator,
+    expense it wasn't sized for (a federal tax payment via taxes/federal.csv,
     an early death that cuts household income in half while shared
     expenses continue) -- this keeps Asset_Checking's refill chain from
     running dry before it reaches the (amply funded) IRA behind it, rather
@@ -676,19 +811,14 @@ def guide_chains(
     return test_data_dir
 
 
-@pytest.fixture(scope="function")
-def derive_scenario(test_scenarios_dir: Path) -> Callable[..., Path]:
-    """Create a scenario in the private data copy deriving from ``parents``
-    (a ``parent_scenario`` value: one name, or colon-separated mix-ins after
-    it). It overrides nothing beyond ``files``, a {relative path: text} map
-    written into its folder, and ``fields``, its own scenario.csv values."""
+def _deriver(scenarios_dir: Path) -> Callable[..., Path]:
     def _derive(
         name: str, parents: str, files: dict[str, str] | None = None,
         **fields: str,
     ) -> Path:
         unknown = set(fields) - set(SCENARIO_HEADER)
         assert not unknown, f"unknown scenario.csv columns: {sorted(unknown)}"
-        folder = test_scenarios_dir / name
+        folder = scenarios_dir / name
         folder.mkdir()
         row = {**dict.fromkeys(SCENARIO_HEADER, ""), **fields,
                "name": name, "parent_scenario": parents}
@@ -701,6 +831,34 @@ def derive_scenario(test_scenarios_dir: Path) -> Callable[..., Path]:
             path.write_text(text, encoding="utf-8")
         return folder
     return _derive
+
+
+@pytest.fixture(scope="function")
+def derive_scenario(test_scenarios_dir: Path) -> Callable[..., Path]:
+    """Create a scenario in the private data copy deriving from ``parents``
+    (a ``parent_scenario`` value: one name, or colon-separated mix-ins after
+    it). It overrides nothing beyond ``files``, a {relative path: text} map
+    written into its folder, and ``fields``, its own scenario.csv values."""
+    return _deriver(test_scenarios_dir)
+
+
+@pytest.fixture(scope="function")
+def derive_template_scenario(template_data_dir: Path) -> Callable[..., Path]:
+    """``derive_scenario`` for ``template_data_dir``: a scenario on the
+    template ``base``, with template mix-ins."""
+    return _deriver(template_data_dir / "scenarios")
+
+
+@pytest.fixture(scope="session")
+def retire_alice_rows(prototype_data: Path) -> Callable[..., str]:
+    """``filename``'s text holding just the prototype retire_alice rows
+    ``names`` (by ``name``), whole: an override that changes nothing, which
+    still makes the scenario writing it the row's definer."""
+    def _rows(filename: str, *names: str) -> str:
+        rows = pd.read_csv(prototype_data / "scenarios" / "retire_alice" / filename,
+                           dtype=str, keep_default_na=False)
+        return rows[rows["name"].isin(names)].to_csv(index=False)
+    return _rows
 
 
 @pytest.fixture(scope="session")
@@ -718,6 +876,28 @@ def scheduled_override(prototype_data: Path) -> Callable[..., str]:
 
 
 @pytest.fixture(scope="function")
+def depreciating_car(test_data_dir: Path, retire_alice_csv: Callable[[str], Path]) -> str:
+    """Add ``Asset_Car`` to the private retire_alice copy: a $30,000 vehicle
+    whose ``jalopy`` rate series is -12% a year, so its value drains into the
+    built-in ``depreciation`` expense account (ADR-003 §2.2). Returns its name."""
+    (test_data_dir / "aux" / "rate__jalopy.csv").write_text(
+        "effective_date,annual_rate\n2020-01-31,-12%\n", encoding="utf-8")
+    accounts = pd.read_csv(retire_alice_csv("accounts.csv"), dtype=str, keep_default_na=False)
+    accounts.loc[len(accounts)] = {
+        **dict.fromkeys(accounts.columns, ""),
+        "name": "Asset_Car", "kind": "asset", "subkind": "vehicle", "owner": "joint",
+        "tax_treatment": "none", "series": "jalopy", "tax_character": "depreciation",
+        "meta_json": "{}",
+    }
+    accounts.to_csv(retire_alice_csv("accounts.csv"), index=False)
+    lots = pd.read_csv(retire_alice_csv("account_lots.csv"), dtype=str, keep_default_na=False)
+    lots.loc[len(lots)] = {**dict.fromkeys(lots.columns, ""),
+                           "account_name": "Asset_Car", "opening_balance": "30000.00"}
+    lots.to_csv(retire_alice_csv("account_lots.csv"), index=False)
+    return "Asset_Car"
+
+
+@pytest.fixture(scope="function")
 def business_scenarios(test_scenarios_dir: Path, test_data: Path) -> Path:
     """Alice's software business (#231) in the private data copy:
     ``alice_business`` builds on retire_alice, and ``alice_business_hobby`` is
@@ -726,6 +906,89 @@ def business_scenarios(test_scenarios_dir: Path, test_data: Path) -> Path:
     for folder in (test_data / "sim" / "business").iterdir():
         shutil.copytree(folder, test_scenarios_dir / folder.name)
     return test_scenarios_dir
+
+
+@pytest.fixture(scope="function")
+def strategy_scenarios(test_data_dir: Path, test_scenarios_dir: Path, test_data: Path) -> Path:
+    """Alice and Bill's rebalancing scenarios (#326) in the private data copy:
+    ``alice_rebalance`` builds on retire_alice with a 60/40 target, a
+    ``portfolio:invest`` tag and the built-in ``rebalance`` strategy owning
+    checking's refill chain; ``alice_last_leaf`` swaps in the data-repo kind
+    ``last_leaf`` from ``strategies/``; ``alice_rebalance_off`` switches the
+    strategy off (an ``enabled`` false override), for comparing the two
+    (#359); ``alice_spending`` adds travel and gifts rules tagged
+    ``flex:optional``, owned by a ``guardrail`` spending strategy (#387);
+    ``alice_year_end`` adds a federal tax rule, a gift expense account and a
+    ``harvest`` year-end strategy (#421); ``alice_triggers`` adds a
+    ``tight`` spending rail and a ``cut_on_breach`` strategy whose trigger
+    watches it (#441); ``alice_buckets`` builds on retire_alice with cash,
+    bond and stock lots in the brokerage, Alice's IRA and her Roth, 7%/4%/2%
+    rate series, and a ``buckets`` strategy owning ``portfolio_draw`` (#463).
+    Brings its own allocations.csv (USSTK, BONDX). Returns the data
+    directory."""
+    source = test_data / "sim" / "strategies"
+    for folder in (source / "scenarios").iterdir():
+        shutil.copytree(folder, test_scenarios_dir / folder.name)
+    shutil.copytree(source / "strategies", test_data_dir / "strategies")
+    shutil.copyfile(source / "allocations.csv", test_data_dir / "allocations.csv")
+    return test_data_dir
+
+
+@pytest.fixture(scope="function")
+def strategy_csv(strategy_scenarios: Path) -> Callable[[str, str], Path]:
+    """Path of one of a strategy scenario's files, ``(scenario, filename)``,
+    for tests that edit it before loading."""
+    return lambda scenario, name: strategy_scenarios / "scenarios" / scenario / name
+
+
+@pytest.fixture(scope="function")
+def strategy_module(strategy_scenarios: Path) -> Callable[[str, str], Path]:
+    """Write a module into the private copy's ``strategies/`` folder."""
+    def _write(name: str, text: str) -> Path:
+        path = strategy_scenarios / "strategies" / f"{name}.py"
+        path.write_text(text)
+        return path
+    return _write
+
+
+@pytest.fixture(scope="function")
+def run_strategy_scenario(
+    strategy_scenarios: Path, intent_dir: Path, runs_dir: Path,
+) -> Callable[[str], Path]:
+    """Load and run a strategy scenario (after a test's edits); its run file."""
+    def _run(name: str) -> Path:
+        loaded = load_scenario(strategy_scenarios, name, intent_dir=intent_dir / name,
+                               allow_dirty_data=True, compute_stamps=False)
+        return run_scenario(loaded.intent_path, runs_dir / f"{name}.sqlite3", run_by="TEST",
+                            allow_dirty_data=True, allow_dirty_code=True)
+    return _run
+
+
+@pytest.fixture(scope="function")
+def strategy_ensemble(strategy_scenarios: Path, intent_dir: Path, runs_dir: Path) -> Callable[[str], Path]:
+    """Run a 3-member Monte Carlo batch of a strategy scenario (after a
+    test's edits): retire_alice's varied rows, seed 5, under
+    ``runs_dir/<name>/``. Returns the batch dir."""
+    def _run(name: str) -> Path:
+        recipe = load_scenario(strategy_scenarios, name, intent_dir=intent_dir / "recipe",
+                               allow_dirty_data=True, compute_stamps=False).intent_path
+        batch_dir = runs_dir / name / "monte-carlo" / "2026-01-01T000000Z"
+        for i in range(3):
+            member_intent = resolve_member(
+                recipe, intent_dir / f"{name}_member_{i}.sqlite3",
+                seed=5, member_index=i, member_count=3, recipe_tree_id="deadbeef",
+            )
+            run_scenario(member_intent, batch_dir / f"member_{i:04d}.sqlite3", run_by="test",
+                         allow_dirty_data=True, allow_dirty_code=True)
+        return batch_dir
+    return _run
+
+
+@pytest.fixture(scope="function")
+def strategy_ensemble_batch(strategy_ensemble: Callable[[str], Path]) -> Path:
+    """``strategy_ensemble`` of ``alice_rebalance``, its rebalancing strategy
+    steering every member (#359). Returns the batch dir."""
+    return strategy_ensemble("alice_rebalance")
 
 
 @pytest.fixture(scope="function")
@@ -738,6 +1001,65 @@ def load_test_scenario(test_data_dir: Path, intent_dir: Path) -> Callable[[str],
     return _load
 
 
+CommitFiles = Callable[..., str]
+
+
+def _commit_files(repo: git.Repo, files: Mapping[str, str] | None = None,
+                  message: str = "edit") -> str:
+    """Write ``files`` (paths relative to the repo's top) into ``repo``,
+    commit everything there as a test author, and return the commit."""
+    root = Path(str(repo.working_tree_dir))
+    for name, text in (files or {}).items():
+        (root / name).parent.mkdir(parents=True, exist_ok=True)
+        (root / name).write_text(text)
+    repo.git.add(A=True)
+    actor = git.Actor("t", "t@t")
+    return repo.index.commit(message, author=actor, committer=actor).hexsha
+
+
+@pytest.fixture
+def commit_files() -> CommitFiles:
+    """``commit_files(repo, {path: text}, message)``: write the files into a
+    test's git repo (a ``code_repo``, ``data_repo_sim``'s, ``commit_test_data``'s)
+    and commit everything; returns the commit."""
+    return _commit_files
+
+
+@pytest.fixture(scope="function")
+def data_repo_sim(tmp_path: Path, test_data_dir: Path) -> Path:
+    """The private data copy as a real data repo's ``sim/`` subtree: a git
+    repo on main, everything committed, ``state/`` and ``sim/.analysis``
+    ignored, as the builder (#300) and its price fetches (#560) expect.
+    Returns the ``sim`` dir."""
+    data_repo = tmp_path / "datarepo"
+    data_dir = data_repo / "sim"
+    data_repo.mkdir()
+    test_data_dir.rename(data_dir)
+    (data_repo / ".gitignore").write_text("sim/.analysis\nstate/\n")
+    repo = git.Repo.init(data_repo, b="main")
+    with repo.config_writer() as cw:
+        cw.set_value("commit", "gpgsign", "false")
+        cw.set_value("tag", "gpgsign", "false")
+    repo.git.add(A=True)
+    actor = git.Actor("t", "t@t")
+    repo.index.commit("init", author=actor, committer=actor)
+    repo.close()
+    return data_dir
+
+
+@pytest.fixture(scope="function")
+def data_repo_origin(tmp_path: Path, data_repo_sim: Path) -> Path:
+    """``data_repo_sim``'s repo with a bare ``origin`` (``tmp_path/origin.git``)
+    holding its ``main``, which tracks ``origin/main``, for the builder's
+    pushes (#588). Returns the bare repo."""
+    origin = tmp_path / "origin.git"
+    git.Repo.init(origin, bare=True, initial_branch="main").close()
+    with git.Repo(data_repo_sim.parent) as repo:
+        repo.create_remote("origin", str(origin))
+        repo.git.push("-q", "-u", "origin", "main")
+    return origin
+
+
 @pytest.fixture(scope="function")
 def commit_test_data(test_data_dir: Path) -> Callable[[], Path]:
     """Make the private data copy a git repo with everything committed, for
@@ -747,6 +1069,7 @@ def commit_test_data(test_data_dir: Path) -> Callable[[], Path]:
         repo.git.add(A=True)
         with repo.config_writer() as cw:
             cw.set_value("commit", "gpgsign", "false")
+            cw.set_value("tag", "gpgsign", "false")
         actor = git.Actor("t", "t@t")
         repo.index.commit("init", author=actor, committer=actor)
         return test_data_dir
@@ -764,6 +1087,31 @@ def load_test_copy(test_data_dir: Path, test_scenarios_dir: Path,
 
 
 @pytest.fixture(scope="function")
+def run_test_copy(load_test_copy: Callable[[], LoadResult], runs_dir: Path) -> Callable[[], Path]:
+    """Load and run the private retire_alice copy, after a test has edited it;
+    returns the run file."""
+    def _run() -> Path:
+        intent = load_test_copy().intent_path
+        return run_scenario(intent, runs_dir / "test_copy.sqlite3", run_by="TEST",
+                            allow_dirty_data=True, allow_dirty_code=True)
+    return _run
+
+
+@pytest.fixture(scope="function")
+def write_guard_rails(retire_alice_csv: Callable[[str], Path]) -> Callable[..., Path]:
+    """Write the private retire_alice copy's guard_rails.csv (#305), replacing
+    the prototype's, from rows given as {column: cell} (others blank)."""
+    def _write(*rows: dict[str, str]) -> Path:
+        unknown = set().union(*rows) - set(GUARD_RAILS_CSV_HEADER) if rows else set()
+        assert not unknown, f"unknown guard_rails.csv columns: {sorted(unknown)}"
+        path = retire_alice_csv("guard_rails.csv")
+        pd.DataFrame([{c: row.get(c, "") for c in GUARD_RAILS_CSV_HEADER} for row in rows],
+                     columns=list(GUARD_RAILS_CSV_HEADER)).to_csv(path, index=False)
+        return path
+    return _write
+
+
+@pytest.fixture(scope="function")
 def write_aux(test_data_dir: Path) -> Callable[[str, str], Path]:
     """Write a file into the private data copy's ``aux/`` directory."""
     def _write(filename: str, text: str) -> Path:
@@ -774,19 +1122,51 @@ def write_aux(test_data_dir: Path) -> Callable[[str, str], Path]:
 
 
 @pytest.fixture(scope="function")
+def priced_lots(add_account_value: Callable[..., None], write_aux: Callable[[str, str], Path]) -> None:
+    """Roth_Alice gains three lots holding 10 shares of AAA: one whose balance matches
+    the price at the 2026-05-31 start ($11.50 on 05-29), one that is stale, one
+    whose symbol has no prices. A later price ($20) is in the file too."""
+    write_aux("security_price__AAA.csv",
+              "effective_date,price\n2026-05-29,11.50\n2026-09-24,20.00\n")
+    add_account_value("Asset_Roth_Alice", lot="ok", symbol="AAA", quantity="10", opening_balance="115.00")
+    add_account_value("Asset_Roth_Alice", lot="old", symbol="AAA", quantity="10", opening_balance="140.00")
+    add_account_value("Asset_Roth_Alice", lot="bare", symbol="ZZZ", quantity="10", opening_balance="50.00")
+
+
+@pytest.fixture(scope="function")
+def qqq_prices(test_data_dir: Path) -> Path:
+    """The private copy's shared prices/ gets three QQQ prices ($400 at 2025's
+    end, $580 on 2026-09-30, $609 on 2026-10-13), and securities.csv names QQQ
+    and ABCDX (which has no prices). Returns the data dir."""
+    (test_data_dir / "prices").mkdir(exist_ok=True)
+    (test_data_dir / "prices" / "security_price__QQQ.csv").write_text(
+        "effective_date,price\n2025-12-31,400.00\n2026-09-30,580.00\n2026-10-13,609.00\n")
+    (test_data_dir / "securities.csv").write_text("symbol,name\nQQQ,Nasdaq 100\nABCDX,A fund\n")
+    return test_data_dir
+
+
+@pytest.fixture(scope="function")
+def scenario_own_prices(retire_alice_csv: Callable[[str], Path], add_account_value: Callable[..., None]) -> None:
+    """retire_alice gets its own prices/ file for QQQX, which the shared prices/
+    lacks, and a Roth_Alice lot holding 10 shares of it."""
+    own = retire_alice_csv("prices")
+    own.mkdir(exist_ok=True)
+    (own / "security_price__QQQX.csv").write_text("effective_date,price\n2026-05-29,10.00\n")
+    add_account_value("Asset_Roth_Alice", lot="x", symbol="QQQX", quantity="10", opening_balance="1.00")
+
+
+@pytest.fixture(scope="function")
 def without_prototype_defaults(test_data_dir: Path) -> None:
-    """Strip the prototype's default factor structure and default series
-    (#80) from the private copy's ``base`` scenario, which retire_alice
-    inherits them from (#91): its ``latent_factor`` rows, and its class rate
-    and inflation series. For a test whose subject is a tree or series it
-    builds itself, and which asserts on the whole set (no warnings, every
-    factor, a fund with no class series)."""
-    scenario = test_data_dir / "scenarios" / "base"
-    df = pd.read_csv(scenario / "calendar.csv", dtype=str, keep_default_na=False)
-    df[df["kind"] != "latent_factor"].to_csv(scenario / "calendar.csv", index=False)
-    for path in (scenario / "series").glob("*.csv"):
-        if path.stem.startswith("inflation__") or path.stem.removeprefix("rate__") in ASSET_CLASSES:
-            path.unlink()
+    """Cut the private copy's ``base`` scenario, which retire_alice inherits
+    from (#91), loose from the template scenarios it builds on (#282): their
+    default factor structure (#80) and their class rate and inflation series.
+    For a test whose subject is a tree or series it builds itself, and which
+    asserts on the whole set (no warnings, every factor, a fund with no
+    class series)."""
+    path = test_data_dir / "scenarios" / "base" / "scenario.csv"
+    df = pd.read_csv(path, dtype=str, keep_default_na=False)
+    df["parent_scenario"] = ""
+    df.to_csv(path, index=False)
 
 
 @pytest.fixture(scope="function")
@@ -817,6 +1197,31 @@ def blended_fund(test_data_dir: Path, set_brokerage_lots: Callable[[list[dict[st
         ",Asset_Brokerage_Joint,default,", ",Asset_Brokerage_Joint,fund,"))
     write_series("stock_us", "2026-01-31,8%")
     write_series("bond", "2026-01-31,4%")
+
+
+@pytest.fixture(scope="function")
+def muni_funds(set_brokerage_lots: Callable[[list[dict[str, str]]], None],
+               write_series: Callable[[str, str], Path]) -> None:
+    """Make the private retire_alice copy's brokerage municipal bonds (#265):
+    lot ``default`` $200,000 of many states' (``muni``) and lot ``ca``
+    $100,000 of California's (``muni_CA``), each growing 4% a year, 3% of it
+    paid as tax-exempt interest."""
+    set_brokerage_lots([
+        {"lot": "default", "series": "muni", "opening_balance": "200000.00",
+         "opening_cost_basis": "200000.00"},
+        {"lot": "ca", "series": "muni_CA", "opening_balance": "100000.00",
+         "opening_cost_basis": "100000.00"},
+    ])
+    for series in ("muni", "muni_CA"):
+        write_series(series, "2026-01-31,4%")
+        write_series(f"{series}_yield", "2026-01-31,3%")
+
+
+@pytest.fixture(scope="session")
+def append_calendar_row_to() -> Callable[..., None]:
+    """Append a row to any scenario's calendar.csv, by column name:
+    ``append_calendar_row_to(child / "calendar.csv", kind=..., ...)``."""
+    return _append_calendar_row_to
 
 
 @pytest.fixture(scope="function")
@@ -880,6 +1285,68 @@ def update_account_value(retire_alice_csv: Callable[[str], Path]) -> Callable[..
             values.loc[row, column] = value
         values.to_csv(path, index=False)
     return _update
+
+
+@pytest.fixture(scope="function")
+def update_account(retire_alice_csv: Callable[[str], Path]) -> Callable[..., None]:
+    """Set columns on one existing account row of the private copy's
+    accounts.csv: ``update_account("Asset_Brokerage_Joint", owner="alice")``."""
+    def _update(name: str, **columns: str) -> None:
+        path = retire_alice_csv("accounts.csv")
+        accounts = pd.read_csv(path, dtype=str, keep_default_na=False)
+        row = accounts["name"] == name
+        assert row.any(), name
+        for column, value in columns.items():
+            accounts.loc[row, column] = value
+        accounts.to_csv(path, index=False)
+    return _update
+
+
+@pytest.fixture(scope="function")
+def update_scheduled(retire_alice_csv: Callable[[str], Path]) -> Callable[..., None]:
+    """Set columns on one existing rule of the private copy's scheduled.csv:
+    ``update_scheduled("living", person="joint")``."""
+    def _update(name: str, **columns: str) -> None:
+        path = retire_alice_csv("scheduled.csv")
+        rules = pd.read_csv(path, dtype=str, keep_default_na=False)
+        row = rules["name"] == name
+        assert row.any(), name
+        for column, value in columns.items():
+            rules.loc[row, column] = value
+        rules.to_csv(path, index=False)
+    return _update
+
+
+@pytest.fixture(scope="function")
+def append_scheduled_row(retire_alice_csv: Callable[[str], Path]) -> Callable[..., None]:
+    """Append a rule to the private copy's scheduled.csv, by column name:
+    ``append_scheduled_row(name="bonus", amount_rule_kind="fixed_amount", ...)``.
+    ``cadence`` defaults to monthly and ``meta_json`` to ``{}``."""
+    def _add(**fields: str) -> None:
+        unknown = set(fields) - set(SCHEDULED_CSV_HEADER)
+        assert not unknown, f"unknown scheduled.csv columns: {sorted(unknown)}"
+        path = retire_alice_csv("scheduled.csv")
+        rules = pd.read_csv(path, dtype=str, keep_default_na=False)
+        rules = rules.reindex(columns=SCHEDULED_CSV_HEADER, fill_value="")
+        rules.loc[len(rules)] = {
+            **dict.fromkeys(SCHEDULED_CSV_HEADER, ""),
+            "cadence": "monthly", "meta_json": "{}", **fields,
+        }
+        rules.to_csv(path, index=False)
+    return _add
+
+
+@pytest.fixture(scope="function")
+def set_scenario_meta(retire_alice_csv: Callable[[str], Path]) -> Callable[..., None]:
+    """Set keys of the private retire_alice copy's scenario.csv ``meta_json``,
+    keeping the others: ``set_scenario_meta(community_property=True)``."""
+    def _set(**keys: object) -> None:
+        path = retire_alice_csv("scenario.csv")
+        scenario = pd.read_csv(path, dtype=str, keep_default_na=False)
+        meta = json.loads(scenario.loc[0, "meta_json"] or "{}")
+        scenario.loc[0, "meta_json"] = json.dumps({**meta, **keys})
+        scenario.to_csv(path, index=False)
+    return _set
 
 
 @pytest.fixture(scope="function")
@@ -958,16 +1425,112 @@ def two_lot_run_file(test_data_dir: Path, retire_alice_csv: Callable[[str], Path
                         allow_dirty_data=True, allow_dirty_code=True)
 
 
+def _write_tax_file(scenario_dir: Path, name: str = "federal", **cells: Any) -> Path:
+    """Write ``scenario_dir/taxes/<name>.csv``, a tax jurisdiction (#507):
+    paid from Asset_Checking into Expense_Taxes_Federal (or _State, _Local)
+    each April from 2027, unless ``cells`` say otherwise. A local one's
+    account (#586) is added to the scenario's accounts.csv when it has one
+    and lacks it. ``params_json`` may be a dict."""
+    params = cells.pop("params_json", {})
+    destination = f"Expense_Taxes_{name.capitalize()}"
+    accounts_csv = scenario_dir / "accounts.csv"
+    if name == "local" and "destination" not in cells and accounts_csv.exists():
+        accounts = pd.read_csv(accounts_csv, dtype=str, keep_default_na=False)
+        if destination not in accounts["name"].tolist():
+            accounts.loc[len(accounts)] = {
+                **dict.fromkeys(accounts.columns, ""),
+                "name": destination, "kind": "expense", "subkind": "taxes_local",
+                "owner": "joint", "tax_treatment": "none", "opened": "2020-01-31", "meta_json": "{}",
+            }
+            accounts.to_csv(accounts_csv, index=False)
+    row = {
+        **dict.fromkeys(TAX_CSV_HEADER, ""),
+        "kind": {"federal": "federal", "local": "local_bands"}.get(name, "state_tables"),
+        "source_chain": "Asset_Checking",
+        "destination": destination,
+        "start": "2027-04",
+        "params_json": params if isinstance(params, str) else json.dumps(params),
+        **cells,
+    }
+    path = scenario_dir / "taxes" / f"{name}.csv"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame([row], columns=list(TAX_CSV_HEADER)).to_csv(path, index=False)
+    return path
+
+
 @pytest.fixture(scope="function")
-def add_state_tax(retire_alice_csv: Callable[[str], Path]) -> Callable[..., None]:
+def tax_module(test_data_dir: Path, test_data: Path) -> Callable[..., Path]:
+    """``tax_module("renters")``: copy a calculator module from
+    ``tests/data/sim/tax_calculators/taxes/`` into the private data repo's
+    ``taxes/`` folder (#510); ``tax_module("mine", text)`` writes one."""
+    def _write(name: str, text: str | None = None) -> Path:
+        path = test_data_dir / "taxes" / f"{name}.py"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if text is None:
+            text = (test_data / "sim" / "tax_calculators" / "taxes" / f"{name}.py").read_text()
+        path.write_text(text)
+        return path
+    return _write
+
+
+@pytest.fixture(scope="session")
+def write_tax() -> Callable[..., Path]:
+    """``write_tax(scenario_dir, name="federal", **cells)``: write a tax
+    jurisdiction file (#507) into a scenario folder; see ``add_tax``."""
+    return _write_tax_file
+
+
+@pytest.fixture(scope="function")
+def add_tax(retire_alice_csv: Callable[[str], Path]) -> Callable[..., Path]:
+    """Give the private retire_alice copy a tax jurisdiction (#507):
+    ``add_tax()`` is the federal tax, paid from Asset_Checking into
+    Expense_Taxes_Federal each April from 2027; ``add_tax("state")`` a state
+    one (the account must exist and the household live somewhere:
+    ``add_state_tax`` adds all three). Cells override the defaults."""
+    return lambda name="federal", **cells: _write_tax_file(
+        retire_alice_csv(""), name, **cells)
+
+
+def _add_residence_row(scenario_dir: Path, effective_date: str, state: str, county: str = "",
+                       description: str = "") -> Path:
+    path = scenario_dir / RESIDENCE_FILE
+    rows = (pd.read_csv(path, dtype=str, keep_default_na=False).to_dict("records")
+            if path.exists() else [])
+    rows.append({"effective_date": effective_date, "state": state, "county": county,
+                 "description": description})
+    pd.DataFrame(rows, columns=list(RESIDENCE_CSV_HEADER)).to_csv(path, index=False)
+    return path
+
+
+@pytest.fixture(scope="session")
+def add_residence_to() -> Callable[..., Path]:
+    """``add_residence_to(scenario_dir, "2028-01", "WA", county="")``: add a
+    row to a scenario's residence.csv (#509), where the household lives from
+    that month."""
+    return _add_residence_row
+
+
+@pytest.fixture(scope="function")
+def add_residence(retire_alice_csv: Callable[[str], Path]) -> Callable[..., Path]:
+    """``add_residence("2028-01", "WA", county="")``: the private retire_alice
+    copy's household lives in that state (and county) from that month on
+    (residence.csv, #509): a move, after ``add_state_tax``'s first row."""
+    return lambda effective_date, state, county="", description="": _add_residence_row(
+        retire_alice_csv(""), effective_date, state, county, description)
+
+
+@pytest.fixture(scope="function")
+def add_state_tax(retire_alice_csv: Callable[[str], Path],
+                  fund_asset_savings: Callable[..., None]) -> Callable[..., None]:
     """Give the private retire_alice copy a state income tax: an
-    Expense_Taxes_State account and a ``tax_accumulator`` rule (scope state)
-    paying the previous year's state tax each April. ``bracket_series`` names
-    the state when more than one ``state_brackets`` table exists."""
-    def _add(bracket_series: str | None = None) -> None:
-        params = {"year": "previous", "scope": "state"}
-        if bracket_series:
-            params["bracket_series"] = bracket_series
+    Expense_Taxes_State account and a state jurisdiction (taxes/state.csv)
+    paying the previous year's state tax each April, and the federal one it
+    starts from (#508) when the copy has none yet, with savings to pay it
+    (``fund_asset_savings``). ``state`` is where the household lives from the
+    scenario's start (residence.csv, #509): California, the prototype's,
+    unless the test says otherwise (None writes no residence); ``county`` the
+    series of its local tax table."""
+    def _add(state: str | None = "CA", county: str = "") -> None:
         accounts = pd.read_csv(retire_alice_csv("accounts.csv"), dtype=str,
                                keep_default_na=False)
         accounts.loc[len(accounts)] = {
@@ -977,18 +1540,12 @@ def add_state_tax(retire_alice_csv: Callable[[str], Path]) -> Callable[..., None
             "meta_json": "{}",
         }
         accounts.to_csv(retire_alice_csv("accounts.csv"), index=False)
-        scheduled = pd.read_csv(retire_alice_csv("scheduled.csv"), dtype=str,
-                                keep_default_na=False)
-        scheduled = scheduled.reindex(columns=SCHEDULED_CSV_HEADER, fill_value="")
-        scheduled.loc[len(scheduled)] = {
-            **dict.fromkeys(SCHEDULED_CSV_HEADER, ""),
-            "name": "tax_state_prev_year", "from_account": "Asset_Checking",
-            "to_account": "Expense_Taxes_State", "cadence": "annual", "month_of_year": "4",
-            "amount_rule_kind": "tax_accumulator", "tax_character": "none",
-            "start": "2027-04-30", "priority": "400", "meta_json": "{}",
-            "params_json": json.dumps(params),
-        }
-        scheduled.to_csv(retire_alice_csv("scheduled.csv"), index=False)
+        _write_tax_file(retire_alice_csv(""), "state")
+        if state is not None:
+            _add_residence_row(retire_alice_csv(""), "2026-05", state, county)
+        if not (retire_alice_csv("") / "taxes" / "federal.csv").exists():
+            _write_tax_file(retire_alice_csv(""), "federal")
+            fund_asset_savings("1000000.00")
     return _add
 
 
@@ -996,8 +1553,8 @@ def add_state_tax(retire_alice_csv: Callable[[str], Path]) -> Callable[..., None
 def report_run_file(retire_alice_csv: Callable[[str], Path],
                     fund_asset_savings: Callable[..., None],
                     load_test_copy: Callable[[], LoadResult], runs_dir: Path) -> Path:
-    """Run of a retire_alice copy that computes federal tax (a ``tax_accumulator``
-    rule paying the previous year's tax each April) and tags its spending in
+    """Run of a retire_alice copy that computes federal tax (taxes/federal.csv,
+    paying the previous year's tax each April) and tags its spending in
     role ``budget``: Expense_Living and Expense_Healthcare are ``budget:core``,
     Expense_Housing is ``budget:home``, and the ``living`` rule's own
     ``budget:fun`` overrides its account's tag. Income_Salary_Alice is
@@ -1013,15 +1570,8 @@ def report_run_file(retire_alice_csv: Callable[[str], Path],
     scheduled = pd.read_csv(retire_alice_csv("scheduled.csv"), dtype=str, keep_default_na=False)
     scheduled = scheduled.reindex(columns=SCHEDULED_CSV_HEADER, fill_value="")
     scheduled.loc[scheduled["name"] == "living", "tags"] = "budget:fun"
-    scheduled.loc[len(scheduled)] = {
-        **dict.fromkeys(SCHEDULED_CSV_HEADER, ""),
-        "name": "tax_federal_prev_year", "from_account": "Asset_Checking",
-        "to_account": "Expense_Taxes_Federal", "cadence": "annual", "month_of_year": "4",
-        "amount_rule_kind": "tax_accumulator", "tax_character": "none",
-        "start": "2027-04-30", "priority": "400", "meta_json": "{}",
-        "params_json": '{"year":"previous","scope":"federal"}',
-    }
     scheduled.to_csv(retire_alice_csv("scheduled.csv"), index=False)
+    _write_tax_file(retire_alice_csv(""))
 
     intent = load_test_copy().intent_path
     return run_scenario(intent, runs_dir / "report.sqlite3", run_by="TEST",
@@ -1033,16 +1583,6 @@ def close_plots():
     import matplotlib.pyplot as plt
     yield
     plt.close("all")
-
-
-@pytest.fixture(scope="function", autouse=True)
-def no_FigureCanvasAgg_warning():
-    with warnings.catch_warnings():
-        warnings.filterwarnings("ignore",
-                                category=UserWarning,
-                                message=".*FigureCanvasAgg.*"
-                                )
-        yield
 
 
 # --- ADR-007 sensitivity batches -------------------------------------------
@@ -1076,14 +1616,39 @@ def _sim(*args: str) -> None:
 
 
 @pytest.fixture(scope="function")
-def retire_alice_test_run(test_data_dir: Path, intent_dir: Path, runs_dir: Path) -> Path:
+def sim_load_test_copy(test_data_dir: Path, intent_dir: Path, runs_dir: Path) -> Callable[..., Path]:
+    """Callable running ``sim load`` on a scenario of the private data copy
+    (default retire_alice), after a test has edited it, into the function's
+    state dir beside ``test_data_dir``: where a picker opened on
+    ``test_data_dir`` looks. Extra arguments (``--no-run``) go on the
+    command line. Returns the scenario's runs folder."""
+    def _load(*extra: str, scenario: str = "retire_alice") -> Path:
+        _sim("load", scenario, "--data-dir", str(test_data_dir),
+             "--intent-dir", str(intent_dir), "--runs-dir", str(runs_dir),
+             "--allow-dirty-data", *extra)
+        return runs_dir / scenario
+    return _load
+
+
+@pytest.fixture(scope="function")
+def latest_test_run(sim_load_test_copy: Callable[..., Path], runs_dir: Path) -> Callable[[str], Path]:
+    """Callable running ``sim load`` (load and run) on a scenario of the
+    private data copy, as ``sim_load_test_copy`` does; returns its newest run
+    file, where ``sim`` commands looking for a scenario's runs find it."""
+    def _run(scenario: str) -> Path:
+        sim_load_test_copy(scenario=scenario)
+        found = latest_run_path(runs_dir, scenario)
+        assert found is not None, scenario
+        return found
+    return _run
+
+
+@pytest.fixture(scope="function")
+def retire_alice_test_run(sim_load_test_copy: Callable[..., Path]) -> Path:
     """retire_alice from the private data copy, loaded and run into the
     function's state dir, beside ``test_data_dir``: where a picker opened on
     ``test_data_dir`` looks. Returns its runs folder."""
-    _sim("load", "retire_alice", "--data-dir", str(test_data_dir),
-         "--intent-dir", str(intent_dir), "--runs-dir", str(runs_dir),
-         "--allow-dirty-data")
-    return runs_dir / "retire_alice"
+    return sim_load_test_copy()
 
 
 @pytest.fixture(scope="function")
@@ -1135,6 +1700,135 @@ def ensemble_recipe(test_data_dir: Path, intent_dir: Path, runs_dir: Path) -> st
 
 
 @pytest.fixture(scope="function")
+def code_repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> git.Repo:
+    """A stand-in code repo on main that run freshness (``freshness.code_tree``)
+    compares runs against, so a test depends neither on this checkout's
+    branch nor on its uncommitted changes."""
+    repo = git.Repo.init(tmp_path / "code", b="main")
+    with repo.config_writer() as cw:
+        cw.set_value("commit", "gpgsign", "false")
+        cw.set_value("tag", "gpgsign", "false")
+    root = Path(str(repo.working_tree_dir))
+    for name, text in {"src/engine.py": "v1\n", "templates/t.csv": "", "pyproject.toml": "",
+                       "uv.lock": "", "docs/guide.md": "one\n"}.items():
+        (root / name).parent.mkdir(parents=True, exist_ok=True)
+        (root / name).write_text(text)
+    repo.git.add(A=True)
+    actor = git.Actor("t", "t@t")
+    repo.index.commit("init", author=actor, committer=actor)
+    from analysis.sim import freshness
+
+    monkeypatch.setattr(freshness, "code_tree", lambda: freshness.code_tree_of(repo))
+    return repo
+
+
+@pytest.fixture(scope="function")
+def stamp_runs(code_repo: git.Repo) -> Callable[[Path], None]:
+    """A function recording ``code_repo``'s HEAD, clean, as the code every
+    run under a runs dir ran, and dating the plain runs earlier, in order,
+    so a rerun is always the newest: runs that are fresh until the code or
+    data moves."""
+    def _stamp(runs_dir: Path) -> None:
+        for n, run_file in enumerate(sorted(runs_dir.glob("*_*.sqlite3"))):
+            run_file.rename(run_file.with_name(
+                f"2000-01-01T{n:06d}Z_{run_file.name.split('_', 1)[1]}"))
+        for run_file in runs_dir.rglob("*.sqlite3"):
+            with closing(sqlite3.connect(run_file)) as con, con:
+                if con.execute("SELECT 1 FROM sqlite_master WHERE name = 'simulation_run'").fetchone():
+                    con.execute("UPDATE simulation_run SET code_version = ?, code_dirty = 0",
+                                (code_repo.head.commit.hexsha,))
+    return _stamp
+
+
+@pytest.fixture(scope="function")
+def pool_scenarios(test_data_dir: Path) -> str:
+    """Pool ``mix`` (ADR-009) in the private data copy, created but not run:
+    ``e_a`` 25% (a four-member ensemble over retire_alice, seed 7, with a
+    varied checking rate) and ``e_b`` 75% (a child of ``e_a`` adding a
+    varied gift, so it shares the seed and pairs with ``e_a``). Returns the
+    pool's name."""
+    data = ("--data-dir", str(test_data_dir))
+    _sim("ensemble", "create", "e_a", "retire_alice", "--size", "4", "--seed", "7", *data)
+    _sim("calendar", "add", "set-rate", "2027-02-28", "Asset_Checking", "4.5",
+         "--scenario", "e_a", *data, "--name", "checking_rate_vary", "--vary-target", "amount",
+         "--vary-distribution", "uniform", "--vary-low", "0", "--vary-high", "40")
+    _sim("ensemble", "create", "e_b", "e_a", *data)
+    calendar = test_data_dir / "scenarios" / "e_b" / "calendar.csv"
+    if not calendar.is_file():
+        calendar.write_text(",".join(CALENDAR_HEADER) + "\n", encoding="utf-8")
+    _append_calendar_row_to(
+        calendar,
+        date="2029-06-30", kind="one_off_transfer", name="gift",
+        account_1="Income_Inheritance", account_2="Asset_Brokerage_Joint", lot_2="default",
+        amount="20000.00", tax_character="none",
+        vary_target="amount", vary_distribution="uniform",
+        vary_low="10000.00", vary_high="30000.00",
+    )
+    _sim("ensemble", "pool", "create", "mix", "e_a=25%", "e_b=75%", *data)
+    return "mix"
+
+
+@pytest.fixture
+def write_scenario_meta(test_data_dir: Path) -> Callable[..., None]:
+    """Rewrite scenario ``name``'s scenario.csv in the private data copy:
+    its ``meta_json`` to ``meta`` (a dict), and any other cells given."""
+    import csv
+
+    def write(name: str, meta: dict, **row: str) -> None:
+        path = test_data_dir / "scenarios" / name / "scenario.csv"
+        with path.open(newline="", encoding="utf-8") as fh:
+            reader = csv.DictReader(fh)
+            header, rows = list(reader.fieldnames or []), list(reader)
+        rows[0].update(meta_json=json.dumps(meta), **row)
+        with path.open("w", newline="", encoding="utf-8") as fh:
+            writer = csv.DictWriter(fh, fieldnames=header)
+            writer.writeheader()
+            writer.writerows(rows)
+    return write
+
+
+@pytest.fixture
+def pool_batch(test_data_dir: Path, pool_scenarios: str, state_dir: Path) -> Path:
+    """``pool_scenarios``'s ``mix`` run (both components run first), returning
+    its batch dir."""
+    from click.testing import CliRunner
+
+    from analysis.cli import main
+    from analysis.sim.loader import latest_ensemble_batch
+
+    result = CliRunner().invoke(
+        main, ["sim", "run", pool_scenarios, "--data-dir", str(test_data_dir), "--allow-dirty-data"])
+    assert result.exit_code == 0, result.output
+    assert "component e_a: running" in result.output
+    assert "pool of 2, seed 7: e_a 1 (25%), e_b 3 (75%)" in result.output, result.output
+    batch = latest_ensemble_batch(state_dir / "runs" / pool_scenarios)
+    assert batch is not None
+    return batch
+
+
+@pytest.fixture
+def fake_batch(tmp_path: Path) -> Callable[..., Path]:
+    """Make ``runs/<scenario>/b`` under ``tmp_path``: ``members`` empty member
+    files and a batch manifest (``member_count`` defaults to ``members``;
+    ``failures`` maps index to error; ``pool`` is a pool record), for code
+    that reads only a batch's names and manifest. Returns the folder."""
+    from analysis.sim.ensemble import write_batch_manifest
+
+    def make(scenario: str, *, members: int = 0, member_count: int | None = None,
+             failures: dict[int, str] | None = None, pool: dict | None = None) -> Path:
+        batch = tmp_path / "runs" / scenario / "b"
+        batch.mkdir(parents=True)
+        for j in range(members):
+            (batch / f"member_{j:04d}.sqlite3").write_bytes(b"")
+        write_batch_manifest(
+            batch, member_count=members if member_count is None else member_count,
+            failures=[(i, batch / f"member_{i:04d}.sqlite3", e) for i, e in (failures or {}).items()],
+            pool=pool)
+        return batch
+    return make
+
+
+@pytest.fixture(scope="function")
 def two_lot_ensemble_runs_dir(
     set_brokerage_lots: Callable[[list[dict[str, str]]], None],
     retire_alice_csv: Callable[[str], Path], append_calendar_row: Callable[..., None],
@@ -1157,7 +1851,7 @@ def two_lot_ensemble_runs_dir(
         vary_low="4%", vary_high="5%",
     )
     recipe = load_test_copy().intent_path
-    batch_dir = runs_dir / "two_lot" / "2026-01-01T000000Z"
+    batch_dir = runs_dir / "two_lot" / "monte-carlo" / "2026-01-01T000000Z"
     for i in range(2):
         member_intent = resolve_member(
             recipe, intent_dir / f"two_lot_member_{i}.sqlite3",
@@ -1187,7 +1881,7 @@ def seeded_ensemble_batch(
     recipe = load_test_copy().intent_path
 
     def _batch(name: str, seed: int) -> Path:
-        batch_dir = runs_dir / name / "2026-01-01T000000Z"
+        batch_dir = runs_dir / name / "monte-carlo" / "2026-01-01T000000Z"
         for i in range(3):
             member_intent = resolve_member(
                 recipe, intent_dir / f"{name}_member_{i}.sqlite3",
@@ -1369,41 +2063,527 @@ def fake_state(intent_dir: Path, runs_dir: Path) -> Callable[..., Path]:
     ``fake_state("run", "alice", "2026-10-01T120000Z", status=...)`` writes a
     single run file; ``fake_state("batch", ...)`` a run batch of ``members``
     member files with a batch manifest (``complete=False`` leaves the last
-    member out); ``fake_state("intent", ...)`` a member-intent batch. Each
-    run file holds just a ``simulation_run`` row with the status. Every file
+    member out); ``fake_state("intent", ...)`` a member-intent batch; a
+    batch of either kind goes in its ``mode``'s folder (#454). Each
+    run file holds just a ``simulation_run`` row with the status and an
+    empty ``load_warning`` table (#432), unless
+    ``load_warned={member: [warning, ...]}`` gives a member some; a run
+    batch given ``pool=[component, ...]`` (one per member) is a pool batch's
+    (ADR-009), its manifest saying where each member came from. Every file
     and folder written gets the stamp as its mtime, so nothing reads as still
     being written (retention.ACTIVE_WINDOW)."""
     import os
     from datetime import UTC, datetime
 
     from analysis.sim.ensemble import write_batch_manifest
+    from analysis.sim.loader import batches_dir
 
-    def _run_file(path: Path, status: str) -> None:
+    def _run_file(path: Path, status: str, warned: Sequence[str] | None = None) -> None:
         con = sqlite3.connect(path)
         try:
             con.execute("CREATE TABLE simulation_run (id INTEGER PRIMARY KEY, status TEXT)")
             con.execute("INSERT INTO simulation_run VALUES (1, ?)", (status,))
+            con.execute("CREATE TABLE load_warning (id INTEGER PRIMARY KEY, kind TEXT, message TEXT)")
+            if warned:
+                con.executemany("INSERT INTO load_warning (kind, message) VALUES ('warning', ?)",
+                                [(w,) for w in warned])
             con.commit()
         finally:
             con.close()
 
     def _fake(kind: str, scenario_name: str, stamp: str, *, status: str = "succeeded",
-              members: int = 2, complete: bool = True) -> Path:
+              members: int = 2, complete: bool = True, mode: str = "monte_carlo",
+              load_warned: Mapping[int, Sequence[str]] | None = None,
+              pool: Sequence[str] | None = None) -> Path:
         made = datetime.strptime(stamp, "%Y-%m-%dT%H%M%SZ").replace(tzinfo=UTC).timestamp()
         if kind == "run":
             path = runs_dir / f"{stamp}_{scenario_name}_abc1234.sqlite3"
             _run_file(path, status)
             os.utime(path, (made, made))
             return path
-        path = (runs_dir if kind == "batch" else intent_dir) / scenario_name / stamp
+        recipe = (runs_dir if kind == "batch" else intent_dir) / scenario_name
+        path = batches_dir(recipe, mode) / stamp
         path.mkdir(parents=True)
         written = members if complete else members - 1
         for i in range(written):
-            _run_file(path / f"member_{i:04d}.sqlite3", status)
+            _run_file(path / f"member_{i:04d}.sqlite3", status, (load_warned or {}).get(i))
         if kind == "batch":
-            write_batch_manifest(path, member_count=members, failures=[])
+            if mode == "sensitivity":
+                write_batch_manifest(path, member_count=members, failures=[], mode=mode,
+                                     quantiles=(0.1, 0.9), rows=[])
+            else:
+                write_batch_manifest(path, member_count=members, failures=[], mode=mode,
+                                     pool={"member_components": list(pool)} if pool else None)
         for child in [*path.iterdir(), path]:
             os.utime(child, (made, made))
         return path
 
     return _fake
+
+
+@pytest.fixture(scope="function")
+def without_template_aux(tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Hide the code repository's templates/aux/ (#317) from the loader, so a
+    test that deletes one of the private copy's aux tables sees it missing
+    instead of the template's copy filling in."""
+    monkeypatch.setattr("analysis.sim.loader.TEMPLATE_AUX_DIR", tmp_path_factory.mktemp("no_template_aux"))
+
+
+@pytest.fixture(scope="function")
+def state_tax_without_its_deduction(
+    test_data_dir: Path, add_state_tax: Callable[..., None], without_template_aux: None,
+) -> None:
+    """The private retire_alice copy, loading with one warning (#432): a
+    California state tax rule with no state_standard_deduction__CA table, so
+    it falls back to the federal deduction (#248) and the load warns that
+    "state tax uses the federal standard deduction". The prototype's idle
+    latent factors add their one note on things defined but not read yet."""
+    add_state_tax()
+    (test_data_dir / "aux" / "state_standard_deduction__CA.csv").unlink()
+
+
+@pytest.fixture(scope="session")
+def research_bundles(repo_root: Path) -> Path:
+    """Research bundles as the finance-research plugin writes them (#344),
+    read-only: ``abcdx/`` (every tab, an allocation export, a ``fund-work/``
+    folder), ``unclassified/`` (JSON only: part of the fund unclassified),
+    and two researched by name (#372): ``acme-robotics/``, a private
+    company's tabs under ``ACME-ROBOTICS``, and ``balanced-by-name/``, a
+    fund's tear sheet and weights under ``A-BALANCED-INDEX-FUND``."""
+    return repo_root / "tests" / "data" / "research"
+
+
+@pytest.fixture
+def fake_claude(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, research_bundles: Path) -> Path:
+    """A stand-in ``claude`` first on PATH for `sim symbol research`: it copies
+    the bundle named by ``$FAKE_CLAUDE_BUNDLE`` (default ``abcdx``) into its
+    working folder and prints ``stream-json`` events. ``$FAKE_CLAUDE_FAIL``
+    makes it report an error; ``$FAKE_CLAUDE_SLEEP`` delays it;
+    ``$FAKE_CLAUDE_CHILD`` leaves a child holding its stdout. Each call's
+    arguments go to the returned file, one per line."""
+    bin_dir = tmp_path / "fake-bin"
+    bin_dir.mkdir()
+    calls = tmp_path / "claude-args.txt"
+    script = bin_dir / "claude"
+    script.write_text(f"""#!{sys.executable}
+import json, os, shutil, sys, time
+from pathlib import Path
+Path({str(calls)!r}).write_text("\\n".join(sys.argv[1:]) + "\\n", encoding="utf-8")
+if os.environ.get("FAKE_CLAUDE_CHILD"):
+    import subprocess
+    subprocess.Popen(["sleep", "30"])  # inherits stdout, so it holds the pipe open
+time.sleep(float(os.environ.get("FAKE_CLAUDE_SLEEP", "0")))
+name = os.environ.get("FAKE_CLAUDE_BUNDLE", "abcdx")
+if name:
+    shutil.copytree(Path({str(research_bundles)!r}) / name, Path.cwd(), dirs_exist_ok=True)
+def emit(event):
+    print(json.dumps(event), flush=True)
+emit({{"type": "system", "subtype": "init"}})
+emit({{"type": "assistant", "message": {{"content": [
+    {{"type": "tool_use", "name": "WebSearch", "input": {{"query": "ABCDX fact sheet"}}}},
+    {{"type": "text", "text": "Found it."}}]}}}})
+fail = os.environ.get("FAKE_CLAUDE_FAIL")
+emit({{"type": "result", "subtype": "error" if fail else "success", "is_error": bool(fail),
+       "result": fail or "Wrote the tear sheet.", "total_cost_usd": 1.25}})
+""", encoding="utf-8")
+    script.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}")
+    return calls
+
+
+# ---------- outside files for `sim import` (#527) ----------
+
+@pytest.fixture
+def quicken_net_worth_export(tmp_path: Path) -> Path:
+    """A Quicken "Net Worth Export" naming four of retire_alice's accounts by
+    their own names, as of 2026-08-18."""
+    path = tmp_path / "net_worth_export.csv"
+    path.write_text(
+        '"",,"2026-08-18"\n'
+        '"Assets",,\n'
+        ',"Checking",\n'
+        ',"  - Asset_Checking","1,234.56"\n'
+        ',"  - Total Checking","1,234.56"\n'
+        ',"Investments",\n'
+        ',"  - Asset_Brokerage_Joint","310,000.00"\n'
+        ',"  - Retirement",\n'
+        ',"  -  - Asset_TraditionalIRA_Alice","510,000.00"\n'
+        ',"  -  - Total Retirement","510,000.00"\n'
+        ',"  - Total Investments","820,000.00"\n'
+        '"Liabilities",,\n'
+        ',"Loan",\n'
+        ',"  - Liability_Mortgage","-240,000.00"\n'
+        'Net Worth,,"581,234.56"\n',
+        encoding="utf-8",
+    )
+    return path
+
+
+@pytest.fixture
+def quicken_year_end_export(tmp_path: Path) -> Path:
+    """A Quicken "Year End Export" of two of the same accounts, as of
+    2025-12-31."""
+    path = tmp_path / "year_end_export.csv"
+    path.write_text(
+        '"",,"2025-12-31"\n'
+        '"Assets",,\n'
+        ',"Investments",\n'
+        ',"  - Asset_Brokerage_Joint","290,000.00"\n'
+        ',"  - Asset_TraditionalIRA_Alice","495,000.00"\n'
+        'Net Worth,,"785,000.00"\n',
+        encoding="utf-8",
+    )
+    return path
+
+
+@pytest.fixture
+def fidelity_positions_export(tmp_path: Path) -> Path:
+    """A Fidelity positions download, as of 2026-01-05: a joint brokerage
+    account holding two funds and its money market, and a Roth IRA holding
+    one fund. Every row ends in a comma, and notes follow an empty row, as
+    in the real file."""
+    path = tmp_path / "Portfolio_Positions_Jan-05-2026.csv"
+    header = ("Account number,Account name,Symbol,Description,Quantity,Last price,Last price change,"
+              "Current value,Today's gain/loss dollar,Today's gain/loss percent,Total gain/loss dollar,"
+              "Total gain/loss percent,Percent of account,Cost basis total,Average cost basis,Type,")
+    path.write_text(
+        header + "\n"
+        '111111111,Joint brokerage,FXAIX,FIDELITY 500 INDEX FUND,1000.5,$200.00,+$1.00,"$200,100.00",'
+        '+$1000.50,+0.50%,"+$50,100.00",+33.40%,62.53%,"$150,000.00",$149.93,Cash,\n'
+        '111111111,Joint brokerage,FSKAX,FIDELITY TOTAL MARKET INDEX FUND,500,$150.00,-$0.50,"$75,000.00",'
+        '-$250.00,-0.33%,"-$5,000.00",-6.25%,23.44%,"$80,000.00",$160.00,Cash,\n'
+        '111111111,Joint brokerage,SPAXX**,HELD IN MONEY MARKET,,,,"$44,900.00",,,,,14.03%,,,Cash,\n'
+        '222222222,ROTH IRA,FXAIX,FIDELITY 500 INDEX FUND,450,$200.00,+$1.00,"$90,000.00",'
+        '+$450.00,+0.50%,"+$30,000.00",+50.00%,100.00%,"$60,000.00",$133.33,Cash,\n'
+        "\n"
+        '"The data and information in this spreadsheet is provided to you solely for your use."\n'
+        "\n"
+        '"Date downloaded Jan-05-2026 at 4:10 p.m ET"\n',
+        encoding="utf-8",
+    )
+    return path
+
+
+@pytest.fixture
+def vanguard_holdings_export(tmp_path: Path) -> Path:
+    """A Vanguard holdings download, as of 2026-01-05, of one account, which
+    only the file's name says: a fund with a gain, one with a loss, and a
+    money market fund with neither."""
+    path = tmp_path / "holdings 12345678.csv"
+    path.write_text(
+        'Symbol,Name,Current balance,Quantity,"As of 01/05/2026 04:00 p.m., ET Current price",'
+        '"As of 01/05/2026 04:00 p.m., ET Last price change ($/%)",'
+        "Total unrealized capital gain/loss ($/%),Investment type,Expense ratio\n"
+        'VTSAX,Vanguard Total Stock Market Index Admiral,"$400,000.00",2500.000,$160.00,'
+        '+$0.80 (+0.50%),"+$100,000.00 (+33.33%)",Mutual fund,0.04%\n'
+        'VBTLX,Vanguard Total Bond Market Index Admiral,"$100,000.00",10000.000,$10.00,'
+        '-$0.02 (-0.20%),"-$16,423.62 (-14.11%)",Mutual fund,0.04%\n'
+        'VMFXX,Vanguard Federal Money Market Fund,"$20,000.00",20000.000,$1.00,'
+        "\u2014,\u2014,Money market,0.11%\n",
+        encoding="utf-8",
+    )
+    return path
+
+
+@pytest.fixture
+def write_import_export(tmp_path: Path) -> Callable[[str, str], Path]:
+    """Write an outside program's export for a test's own profile to read:
+    ``write("mine.csv", text)``, outside the data dir, as a download is."""
+    def write(name: str, text: str) -> Path:
+        path = tmp_path / name
+        path.write_text(text, encoding="utf-8")
+        return path
+
+    return write
+
+
+@pytest.fixture
+def vanguard_two_row_export(vanguard_holdings_export: Path) -> Path:
+    """``vanguard_holdings_export`` with a second row of its first fund (as
+    for shares held two ways) and a row whose symbol is words, as activity
+    not yet settled is listed."""
+    extra = (
+        'VTSAX,Vanguard Total Stock Market Index Admiral,"$16,000.00",100.000,$160.00,'
+        "+$0.80 (+0.50%),\u2014,Mutual fund,0.04%\n"
+        "Pending activity,,$250.00,\u2014,\u2014,\u2014,\u2014,\u2014,\u2014\n")
+    vanguard_holdings_export.write_text(
+        vanguard_holdings_export.read_text(encoding="utf-8") + extra, encoding="utf-8")
+    return vanguard_holdings_export
+
+
+@pytest.fixture
+def write_import_profile(test_data_dir: Path) -> Callable[[str, str], Path]:
+    """Write a household's own source profile:
+    ``write("my_bank", yaml_text)`` is ``imports/my_bank/profile.yaml`` in the
+    test data dir."""
+    def write(source: str, text: str) -> Path:
+        path = test_data_dir / "imports" / source / "profile.yaml"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+        return path
+
+    return write
+
+
+@pytest.fixture
+def quicken_account_map(test_data_dir: Path) -> Path:
+    """``imports/quicken/accounts.csv`` in the test data dir, mapping each
+    account of ``quicken_net_worth_export`` to the account of the same name."""
+    path = test_data_dir / "imports" / "quicken" / "accounts.csv"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        "outside_account,asset,action,account,lot,note\n"
+        "Asset_Checking,,map,Asset_Checking,,\n"
+        "Asset_Brokerage_Joint,,map,Asset_Brokerage_Joint,,\n"
+        "Asset_TraditionalIRA_Alice,,map,Asset_TraditionalIRA_Alice,,\n"
+        "Liability_Mortgage,,map,Liability_Mortgage,,\n",
+        encoding="utf-8",
+    )
+    return path
+
+
+@pytest.fixture
+def quicken_transaction_export(tmp_path: Path) -> Path:
+    """A Quicken "Transaction Export": two months of groceries and dining,
+    and one gift, paid from one account."""
+    path = tmp_path / "transaction_export.csv"
+    path.write_text(
+        '"Account",,Date,Entered,Posted,Action,Payee,Category,Tags,Transfer,Memo/Notes,Amount\n'
+        '"Checking",,,,,,,,,,,\n'
+        ',,"2026-01-02","2026-01-03","2026-01-02","","Market","Groceries","","","","-300.00"\n'
+        ',,"2026-01-09","2026-01-10","2026-01-09","","Cafe","Coffee Shops","","","","-40.00"\n'
+        ',,"2026-02-02","2026-02-03","2026-02-02","","Market","Groceries","","","","-500.00"\n'
+        ',,"2026-02-14","2026-02-15","2026-02-14","","Florist","Gifts","","","","-60.00"\n'
+        '"Total Checking",,,,,,,,,,,"-900.00"\n',
+        encoding="utf-8",
+    )
+    return path
+
+
+@pytest.fixture
+def quicken_year_export(tmp_path: Path) -> Path:
+    """A Quicken "Transaction Export" of a whole year, 2026: groceries
+    every month, a car insurance premium in March and September, one
+    small yearly fee, a move to savings and a paycheck."""
+    # From the 2nd of January to the 30th of December: all but a few days of the year.
+    rows = [f',,"2026-{month:02d}-{30 if month == 12 else 2:02d}","","","","Market","Groceries","","","","-400.00"'
+            for month in range(1, 13)]
+    rows += [
+        ',,"2026-03-10","","","","Mutual Insurance","Auto Insurance","","","","-900.00"',
+        ',,"2026-09-10","","","","Mutual Insurance","Auto Insurance","","","","-900.00"',
+        ',,"2026-06-01","","","","Web Host","Gifts","","","","-120.00"',
+        ',,"2026-06-15","","","","Savings","","","[Savings]","","-1000.00"',
+        ',,"2026-06-30","","","","Employer","Salary","","","","5000.00"',
+    ]
+    path = tmp_path / "year_export.csv"
+    path.write_text(
+        '"Account",,Date,Entered,Posted,Action,Payee,Category,Tags,Transfer,Memo/Notes,Amount\n'
+        '"Checking",,,,,,,,,,,\n' + "\n".join(rows) + '\n"Total Checking",,,,,,,,,,,"0.00"\n',
+        encoding="utf-8",
+    )
+    return path
+
+
+@pytest.fixture
+def bank_checking_export(tmp_path: Path) -> Path:
+    """A bank's activity download for one checking account, January and
+    February 2026, newest first as the bank writes it: groceries and the
+    utility each month, a move to savings, a paper check, and a paycheck.
+    No categories, and nothing but the file's name for the account."""
+    path = tmp_path / "Checking1.csv"
+    path.write_text(
+        '"DATE","DESCRIPTION","AMOUNT","CHECK #","STATUS"\n'
+        '"02/20/2026","PURCHASE AUTHORIZED ON 02/19 CORNER MARKET #204   OAKLAND CA S586050 CARD 1234",'
+        '"-200.00","","Posted"\n'
+        '"02/05/2026","ONLINE TRANSFER TO SAVINGS REF #IB0XYZ12   ","-1000.00","","Posted"\n'
+        '"02/01/2026","CITY POWER AND WATER   BILL PAY 260201","-150.00","","Posted"\n'
+        '"01/20/2026","PURCHASE AUTHORIZED ON 01/19 CORNER MARKET #204   OAKLAND CA S586011 CARD 1234",'
+        '"-400.00","","Posted"\n'
+        '"01/15/2026","ALICE EMPLOYER PAYROLL 260115","5000.00","","Posted"\n'
+        '"01/10/2026","CHECK","-75.00","1042","Posted"\n'
+        '"01/02/2026","CITY POWER AND WATER   BILL PAY 260102","-150.00","","Posted"\n',
+        encoding="utf-8",
+    )
+    return path
+
+
+@pytest.fixture
+def card_exports(
+    tmp_path: Path,
+) -> tuple[Path, Path, Path]:
+    """A card's downloads, in the built-in ``amex`` layouts: the detailed
+    layout for January 2026 (the card's own categories, and references), the
+    detailed layout again for late January into February (one row is in
+    both), and the short layout for February (neither column). Charges are
+    positive, the payment negative, and the account is a column."""
+    detailed = tmp_path / "activity-detailed.csv"
+    head = ("Date,Description,Card Member,Account #,Amount,Extended Details,"
+            "Appears On Your Statement As,Address,City/State,Zip Code,Country,Reference,Category\n")
+    detailed.write_text(
+        head
+        + "01/25/2026,CORNER MARKET 204,ALICE EXAMPLE,-12345,80.00,\"CORNER MARKET\nOAKLAND\","
+          "CORNER MARKET 204,1 MAIN ST,\"OAKLAND\nCA\",94600,UNITED STATES,'R003',"
+          "Merchandise & Supplies-Groceries\n"
+        + "01/15/2026,ONLINE PAYMENT - THANK YOU,ALICE EXAMPLE,-12345,-300.00,,,,,,,'R002',\n"
+        + "01/05/2026,HARBOR CAFE,BILL EXAMPLE,-12346,40.00,,HARBOR CAFE,,,,,'R001',Restaurant-Restaurant\n",
+        encoding="utf-8")
+    short = tmp_path / "activity.csv"
+    short.write_text(
+        "Date,Description,Card Member,Account #,Amount\n"
+        "02/10/2026,CORNER MARKET 204,ALICE EXAMPLE,-12345,60.00\n",
+        encoding="utf-8")
+    again = tmp_path / "activity-detailed-february.csv"
+    again.write_text(
+        head
+        + "02/10/2026,CORNER MARKET 204,ALICE EXAMPLE,-12345,60.00,,,,,,,'R004',"
+          "Merchandise & Supplies-Groceries\n"
+        + "01/25/2026,CORNER MARKET 204,ALICE EXAMPLE,-12345,80.00,,,,,,,'R003',"
+          "Merchandise & Supplies-Groceries\n",
+        encoding="utf-8")
+    return detailed, again, short
+
+
+def _budget_export(tmp_path: Path, name: str, head: list[str], rows: list[tuple[str, list[int]]]) -> Path:
+    """A Quicken budget export as the program writes it: a title and the
+    period, then every line opened by a byte-order mark, the amounts in
+    whole dollars with commas, each an Actual, Budgeted, Difference triple."""
+    def triple(budgeted: int) -> str:
+        return f'"0","{budgeted:,}","{budgeted:,}"'
+
+    lines = [f"Household - {name}", "", "Created: 2026-11-14", "", "2026 - 2027:  JULY to JUNE", *head]
+    for label, amounts in rows:
+        lines.append(f"{label}," + ",".join(triple(each) for each in amounts) + ("," if amounts else ""))
+    path = tmp_path / f"budget-{name.casefold()}.csv"
+    mark = chr(0xFEFF)
+    path.write_text("\n".join(line if n < 4 else mark + line for n, line in enumerate(lines)) + "\n",
+                    encoding="utf-8")
+    return path
+
+
+# Alice and Bill's budget for July 2026 to June 2027, month by month: the
+# power bill every month, groceries and eating out under Food (which has
+# 10 a month of its own besides), property tax in two months, a paycheck,
+# and a category with no budget.
+_BUDGET_ROWS: list[tuple[str, list[int]]] = [
+    ("INCOME", []),
+    (",Paycheck", [5000] * 12),
+    ("EXPENSES", []),
+    (",Food", [710] * 12),
+    (", - Groceries", [500] * 12),
+    (", - Restaurants", [200] * 12),
+    (", -  - Coffee", [50] * 12),
+    (",Property Tax", [0, 0, 0, 0, 0, 3000, 0, 0, 0, 3000, 0, 0]),
+    (",Utilities", [150] * 6 + [180] * 6),
+    (",Travel", [0] * 12),
+]
+
+
+@pytest.fixture
+def quicken_budget_full_export(tmp_path: Path) -> Path:
+    """A Quicken budget exported in its Full form: a column triple for each
+    month of July 2026 to June 2027 (see ``_BUDGET_ROWS``)."""
+    months = ["JULY", "AUGUST", "SEPTEMBER", "OCTOBER", "NOVEMBER", "DECEMBER",
+              "JANUARY", "FEBRUARY", "MARCH", "APRIL", "MAY", "JUNE"]
+    head = [
+        ",,2026" + "," * 18 + "2027" + "," * 17,
+        ",," + ",,,".join(months) + ",,",
+        ",," + ",".join(["Actual,Budgeted,Difference"] * 12),
+        "SUMMARY,",
+        ",Expenses," + ",".join(['"0","0","0"'] * 12) + ",",
+        "," + ",".join(["------------------"] * 37) + ",",
+    ]
+    return _budget_export(tmp_path, "Full", head, _BUDGET_ROWS)
+
+
+@pytest.fixture
+def quicken_budget_summary_export(tmp_path: Path) -> Path:
+    """The same budget exported in its Summary form: the year's totals only."""
+    head = [",,Actual,Budgeted,Difference", "SUMMARY,", ',Expenses,"0","0","0",',
+            ",------------------,------------------,------------------,------------------,"]
+    return _budget_export(tmp_path, "Summary", head,
+                          [(label, [sum(amounts)] if amounts else []) for label, amounts in _BUDGET_ROWS])
+
+
+@pytest.fixture
+def quicken_empty_transaction_export(tmp_path: Path) -> Path:
+    """A Quicken "Transaction Export" of an account with no activity."""
+    path = tmp_path / "empty_transaction_export.csv"
+    path.write_text(
+        '"Account",,Date,Entered,Posted,Action,Payee,Category,Tags,Transfer,Memo/Notes,Amount\n'
+        '"Savings",,,,,,,,,,,\n'
+        '"Total Savings",,,,,,,,,,,"0.00"\n',
+        encoding="utf-8",
+    )
+    return path
+
+
+@pytest.fixture
+def quicken_category_map(test_data_dir: Path) -> Path:
+    """``imports/quicken/categories.csv`` for ``quicken_transaction_export``:
+    both food categories merge into Food, Gifts stays as it is."""
+    path = test_data_dir / "imports" / "quicken" / "categories.csv"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        "outside_category,category\n"
+        "Groceries,Food\n"
+        "Coffee Shops,Food\n"
+        "Gifts,Gifts\n",
+        encoding="utf-8",
+    )
+    return path
+
+
+@pytest.fixture
+def write_import_map(test_data_dir: Path) -> Callable[[str, str], Path]:
+    """Write a mapping file under the test data dir's ``imports/``:
+    ``write("quicken/accounts.csv", rows)`` or
+    ``write("expense_accounts.csv", rows)``. The header is the file's own;
+    ``rows`` is the CSV text after it."""
+    from analysis.sim.imports import mapping
+
+    headers = {
+        mapping.ACCOUNTS: mapping.ACCOUNTS_HEADER,
+        mapping.BUDGET_CHOICES: mapping.BUDGET_CHOICES_HEADER,
+        mapping.CATEGORIES: mapping.CATEGORIES_HEADER,
+        mapping.SPLITS: mapping.SPLITS_HEADER,
+        mapping.EXCLUDED_PAYEES: mapping.EXCLUDED_PAYEES_HEADER,
+        mapping.INCOME_ACCOUNTS: mapping.EXPENSE_ACCOUNTS_HEADER,
+        mapping.EXPENSE_ACCOUNTS: mapping.EXPENSE_ACCOUNTS_HEADER,
+        mapping.PAYEES: mapping.PAYEES_HEADER,
+    }
+
+    def write(relative: str, rows: str) -> Path:
+        path = test_data_dir / "imports" / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(",".join(headers[path.name]) + "\n" + rows, encoding="utf-8")
+        return path
+
+    return write
+
+
+@pytest.fixture
+def write_old_import_map(test_data_dir: Path) -> Callable[[str, str], Path]:
+    """Write a mapping file where it lived before ``imports/`` (#527), for
+    ``scripts/migrate_527.py``: ``write("<scenario>", rows)`` is that
+    scenario's ``quicken_account_map.csv``; ``write("expense_category_map.csv",
+    rows)`` (or another ``expense_*.csv``) goes in ``quicken/`` beside the
+    data dir. The header is the old file's own."""
+    headers = {
+        "expense_category_map.csv": "quicken_category,target_category",
+        "expense_category_split.csv": "category,account,target_category",
+        "expense_excluded_payees.csv": "payee_pattern",
+        "expense_account_map.csv": "category,target_account",
+    }
+
+    def write(where: str, rows: str) -> Path:
+        if where in headers:
+            path = test_data_dir.parent / "quicken" / where
+            header = headers[where]
+        else:
+            path = test_data_dir / "scenarios" / where / "quicken_account_map.csv"
+            header = "quicken_name,account_name,action,note"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(header + "\n" + rows, encoding="utf-8")
+        return path
+
+    return write

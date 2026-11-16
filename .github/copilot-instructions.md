@@ -19,12 +19,16 @@ from the real data must not appear in this repo's code, tests, docs,
 `prototype_data/`, commit messages, issues, or PR text. Use the prototype
 personas (Alice and Bill) and the prototype scenario's account names, and put
 household-specific choices in data-repo files, not in defaults or literals.
-`.githooks/blocked-keywords.txt` lists words that give such names away; the
-pre-commit and commit-msg hooks block commits containing them, and
+`.githooks/blocked-keywords.txt` lists words that give such names away, and a
+private list that is never committed here adds more (from
+`$BLOCKED_KEYWORDS_PRIVATE` and the data repo's `blocked-keywords.txt`; see
+[`docs/SETUP.md`](../docs/SETUP.md)). The pre-commit and commit-msg hooks
+block commits containing either, and
 `tests/test_blocked_keywords.py` checks every tracked file. The `Gates`
 workflow on GitHub checks tracked files, every commit message, and the pull
 request's title and body. If you find one already in the repo, say so instead
-of tidying or quoting it. A deliberate use can be let through locally with
+of tidying or quoting it, and never write out a private keyword where it
+could be logged or kept. A deliberate use can be let through locally with
 `ALLOW_BLOCKED_KEYWORDS=1`; the GitHub check has no override.
 
 ## Architecture
@@ -42,6 +46,9 @@ they are kept in sync with the code.
 | [`docs/architecture/ADR-006-ensemble-scenarios.md`](../docs/architecture/ADR-006-ensemble-scenarios.md) | Ensembles: parameter variation, Monte Carlo runs |
 | [`docs/architecture/ADR-007-sensitivity-analysis.md`](../docs/architecture/ADR-007-sensitivity-analysis.md) | Sensitivity analysis over ensemble parameters |
 | [`docs/architecture/ADR-008-correlated-parameters.md`](../docs/architecture/ADR-008-correlated-parameters.md) | Correlated parameters in ensembles |
+| [`docs/architecture/ADR-009-pooled-ensembles.md`](../docs/architecture/ADR-009-pooled-ensembles.md) | Pooled ensembles: one result set from several |
+| [`docs/architecture/ADR-010-responsive-strategies.md`](../docs/architecture/ADR-010-responsive-strategies.md) | Responsive strategies: code that decides a chain's draws and placements |
+| [`docs/architecture/ADR-011-tax-calculators.md`](../docs/architecture/ADR-011-tax-calculators.md) | Tax calculators: built-in and household code that computes each jurisdiction's return |
 
 ADR-005 through ADR-008 each have a companion `ADR-00N-implementation-plan.md`
 beside them.
@@ -110,8 +117,8 @@ changes to the simulator or its loader:
 
 ```sh
 .venv/bin/python -m pytest -q -n auto -m "not slow"  # tests, less the slow ones
-.venv/bin/python -m ruff check src tests          # lint
-.venv/bin/ty check                                # types (ty; src and tests, per pyproject.toml)
+.venv/bin/python -m ruff check src tests plugins  # lint
+.venv/bin/ty check                                # types (ty; src, tests, plugins: pyproject.toml)
 npm run spell                                     # spelling (cspell)
 npm run markdownlint                              # markdown (markdownlint)
 .venv/bin/analysis sim check --all                # simulator changes: real scenarios still load

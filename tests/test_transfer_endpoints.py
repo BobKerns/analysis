@@ -6,6 +6,7 @@ transfer`` and the guided ``sim calendar add``."""
 from __future__ import annotations
 
 import sqlite3
+from contextlib import closing
 from collections.abc import Callable
 from pathlib import Path
 
@@ -223,7 +224,7 @@ def test_a_one_off_transfer_through_a_chain_is_traced_to_its_rule(
 
     run = run_scenario(load_test_copy().intent_path, runs_dir / "chain.sqlite3", run_by="TEST",
                        allow_dirty_data=True, allow_dirty_code=True)
-    with sqlite3.connect(run) as con:
+    with closing(sqlite3.connect(run)) as con:
         legs = con.execute(
             "SELECT fa.name, ta.name, te.amount FROM transfer_event te "
             "JOIN scheduled_transaction s ON s.id = te.reason_id AND te.reason_kind = 'rule' "

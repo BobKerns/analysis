@@ -1,0 +1,4 @@
+schema_version: "1.1"
+name: private-zeromatter-thin-data
+expected_outcome: |
+  An investor tear sheet on a small private company with thin public data: correctly identified (not confused with similarly named firms), what it does and who it serves sourced, funding sourced and dated, no invented revenue or valuation, read-through to public companies with tickers where justified or an honest statement that exposure is limited, gaps stated, and a detail file.

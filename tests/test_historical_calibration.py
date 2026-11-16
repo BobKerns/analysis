@@ -452,7 +452,7 @@ def test_persistence_pairs_calendar_years_across_a_gap(hc):
 
 
 def test_shock_sd_is_the_log_spread_net_of_persistence(hc):
-    """ADR-006 §4a: what a process row's vary_innovation_sd means, the SD of
+    """ADR-006 §4a: what a process row's vary_shock_sd means, the SD of
     log(1 + rate) times sqrt(1 - persistence**2)."""
     rates = pd.Series({2000 + i: r for i, r in enumerate(
         [2.0, 3.5, 5.0, 4.0, 2.5, 1.0, 2.0, 4.5, 6.0, 5.5, 3.0, 1.5])})
@@ -546,7 +546,7 @@ def test_main_prints_a_table_per_period(calibration_rate_csv, calibration_cache_
     assert "### Early (2020–2021)" in out and "### All (start–latest)" in out
     assert "| Premium | 2020–2021 |   2 |" in out
     assert "Suggested calendar.csv values (Early" in out and "| Premium | process (ar1) |" in out
-    assert "### Legend" in out and "--vary-innovation-sd" in out
+    assert "### Legend" in out and "--vary-shock-sd" in out
 
 
 def test_series_used_twice_keep_their_own_labels(hc, downloads, calibration_cache_dir):

@@ -1,0 +1,46 @@
+# What's on YouTube, written by `python -m analysis.videos publish` (#395).
+# scenes: each scene's length in seconds in the build that was uploaded.
+
+[en]
+video = "nw0-pCtZ9yc"
+uploaded = 2026-11-08T20:49:23Z
+scenes = [
+  ["title", 19.09],
+  ["contents", 19.84],
+  ["how", 32.86],
+  ["tables", 30.38],
+  ["report", 50.12],
+  ["after-tax", 33.29],
+  ["gap", 27.39],
+  ["convert", 60.64],
+  ["convert-results", 46.80],
+  ["irmaa", 26.20],
+  ["irmaa-demo", 81.96],
+  ["medical", 59.12],
+  ["nb-tax", 36.37],
+  ["more", 20.80],
+  ["ai", 14.68],
+  ["end", 6.76],
+]
+
+[ja]
+video = "S1_TNzzaOR0"
+uploaded = 2026-11-08T20:49:39Z
+scenes = [
+  ["title", 24.92],
+  ["contents", 23.12],
+  ["how", 39.74],
+  ["tables", 33.86],
+  ["report", 55.99],
+  ["after-tax", 41.12],
+  ["gap", 32.39],
+  ["convert", 60.68],
+  ["convert-results", 48.54],
+  ["irmaa", 33.53],
+  ["irmaa-demo", 82.68],
+  ["medical", 59.36],
+  ["nb-tax", 36.33],
+  ["more", 27.20],
+  ["ai", 17.29],
+  ["end", 7.57],
+]

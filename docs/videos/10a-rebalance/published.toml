@@ -1,0 +1,48 @@
+# What's on YouTube, written by `python -m analysis.videos publish` (#395).
+# scenes: each scene's length in seconds in the build that was uploaded.
+
+[en]
+video = "Id-wps0PVrw"
+uploaded = 2026-11-10T21:00:10Z
+scenes = [
+  ["title", 14.60],
+  ["contents", 14.12],
+  ["strategy", 21.99],
+  ["mix", 40.05],
+  ["classes", 28.40],
+  ["targets", 73.96],
+  ["add", 34.08],
+  ["invest", 57.36],
+  ["log", 56.28],
+  ["nb-drift", 16.93],
+  ["off", 75.24],
+  ["why", 15.69],
+  ["mc", 43.32],
+  ["mc-compare", 59.56],
+  ["nb-compare", 16.97],
+  ["ai", 22.22],
+  ["end", 7.53],
+]
+
+[ja]
+video = "sd8p2AofnSA"
+uploaded = 2026-11-10T21:00:31Z
+scenes = [
+  ["title", 17.59],
+  ["contents", 18.14],
+  ["strategy", 25.16],
+  ["mix", 51.65],
+  ["classes", 36.68],
+  ["targets", 73.96],
+  ["add", 36.86],
+  ["invest", 57.36],
+  ["log", 56.28],
+  ["nb-drift", 16.93],
+  ["off", 75.24],
+  ["why", 22.24],
+  ["mc", 43.32],
+  ["mc-compare", 62.69],
+  ["nb-compare", 18.57],
+  ["ai", 26.46],
+  ["end", 8.51],
+]

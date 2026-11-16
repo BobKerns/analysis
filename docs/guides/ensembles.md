@@ -19,6 +19,12 @@ explains seeds, per-row random streams, copulas and the statistics behind
 them first. Any unfamiliar word is in the
 [glossary](../user-guide.md#2-glossary).
 
+**Video.** *Ensembles* turns Alice and Bill's base scenario into an
+ensemble, shows its factors, runs it, reads the fan chart, and compares a
+what-if across the same futures:
+[English](https://www.youtube.com/watch?v=Q825lq05EvQ),
+[Japanese (日本語)](https://www.youtube.com/watch?v=ug5Mv7g9quM).
+
 ## Setting one up
 
 **1. Create the recipe**, derived from an existing scenario (usually your
@@ -107,7 +113,20 @@ command line: `sim calendar edit fund_vary`.
 You then see the row's fields, as in the review at the end of the guided
 mode. Type a field's name to change it, as often as you like, and press
 Enter to write. The row keeps its kind and its place in the file; to turn a
-row into a different kind, add a new one and delete the old.
+row into a different kind, add a new one and delete the old. Every row has a
+`name` field there, even one that doesn't vary, so a row written without a
+name can be given one.
+
+From a script, give the row and the changes as options, and it writes at once
+without asking anything; `""` clears a field:
+
+```sh
+sim calendar edit salary_bill --date 2032-12-31 --name bill_retires
+```
+
+The options are those of `sim calendar add`, with its arguments as options
+too (`--date`, `--amount`, `--series`, `--rate-percent`, ...). One the row's
+kind doesn't read is refused, and so is a ROW that matches more than one row.
 
 Two rows that agree on date, kind, rule, accounts, lots, series and amount
 are the same event to the simulator, so an edit that would make this row a
@@ -119,8 +138,10 @@ Editing it writes the whole edited row into this scenario's `calendar.csv`
 as an override; the parent keeps its own row. The override keeps the row's
 name (`sim calendar rename` renames it everywhere). A row with no name is
 matched to its override by its date, kind, rule, accounts, lots, series
-and amount, so changing one of those is refused: name the row in the scenario
-it comes from first.
+and amount, so changing one of those here would add a second event beside it.
+The edit offers to name the row in the scenario it comes from first; the
+override then matches it by that name. With options, it says the command
+that names it there instead.
 
 `sim calendar delete` picks a row the same way and deletes it once you
 confirm. A row that other rows correlate with is refused until they no
@@ -201,8 +222,9 @@ sim run inflation_1
 ```
 
 `sim run` detects the unresolved varying rows and generates+runs every
-member instead of a single run, under `state/runs/inflation_1/<timestamp>/
-member_NNNN.sqlite3`. Look at the result with `sim ensemble summary
+member instead of a single run, under `state/runs/inflation_1/monte-carlo/
+<timestamp>/member_NNNN.sqlite3` (a sensitivity batch, below, goes in
+`sensitivity/` beside `monte-carlo/`). Look at the result with `sim ensemble summary
 inflation_1` (a terminal table) or `notebooks/ensemble.ipynb` (the Monte
 Carlo "fan chart" — mean/median over quintile bands, shaded darker toward
 the middle fifth of members and lightest out at the 5th–95th percentile
@@ -232,6 +254,56 @@ random draws. At the member counts this guide recommends (tens), that bias
 is negligible next to the sampling noise you'd have anyway. See
 [ADR-006 §9](../architecture/ADR-006-ensemble-scenarios.md) if you want the
 full reasoning.
+
+### Events with an uncertain start (date markers)
+
+An event such as a recession, a market crash or an inflation episode is
+several rows: a rate change, a return, perhaps a transfer. What's uncertain
+is mostly *when* it happens, not its timing inside. A `date_marker` row
+names that date, and the event's rows are dated from it:
+
+```sh
+sim calendar add date-marker crash_start 2032-06 --scenario inflation_1 \
+  --vary-distribution uniform --vary-low 2028-01 --vary-high 2040-12
+sim calendar add set-rate --scenario inflation_1 -- crash_start stock -30
+sim calendar add set-rate crash_start+1y stock --resume crash_start \
+  --scenario inflation_1
+```
+
+(The `--` lets a negative rate through without reading it as an option.)
+
+The last row is the return. `--resume crash_start` puts `stock` back to
+whatever governed it the day before the crash, so the event needn't repeat
+the long-run numbers:
+
+- If a process was running (an `ar1` path from `t_market_ensemble`, say),
+  it resumes from the rate in effect, with its own level, persistence and
+  yearly shocks. A member with the crash and the same member without it
+  share every shock after it, so their paths come back together, and the
+  two scenarios compare member by member.
+- If a fixed rate was in effect (a series file, or a plain `set_rate`
+  row), that rate comes back at once.
+
+- A date is `NAME`, `NAME+Nm` or `NAME-Ny`: the marker's month moved by
+  whole months or years, at that month's end like any other date. A date
+  range can be relative too (`--vary-low crash_start+1y`).
+- Each member draws the marker once, and every row dated from it moves
+  with it, so the event keeps its shape. A row whose amount varies can
+  still move with the marker, so a row in effect varies both.
+- A marker drawn past the scenario's end drops every row dated on or after
+  it for that member, since rows dated after the end do nothing. A row
+  dated before the marker (`NAME-6m`) still runs if its own date falls
+  inside the scenario.
+- The marker is the parameter that sensitivity runs and the draws database
+  report. It can also be correlated with other rows, as below.
+- Changing when the event happens is a one-row edit of the marker; a
+  scenario that uses an episode as a mix-in overrides only the marker, by
+  name. `sim calendar rename` of a marker rewrites the dates that refer to
+  it, and `sim calendar delete` refuses to delete a marker that rows are still
+  dated from.
+
+[Historical calibration](historical-calibration.md#a-long-run-rate-with-episodes-on-top)
+works through an inflation episode built this way.
 
 ## Correlated parameters
 
@@ -304,6 +376,20 @@ For what ρ to use, [Historical calibration](historical-calibration.md)
 tabulates the correlations, medians and spreads of inflation categories and
 returns over the past century and in named episodes, and has a script to
 compute them for other series and years.
+
+To see a scenario's trees, `sim ensemble factors` lists each factor under
+its parent with the link's ρ, and how many varying rows hang from it;
+`--varying` adds those rows, each with the ρ the tree gives it to its
+factor and to the tree's root, and `--chart` draws the trees (with
+`--varying`, the rows too, as boxes on dotted links from their factors):
+
+```sh
+sim ensemble factors markets            # the factors, nested, with each ρ
+sim ensemble factors markets --varying  # and the rows under each factor
+sim ensemble factors markets --chart    # the trees, drawn
+sim ensemble factors markets --chart --varying  # and the rows on each factor
+sim ensemble factors markets --mermaid  # as a Mermaid flowchart, for a README
+```
 
 A factor nothing depends on yet loads without error, and `sim check` notes
 it with a `WARN:` line. That's fine for work in progress, or for a factor defined in a
@@ -408,9 +494,9 @@ choices you have for its structure, then shocks and persistence.
 ### The example recipe
 
 Every command in this section runs against the prototype data. Its root
-scenario, `base`, holds only generic defaults: an inflation series and a
-factor for each
-([The prototype's defaults](historical-calibration.md#the-prototypes-defaults)).
+scenario, `base`, holds only generic defaults, from the template scenarios:
+an inflation series and a factor for each
+([Template scenarios](historical-calibration.md#template-scenarios)).
 The household (accounts, salaries, expenses) is in `retire_alice`, which
 derives from `base`, so the recipe derives from `retire_alice` and inherits
 both; with your own data, derive from your main scenario. The recipe
@@ -726,7 +812,7 @@ rate series in the scenario's `series/` folder:
 
 The prototype's root scenario ships a default series for every class, and
 a factor for each to hang a varying row off
-([The prototype's defaults](historical-calibration.md#the-prototypes-defaults)).
+([Template scenarios](historical-calibration.md#template-scenarios)).
 
 A fund with its own `rate__<symbol>.csv`, or a lot with its own `series`,
 keeps using that. The blend applies only when every class the fund holds
@@ -809,8 +895,8 @@ sequential run; only the order of the progress lines changes. Divide the
 estimate above by roughly the number of cores in use.
 
 **A quick way to tell if you need more:** run the ensemble, look at
-`notebooks/ensemble.ipynb`'s fan chart, then rerun it with a bigger
-`--ensemble-size`. If the bands move noticeably, the first count wasn't
+`notebooks/ensemble.ipynb`'s fan chart, then rerun it with a bigger size
+(`sim ensemble edit NAME --size N`). If the bands move noticeably, the first count wasn't
 enough yet to settle down; if they barely change, you've already got
 enough members for what you're looking at. For a fast exploratory check
 where you mainly want "is this even in the right ballpark," the default of
@@ -818,7 +904,13 @@ where you mainly want "is this even in the right ballpark," the default of
 report a specific number (a percentile, a probability of running out of
 money by some date) rather than just eyeballing a chart.
 
-## Comparing two ensembles on risk
+A recipe with many varying rows (the templates' year-by-year paths
+alone vary every inflation series and market rate) can stay noisy well past
+400 members. Doubling to 800 would do; 1000 has the advantage that every
+member is a tenth of a percent, so "12 futures ran out" reads directly as
+1.2%.
+
+## Comparing ensembles on risk
 
 Comparing two recipes in `scenario_compare.ipynb` compares their member 0s,
 the central case. That's the right check that a recipe is set up as
@@ -835,17 +927,43 @@ sim ensemble compare retire_alice conservative --account Asset_Brokerage_Joint
 sim ensemble compare retire_alice conservative --account Asset_Brokerage_Joint --lot a
 ```
 
-Add `--graph` to either `sim ensemble summary` or `sim ensemble compare` to
-see the notebook's charts after the tables: the fan chart, or the
+Name more than one variant to set them all against the baseline at once,
+as the notebook's ensemble table does: one table of each variant's deltas
+and one of every recipe's tail means and reserve shares, each row one year
+and one recipe. A variant that doesn't pair with the baseline has a blank
+`P(ahead)`. Its `--chart` puts each variant's panels in a column of their
+own, side by side on a shared scale, for at most four variants:
+
+```sh
+sim ensemble compare retire_alice conservative aggressive --reserve 500000
+```
+
+Add `--chart` to either `sim ensemble summary` or `sim ensemble compare` to
+see the notebook's charts instead of the tables: the fan chart, or the
 comparison's panels described below. A terminal that shows images (iTerm2,
 kitty, Ghostty, WezTerm, VS Code's) draws them in place; any other gets a
-PNG file and its path. `--graph-file chart.svg` (or `.png`) writes the
-chart to a file instead.
+PNG file and its path. `--chart-file chart.svg` (or `.png`) writes the
+chart to a file instead. Add `--table` for both, the chart first.
+
+The notebook's other controls have options too. `--dollars nominal` shows
+inflated dollars instead of today's (both commands; CPI-constant is the
+default). `--start YEAR` and `--end YEAR` limit the years the tables and
+charts show; every figure is still worked out over the whole run, so the
+share of members ever below the reserve looks back to the start. `--log`
+puts the chart on a log scale, which spreads out the lower bands; a fan
+that reaches zero or below is drawn linear instead, with a warning, since
+a log scale can't show the members that ran out. On `compare`, whose
+deltas run both ways, `--log` uses a symmetric log scale.
 
 `--lot` narrows an account to one of its lots. In the notebook, a Lot
 dropdown appears under Account when the account has more than one, and
-the browser and the comparison share their scale, dollars, account and
-reserve controls, so a change in one redraws both.
+the widgets share their scale, dollars, account and reserve controls, so
+a change in one redraws them all. Each picks its own recipes: the
+head-to-head comparison a baseline and one recipe to compare it with,
+as charts, and the table below it, with the year-end numbers, a baseline and any number of recipes, each row
+one year and recipe. Both offer only recipes that pair with the
+baseline (see below). Picking the compared recipe as the baseline swaps
+the two.
 
 It reads in three parts.
 
@@ -856,6 +974,9 @@ raises the floor and gives up the top; lines spreading apart mean the
 variant widens the range of outcomes, lines closing in that it narrows
 it. The members at a breakpoint are different futures on each side, so
 this compares the two distributions, not what happens to any one future.
+They're in the table only, not charted: one percentile minus another
+subtracts two noisy numbers, so the noise grows relative to the change,
+where the CVaR deltas below average over a range of members and settle it.
 
 **Future by future.** When the two recipes share a seed, which a child
 inherits from its parent, member *i* of each drew the same value for
@@ -864,12 +985,13 @@ what the change did in that one future. The notebook draws a fan of those
 differences, and `P(ahead)` is the share of futures where the variant
 comes out ahead. A plan can lose in most futures and still be the safer
 one, if the futures it wins are the bad ones: compare the low end of the
-fan with the high end. Recipes with their own seeds don't pair, and the
-comparison says so. A row only the variant has is the change you're
+fan with the high end. Recipes with their own seeds don't pair:
+`sim ensemble compare` says so, and the notebook leaves them out. A row only the variant has is the change you're
 measuring, so it doesn't break the pairing.
 
 An account only one recipe has (one the variant opens, say) can't be
-compared; that recipe's own fan and tail table are shown instead.
+compared; that recipe's own fan (or, in the table, tail means) is
+shown instead.
 
 **Tail means.** `cvar05` and `cvar20` are the mean of the worst 5% and the
 worst 20% of members, and `Δcvar05`, `Δcvar20` the variant's change in
@@ -899,6 +1021,150 @@ With a few dozen members, the low percentiles and their differences are
 noisy. Rerun with more members rather than reading a small difference:
 about 80 is enough for a quick comparison, and 400 to confirm one.
 
+**Loading time.** `sim run` keeps each batch's member series in one file,
+`state/runs/<ensemble>/monte-carlo/<batch>/series.sqlite3`, so the notebook and
+`sim ensemble summary|compare` read a recipe in about a second however
+many members it has. A batch run before that file existed (or after the
+code that reads it changed) gets it built by the background builder, if
+you use it, or else the first time it's read: the notebook shows a
+progress bar, `sim ensemble` says it's building it, and reads after that
+are quick. Nothing needs rerunning.
+
+## Pooling several kinds of trouble
+
+Each episode template (`t_great_inflation`, `t_financial_crisis`,
+`t_pandemic_spike`, and `t_crisis_then_spike`, which has two) makes its
+own ensemble, so you can see what that kind of trouble does. A **pool** answers the next question: across all
+those worlds, each as likely as you think it is, how bad are the bad
+futures? It takes some members from each ensemble, in proportion to its
+weight, and reports them as one ensemble. Nothing is simulated again.
+
+```sh
+sim ensemble create e0 retire_alice t_inflation_ensemble t_market_ensemble
+sim ensemble create e_great_inflation e0 t_great_inflation
+sim ensemble create e_financial_crisis e0 t_financial_crisis
+sim ensemble create e_pandemic_spike e0 t_pandemic_spike
+sim ensemble create e_crisis_then_spike e0 t_crisis_then_spike
+sim ensemble pool create trouble e_great_inflation=15% e_financial_crisis=20% \
+    e_crisis_then_spike=10% e_pandemic_spike=55%
+sim run trouble                  # runs any component that is out of date, then builds the pool
+sim ensemble summary trouble
+sim ensemble compare e0 trouble  # pairs future by future with e0
+```
+
+Leave the weights off for equal shares. `sim ensemble pool edit trouble`
+changes the components, weights, size, the reserve, or which component's
+member 0 is the pool's base case (the first, unless `--base` names
+another); with no options it asks for each in turn. A new run with other
+weights takes seconds, since the members are already on disk, so try a
+few. `sim run trouble --rebuild` reruns every component as well.
+
+**How it picks members.** Pool member 7 is member 7 of one component:
+the same file, linked, not copied. The components share `e0`'s seed, so
+member 7 of each drew the same market, lifespans and yearly shocks; only
+the episode differs. Taking member 7 from every component would count
+that one future once per component, and the pool would look surer than it is.
+Taking each index once keeps every future distinct, and keeps the pool
+paired with `e0`: `sim ensemble compare e0 trouble` shows what the
+trouble did in each future, and `P(ahead)`. The price is that every
+component needs at least as many members as the pool. Compared with one
+of its own components, the members that came from it are the same file
+on both sides, so they differ by exactly 0 and don't count as ahead.
+
+**The weights matter most.** A weight is the chance of that world, given
+that you're in one of the pool's. The pooled tail is not the average of
+the components' tails, since the worst futures of the worst world all
+land in it. Counting onsets since 1914 (the episode tables are in
+`historical-calibration.md`):
+
+| Kind | Episodes | Per century |
+| --- | --- | --: |
+| Short price spike (2 to 4 years) | 1916–1919, 1941–1942, 1946–1947, 1950–1951, 2021–2022 | about 4.5 |
+| Crisis, then years of near-zero rates | 1929 to the 1940s, 2008–2015 | about 1.8 |
+| Great Inflation-style run | 1966–1982 | about 0.9 |
+
+By count that's roughly 60% spike, 25% crisis and 15% Great Inflation,
+the suggested weights for a pool of the three. Two caveats: four of the
+five spikes were wartime, so a peacetime century may see fewer; and a
+single Great Inflation in a century fits a rate anywhere from about once
+in 4,000 years to five times a century (a 95% range), so its 15% is the
+least certain weight. Try it at 5% and 30% too. The pool itself defaults
+to equal shares; these are only a suggestion.
+
+**With the compound component.** Every `t_crisis_then_spike` member has
+both a crisis and a spike, so to keep each kind's share of the episodes
+at its count, its share comes out of both: 15% Great Inflation, 20%
+crisis, 10% crisis then spike and 55% spike, as in the example above.
+That's 30% of members with a crisis, 65% with a spike and 15% with a
+Great Inflation: of the 110 episodes per 100 members, 27%, 59% and 14%.
+The compound is a third of the crisis worlds. If spikes came at random,
+about 4.5 a century, one would start in the 9 years from 1 to 10 years
+after a crisis's near-zero rates end about 33% of the time
+(1 − e^(−0.045 × 9)). The record is 1 of 2: 2021 came six years after
+2008's low rates ended in 2015, while 1941's spike came during the
+1930s' low rates, a pattern the template leaves out.
+
+**What they did on the prototype.** `retire_alice` run to 2060, 240
+members, CPI-constant net worth at the end of 2060:
+
+| Weights | Components | median | `cvar05` | worst 5% (12) from |
+| --- | --- | --: | --: | --- |
+| equal | inflation / crisis / spike | $1,387k | $286k | 10 inflation, 2 spike |
+| 15% / 30% / 55% | inflation / crisis / spike | $1,322k | $434k | 8 spike, 4 inflation |
+| 15% / 25% / 60% | inflation / crisis / spike | $1,276k | $415k | 8 spike, 4 inflation |
+| 15% / 20% / 10% / 55% | inflation / crisis / both / spike | $1,303k | $427k | 8 spike, 4 inflation |
+
+At equal weights the Great Inflation component supplies nearly all the
+tail. At history's weights the spike does, by sheer numbers, though each
+Great Inflation member is far worse (that component's own `cvar05` is
+$50k, the spike's $533k). Moving five points between crisis and spike
+moves `cvar05` by about $20k, within the noise of a 12-member tail.
+Trying other weights takes seconds, so check them on your own data.
+
+**Two probabilities, not one.** Each episode's start is spread over
+decades, so some members of each component see no episode before the
+run ends (about 12% of them on the prototype, ending in 2060). A
+member's chance of its episode is its component's weight times that.
+For `t_crisis_then_spike`, whose spike comes years after its crisis, a
+2060 end cuts off the spike in 43% of members (104 of 240) and both
+episodes in 9%. That's the scenario's window selecting the futures it
+can show, not a wrong weight: a later end shows more of them, and
+overriding `financial_crisis_start` places them in the span you're
+asking about.
+
+**Two episodes in one lifetime.** A component built on one episode
+template gives its members one kind of trouble each, but history often
+has two or more in 30 years (1929–1958 held a crisis and three spikes).
+A component built on two templates, the second dated from the first,
+adds such a world: `t_crisis_then_spike`, a crisis and then a price
+spike, so in the example pool above 10% of members meet two, where the
+run is long enough to show both.
+
+On the prototype, a spike after a crisis costs a little less than a
+spike alone. Member by member against `e_financial_crisis` (the same
+crisis dates), the 136 members whose spike starts by 2060 end a median
+of $55k lower (mean $72k, 65% of them worse); a spike alone costs $114k
+(mean $151k) against `e0`. The
+crisis on its own leaves this household ahead of `e0`, since its
+recovery more than repays the crash for a household that doesn't sell,
+so a crisis then a spike still ends near `e0`, not below it. A deeper
+second episode would need a crisis that doesn't recover so fast, as
+1929's didn't.
+
+**Reading the summary.** Under its header the summary lists the
+pool's members by component, and which components the worst 5% came
+from, ranked by each member's lowest point over the run in today's
+dollars, the worst moment of a lifetime rather than the end. The pooled
+tail means rest on those few members: if one component supplies only a
+handful, run more members.
+
+A pool's draws are checked per component (`sim ensemble draws trouble`,
+and the Component dropdown in `sensitivity.ipynb`'s Draws section), and
+sensitivity runs on the components, not the pool. Pooling different
+*plans* answers "what's my risk if I don't know which plan I'll follow",
+and only when the choice doesn't depend on how the future goes; to
+choose between plans, compare them.
+
 ## Which varying rows matter, and when? (sensitivity)
 
 Before you run a big Monte Carlo, it's worth asking which of your
@@ -910,6 +1176,13 @@ run answers that cheaply, using the same recipe and the same varying rows
 sim run inflation_1 --sensitivity
 sim ensemble sensitivity inflation_1
 ```
+
+You can usually skip the `sim run`: the background builder (`sim builder`)
+makes an ensemble's sensitivity batch once its Monte Carlo batch is done,
+and `sim ensemble sensitivity` waits for it, or runs one itself when there
+is none and the builder isn't running. The builder makes it again whenever
+the ensemble's data or the code changes, with the quantiles of the last
+one, so a ladder you ran with `--quantiles` keeps its rungs.
 
 `--sensitivity` runs one base member (every varying row at its central
 value, the same as an ensemble's member 0) plus one member per row per
@@ -940,6 +1213,16 @@ Useful options:
   nominal` switches from today's (CPI-constant) dollars.
 - `--measure min_net_worth` looks at the lowest net worth up to each year
   ("how close do I get to running out") instead of net worth at year-end.
+- `--row NAME` shows one row on its own: its change in every year (or
+  `--years`), one column per quantile it was moved to. TAB completes the
+  rows the batch varied.
+- `--chart` draws the notebook's charts instead of the tables (`--table`
+  for both, `--chart-file` to write a .png or .svg): the share heatmap and
+  the tornado at the last reporting year; with `--row`, its change over time
+  and, for a quantile ladder, its response curve; with `--attribute`, where
+  its change comes from. On a Monte Carlo batch it draws R² by year and each
+  row's correlation with its interval. Pick the year with `--years`: the
+  charts use the last one.
 - `--attribute NAME` breaks one row's effect down exactly: by income/expense
   category (the default, e.g. salary vs. taxes vs. growth), by individual
   income/expense account (`--by flow_account`), or by where the money ends up
@@ -1009,9 +1292,9 @@ other rows held fixed, using its own confidence interval. That interval
 narrows as R² rises, so there's no fixed member count to warn about: read
 the intervals and statuses instead. It also shows:
 
-- **prcc**, the partial rank correlation, as another view of the same
-  "holding the others fixed" effect. It grows with R², so it isn't used for
-  pinning.
+- **prcc**, the partial rank correlation, with its interval, as another
+  view of the same "holding the others fixed" effect. It grows with R², so
+  it isn't used for pinning.
 - A line for each **latent factor**, labeled "(factor)": the correlation of
   the factor with the outcome, which is how much its whole family matters.
   A factor never gets a status, since you can't pin one.
@@ -1025,11 +1308,16 @@ Rows correlated very strongly are hard to tell apart, so they often come
 out inconclusive. If that happens, pin them together, or sweep their factor
 one at a time (above) to see what the family does.
 
+In `sensitivity.ipynb`, the **Measure** toggle beside the year slider
+switches the chart between rho, srrc and prcc, each with its interval. It
+opens on what the batch is ranked by; the status table below the chart
+always stays with that.
+
 ## Checking the draws themselves
 
 Every batch keeps what it drew, and what each draw depends on, in one
 SQLite file beside its member run files:
-`state/runs/<ensemble>/<batch>/draws.sqlite3`. Use it to check the
+`state/runs/<ensemble>/<mode>/<batch>/draws.sqlite3`. Use it to check the
 statistical setup before trusting a fan chart: do the members follow the
 distributions you wrote, and do correlated rows move together as much as
 you specified?
@@ -1037,8 +1325,19 @@ you specified?
 ```sh
 sim ensemble draws my_recipe                 # the check, per row and factor
 sim ensemble draws my_recipe --node growth   # one row's draw in each member
+sim ensemble draws my_recipe --pair core_inflation,fuel_factor  # one pair's scores
 sim ensemble draws my_recipe --csv draws.csv # member x row, for a spreadsheet
 ```
+
+It reads the ensemble's latest Monte Carlo batch, even when a sensitivity
+batch is newer: a sensitivity batch's few members each move one row, so
+their draws say little about distributions or correlations. `--mode
+sensitivity` reads the latest sensitivity batch instead, and `--batch`
+names one batch by its timestamp. An ensemble that hasn't been run yet is
+run first. `--chart` won't draw a sensitivity batch, since its charts would
+show only the few percentiles it chose; its tables still list what each
+member drew. On a large ensemble the pair chart's dots are smaller and
+translucent, so the cloud's shape shows through where they overlap.
 
 The check sets each row's median and SD beside the drawn members' (member
 0, the base case, is left out), with a **KS p(u)** column. Each draw records
@@ -1049,10 +1348,17 @@ p-value under 0.05 turns up now and then by chance, about one row in
 twenty. Correlated pairs follow, with the correlation each achieved, as in
 the Monte Carlo report above.
 
+`--chart` draws what `--node` or `--pair` lists, as the notebook does (or
+`--chart-file growth.png` writes it; add `--table` for the table too). A
+node's chart is a histogram of its drawn values, with the distribution's
+median and 5th and 95th percentiles marked, beside a histogram of its
+**u**, which should come out flat. A pair's is a scatter of the two rows'
+scores, titled with the correlation asked for and the one achieved.
+
 The file holds more than the command prints: every row's parameters, each
 tree node's own random noise before its tree mixes it in, its score, each
 future's turbulence scale under a t copula, and each year's shock on a
 process path. Values are stored as the simulator stores them (cents,
 micros, day numbers); the views ending in `_display` show dollars, percent
 and dates. Any SQLite tool opens it, and `sensitivity.ipynb`'s Draws section
-charts one row's draws and one pair's scores.
+charts one row's draws and one pair's scores, as `--chart` does.

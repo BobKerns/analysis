@@ -21,11 +21,15 @@ from pathlib import Path
 import pandas as pd
 
 from analysis.sim import registries, units
+from analysis.sim.asset_classes import is_lot_key
 from analysis.sim.prices import price_files
 from analysis.sim.dates import month_end_iso
 from analysis.sim.loader import _validate_allocations, _validate_securities
 
-__all__ = ["SymbolAdded", "add_symbol", "parse_weights", "symbol_table"]
+__all__ = [
+    "SymbolAdded", "add_symbol", "has_weights", "latest_set", "normalize_symbol", "parse_weights",
+    "security_name", "symbol_table",
+]
 
 SECURITIES = "securities.csv"
 ALLOCATIONS = "allocations.csv"
@@ -90,6 +94,28 @@ def _latest_weights(rows: list[dict[str, str]]) -> dict[str, tuple[str, list[tup
     return latest
 
 
+def latest_set(data_dir: Path, symbol: str) -> tuple[str, list[tuple[str, str]]] | None:
+    """``symbol``'s latest set of weights in ``allocations.csv`` as
+    ``(as_of, [(asset_class, weight)])``, or None when it has none."""
+    rows = [r for r in _read(data_dir / ALLOCATIONS)[1] if r.get("symbol") == symbol]
+    found = _latest_weights(rows).get(symbol)
+    return (found[0], found[1]) if found else None
+
+
+def has_weights(data_dir: Path, symbol: str, as_of: str) -> bool:
+    """Whether ``allocations.csv`` already has a set for ``symbol`` as of ``as_of``."""
+    key = _month_key(as_of)
+    return any(
+        r.get("symbol") == symbol and _month_key(r.get("as_of", "")) == key
+        for r in _read(data_dir / ALLOCATIONS)[1]
+    )
+
+
+def security_name(data_dir: Path, symbol: str) -> str | None:
+    """``symbol``'s name in ``securities.csv``, or None when it isn't there."""
+    return next((r.get("name", "") for r in _read(data_dir / SECURITIES)[1] if r.get("symbol") == symbol), None)
+
+
 def _scenario_prices(scenarios_dir: Path) -> dict[str, list[str]]:
     """Symbol to the scenarios with their own ``prices/`` file for it, which
     replaces the shared one for that scenario and its children."""
@@ -107,7 +133,9 @@ def symbol_table(data_dir: Path) -> pd.DataFrame:
     ``prices``, ``latest_price``, ``latest_date`` (the shared ``prices/`` file),
     ``scenario_prices`` (the scenarios with their own), ``held_by``."""
     names = {row["symbol"]: row.get("name", "") for row in _read(data_dir / SECURITIES)[1] if row.get("symbol")}
-    weights = _latest_weights([r for r in _read(data_dir / ALLOCATIONS)[1] if r.get("symbol")])
+    weights = _latest_weights([  # account:lot keys class a lot, not a symbol (#326)
+        r for r in _read(data_dir / ALLOCATIONS)[1] if r.get("symbol") and not is_lot_key(r["symbol"])
+    ])
     prices = price_files(data_dir / "prices")
     holders = _holders(data_dir / "scenarios")
     overrides = _scenario_prices(data_dir / "scenarios")
@@ -149,13 +177,27 @@ def parse_weights(specs: list[str]) -> dict[str, str]:
             raise ValueError(f"weight {spec!r} must be CLASS=PERCENT, e.g. stock_us=60%")
         if asset_class not in registries.ASSET_CLASSES:
             raise ValueError(
-                f"unknown asset class {asset_class!r}; allowed: {', '.join(registries.ASSET_CLASSES)}"
+                f"unknown asset class {asset_class!r}; allowed: {registries.asset_class_list()}"
             )
         if asset_class in weights:
             raise ValueError(f"asset class {asset_class} is given twice")
         micros = units.percent_to_micros(percent, require_sign=False)
         weights[asset_class] = units.micros_to_percent(micros)
     return weights
+
+
+def normalize_symbol(symbol: str) -> str:
+    """``symbol`` as written to the files: upper case, like the tickers it
+    names (an ``<account>:<lot>`` key keeps its case). Raises ``ValueError`` for one that can't be part of a filename,
+    as ``prices/security_price__<SYMBOL>.csv`` and ``research/<SYMBOL>/`` are."""
+    symbol = symbol.strip()
+    # An <account>:<lot> key classes a lot with no symbol and must match the
+    # names as written, so only a ticker is upper-cased.
+    if not is_lot_key(symbol):
+        symbol = symbol.upper()
+    if not symbol or any(ch.isspace() for ch in symbol) or "/" in symbol or "\\" in symbol or symbol in (".", ".."):
+        raise ValueError(f"symbol {symbol!r} must be one word, with no spaces or '/'")
+    return symbol
 
 
 @dataclass
@@ -195,16 +237,15 @@ def _appended(
 def add_symbol(
     data_dir: Path, symbol: str, *, name: str | None = None,
     weights: Mapping[str, str] | None = None, as_of: str | None = None,
+    replace: bool = False,
 ) -> SymbolAdded:
     """Name ``symbol`` in ``securities.csv`` and give it one set of weights in
     ``allocations.csv``. Either may be left out; neither file is touched for
     what isn't given. Raises ``ValueError``, writing nothing, when a row would
     not load (a duplicate name, a set that doesn't add up to 100%, a second set
-    for the same ``as_of``)."""
-    symbol = symbol.strip().upper()
-    if not symbol or any(ch.isspace() for ch in symbol) or "/" in symbol:
-        # It becomes part of a filename, prices/security_price__<SYMBOL>.csv.
-        raise ValueError(f"symbol {symbol!r} must be one word, with no spaces or '/'")
+    for the same ``as_of``). With ``replace``, a set already written for the
+    same ``as_of`` is replaced instead of refused."""
+    symbol = normalize_symbol(symbol)
     if as_of and not weights:
         raise ValueError("--as-of dates a set of weights; give the weights too")
     writes: list[tuple[Path, list[str], list[dict[str, str]]]] = []
@@ -231,9 +272,19 @@ def add_symbol(
                 raise ValueError(f"--as-of {as_of!r} is not a YYYY-MM month") from None
         new = [{"symbol": symbol, "as_of": when, "asset_class": cls, "weight": w} for cls, w in weights.items()]
         header, old, rows = _appended(path, _ALLOCATION_COLUMNS, new)
-        if any(r.get("symbol") == symbol and _month_key(r.get("as_of", "")) == _month_key(when) for r in old):
-            dated = f" as of {when}" if when else " with a blank as_of"
-            raise ValueError(f"{symbol} already has weights{dated} in {ALLOCATIONS}; edit that file to change them")
+
+        def same_set(r: dict[str, str]) -> bool:
+            return r.get("symbol") == symbol and _month_key(r.get("as_of", "")) == _month_key(when)
+
+        if any(same_set(r) for r in old):
+            if not replace:
+                dated = f" as of {when}" if when else " with a blank as_of"
+                raise ValueError(f"{symbol} already has weights{dated} in {ALLOCATIONS}; edit that file to change them")
+            # In place of the old set, so the file's diff reads as an edit.
+            at = next(i for i, r in enumerate(old) if same_set(r))
+            kept = [r for r in old if not same_set(r)]
+            before = sum(1 for r in old[:at] if not same_set(r))
+            rows = kept[:before] + new + kept[before:]
         issues = []
         # The loader's checks read as_of in its stored month-end form.
         _validate_allocations(

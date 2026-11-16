@@ -1,0 +1,4 @@
+schema_version: "1.1"
+name: money-snsxx-neutral
+expected_outcome: |
+  Money market tear sheet on SNSXX, a Treasury-only fund: dated 7-day SEC yield vs T-bills and rivals, holdings mix (Treasury bills and Treasury repo), WAM/WAL,  NAV not guaranteed, state-tax treatment of US government income, alternatives, overview and glossary only (no translated overview), and state tax described as depending on the reader's state.

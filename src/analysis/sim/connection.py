@@ -21,19 +21,28 @@ import threading
 import warnings
 from collections.abc import Generator, Iterable
 from contextlib import contextmanager
+from datetime import date
+from datetime import date as _Date  # a RunConnection has its own `date`
 from pathlib import Path
-from typing import Any, Literal, overload
+from typing import TYPE_CHECKING, Any, Literal, overload
 
 import pandas as pd
 import traitlets
 
 from analysis.frames import index_years
 from analysis.sim import accounts
-from analysis.sim.types import INCOME_CATEGORIES, AccountKindAny, DollarMode, ItemType
+from analysis.sim.lineage import lineage_fingerprint
+from analysis.sim.types import INCOME_CATEGORIES, AccountKindAny, Death, DollarMode, ItemType
 
 from . import registries
 from .loader import latest_run_path, load_scenario, resolve_scenario_name
 from .schema import connect_sim_file
+
+if TYPE_CHECKING:
+    from analysis.sim.lifespan_curves import PersonLifespan
+    from analysis.sim.load_warnings import LoadWarnings
+    from analysis.sim.shortfalls import NegativeBalance
+    from analysis.sim.step_ups import BasisStepUp
 
 # Category-bucketing defaults for RunConnection's derived-data methods below.
 # Notebooks may pass their own mapping/set to override any of these.
@@ -51,42 +60,59 @@ EXPENSE_SUBKIND_TO_CATEGORY: dict[str, str] = {
     "healthcare": "healthcare",
     "taxes_federal": "taxes",
     "taxes_state": "taxes",
+    "taxes_local": "taxes",
     "living": "living",
     "food": "living",
     "business": "business",
+    "gift": "gifts",
 }
-EXPENSE_CATEGORIES = ["housing", "healthcare", "taxes", "living", "business", "other"]
+EXPENSE_CATEGORIES = ["housing", "healthcare", "taxes", "living", "business", "gifts", "other"]
 # depreciation is a book entry, not spending -- see ADR-002 gains/losses.
 NON_CASH_EXPENSE_ACCOUNTS = {"depreciation"}
 
 LIQUID_SUBKINDS = registries.CASH_SUBKINDS
 # ss_benefit is handled separately
-TAXABLE_GAIN_CHARS = {"ordinary", "ltcg", "stcg", "tax_deferred_out", "roth_nonqualified"}
+TAXABLE_GAIN_CHARS = {
+    "ordinary", "ltcg", "stcg", "tax_deferred_out", "roth_nonqualified", registries.QUALIFIED_DIVIDEND,
+}
+# A taxable lot's reinvested dividends and interest (#468): realized, since
+# they're taxed the year they're paid, though they never reach cash.
+PAYOUT_ACCOUNT_NAMES = frozenset(a.name for a in registries.PAYOUT_ACCOUNTS.values())
+GROWTH_ACCOUNT_NAMES = frozenset(
+    a.name for a in registries.GROWTH_COUNTERPARTY_ACCOUNTS.values() if a.kind == "income")
+# Municipal bond interest (#265) is in neither bucket: federally exempt,
+# but taxed by the state unless the bonds are its own.
 NONTAXABLE_GAIN_CHARS = {"tax_free", "excluded_gain"}
 GAIN_CATEGORIES = ["taxable", "non-taxable", "unrealized"]
 
-DEFAULT_SETTLE_TAX_BUCKETS = ["federal_tax_due", "state_tax_due"]
+# A local tax (#508) is its own jurisdiction, no longer inside the state's.
+DEFAULT_SETTLE_TAX_BUCKETS = ["federal_tax_due", "state_tax_due", "local_tax_due"]
 DEFAULT_TAX_SUMMARY_BUCKETS: dict[str, str] = {
-    "federal_tax_liability": "federal tax",
-    "state_tax_liability": "state tax",
-    "federal_ss_income": "SS gross",
-    "federal_taxable_ss": "SS taxed",
+    "federal_tax": "federal tax",
+    "state_tax": "state tax",
+    "local_tax": "local tax",
+    "federal_ss_benefits": "SS gross",
+    "federal_ss_taxable": "SS taxed",
 }
 _TAX_RECONCILIATION_BUCKETS = [
-    "federal_tax_liability", "state_tax_liability",
-    "federal_tax_paid", "state_tax_paid",
-    "federal_tax_due", "state_tax_due",
-    "federal_tax_overpaid", "state_tax_overpaid",
+    "federal_tax", "state_tax", "local_tax",
+    "federal_tax_paid", "state_tax_paid", "local_tax_paid",
+    "federal_tax_due", "state_tax_due", "local_tax_due",
+    "federal_tax_overpaid", "state_tax_overpaid", "local_tax_overpaid",
 ]
 _TAX_RECONCILIATION_RENAME = {
-    "federal_tax_liability": "federal_liability",
-    "state_tax_liability": "state_liability",
+    "federal_tax": "federal_liability",
+    "state_tax": "state_liability",
     "federal_tax_paid": "federal_withheld_or_paid",
     "state_tax_paid": "state_withheld_or_paid",
     "federal_tax_due": "federal_reconciliation_due",
     "state_tax_due": "state_reconciliation_due",
     "federal_tax_overpaid": "federal_estimated_refund",
     "state_tax_overpaid": "state_estimated_refund",
+    "local_tax": "local_liability",
+    "local_tax_paid": "local_withheld_or_paid",
+    "local_tax_due": "local_reconciliation_due",
+    "local_tax_overpaid": "local_estimated_refund",
 }
 
 
@@ -120,6 +146,24 @@ def _cpi_factor(index: pd.Series, at: pd.Index):
         return pd.Series(float("nan"), index=at)
     lookup = pd.Series(at).clip(index.index.min(), index.index.max())
     return pd.Series(1_000_000 / index.reindex(lookup).to_numpy(), index=at)
+
+
+def to_cpi_constant(monthly: pd.DataFrame | pd.Series, cpi_index: pd.Series):
+    """``monthly`` dollars in CPI-constant dollars by ``cpi_index`` (a run's
+    month-indexed cumulative index, micros). ``RunConnection`` converts with
+    this, and so does an ensemble's series store (#298), which keeps each
+    member's index rather than its run file open."""
+    return monthly.mul(_cpi_factor(cpi_index, monthly.index), axis=0)
+
+
+def account_balance_cpi(balance: pd.Series, kind: str | None, cpi_index: pd.Series) -> pd.Series:
+    """One account's nominal balance in CPI-constant dollars: an income or
+    expense account's balance is a running total of flows, so each month's
+    flow is converted before they're summed again (see
+    ``RunConnection.cpi_balance_pivot``)."""
+    if kind not in accounts.CASHFLOW_KINDS:
+        return to_cpi_constant(balance, cpi_index)
+    return to_cpi_constant(balance.diff().fillna(balance), cpi_index).cumsum()
 
 
 def yearly_totals(monthly: pd.DataFrame) -> pd.DataFrame:
@@ -203,6 +247,7 @@ _ITEM_SQL: dict[str, str] = {
         "ORDER BY symbol, as_of, asset_class"
     ),
     "person_lifespan": "SELECT * FROM person_lifespan ORDER BY person",
+    "residence": "SELECT * FROM residence ORDER BY effective_date",
     "chain": (
         "SELECT c.*, a.name AS account_name, a.kind AS account_kind, m.lot AS lot "
         "FROM chain c "
@@ -236,7 +281,7 @@ _ITEM_SQL: dict[str, str] = {
         "       fa.subkind AS from_subkind, fm.lot AS from_lot, "
         "       ta.name AS to_name, ta.kind AS to_kind, "
         "       ta.subkind AS to_subkind, tm.lot AS to_lot, "
-        "       rule.name AS rule_name "
+        "       COALESCE(rule.name, tax.name) AS rule_name "
         "FROM transfer_event te "
         "JOIN simulation_step s ON s.id = te.step_id "
         "JOIN account fa ON fa.id = te.from_account "
@@ -245,6 +290,8 @@ _ITEM_SQL: dict[str, str] = {
         "JOIN account_lot tm ON tm.id = te.to_lot_id "
         "LEFT JOIN scheduled_transaction rule "
         "  ON te.reason_kind = 'rule' AND rule.id = te.reason_id "
+        "LEFT JOIN tax_jurisdiction tax "
+        "  ON te.reason_kind = 'tax' AND tax.id = te.reason_id "
         "ORDER BY te.id"
     ),
     "simulation_run": "SELECT * FROM simulation_run",
@@ -269,6 +316,21 @@ _ITEM_SQL: dict[str, str] = {
         "JOIN account_lot m ON m.id = cl.lot_id "
         "JOIN account a ON a.id = m.account_id "
         "ORDER BY cl.id"
+    ),
+    "hsa_gain": (
+        "SELECT g.*, s.month, a.name AS account, m.lot "
+        "FROM hsa_gain g "
+        "JOIN simulation_step s ON s.id = g.step_id "
+        "JOIN account_lot m ON m.id = g.lot_id "
+        "JOIN account a ON a.id = m.account_id "
+        "ORDER BY g.id"
+    ),
+    "basis_step_up": (
+        "SELECT b.*, a.name AS account, m.lot "
+        "FROM basis_step_up b "
+        "JOIN account_lot m ON m.id = b.lot_id "
+        "JOIN account a ON a.id = m.account_id "
+        "ORDER BY b.id"
     ),
     "account_balance": (
         "SELECT s.month, a.id AS account_id, a.name AS account, "
@@ -311,12 +373,13 @@ class _TagReader:
     """Read API against ``self._con``. Per-item-type DataFrames are cached.
 
     ``self._con`` is opened on one thread (typically the notebook kernel's main
-    thread) and SQLite connections are bound to it. A notebook front end has, on
-    rare, unreproduced occasions, reached a widget's query from a different
-    thread; ``_read_sql`` notices sqlite3's thread-mismatch error and falls back
-    to a temporary read-only connection opened on the calling thread instead of
-    raising, since every query here is read-only. It warns when this happens, so
-    a recurrence leaves a trace to diagnose from.
+    thread) and SQLite connections are bound to it. A widget's query can come
+    from another thread: JupyterLab sends widget messages to an ipykernel
+    subshell (#375), whose thread is named ``subshell-<id>``. ``_read_sql``
+    notices sqlite3's thread-mismatch error and falls back to a temporary
+    read-only connection opened on the calling thread instead of raising, since
+    every query here is read-only. It warns when the thread isn't a subshell,
+    so an unexplained case still leaves a trace to diagnose from.
     """
 
     _con: sqlite3.Connection
@@ -346,12 +409,13 @@ class _TagReader:
             # self.label is avoided here: on some subclasses it runs its own query
             # (e.g. RunConnection reads its metadata for its finish date), which would
             # hit this same cross-thread error and recurse back into this handler.
-            warnings.warn(
-                f"{type(self).__name__} {self._db_path}: query reached from thread "
-                f"{threading.current_thread().name!r}, not the thread that opened "
-                "the connection; using a temporary read-only connection",
-                RuntimeWarning, stacklevel=2,
-            )
+            if not threading.current_thread().name.startswith("subshell-"):
+                warnings.warn(
+                    f"{type(self).__name__} {self._db_path}: query reached from thread "
+                    f"{threading.current_thread().name!r}, not the thread that opened "
+                    "the connection; using a temporary read-only connection",
+                    RuntimeWarning, stacklevel=2,
+                )
             temp = connect_sim_file(f"file:{self._db_path}?mode=ro", uri=True)
             try:
                 return pd.read_sql_query(sql, temp, params=list(params))
@@ -360,6 +424,30 @@ class _TagReader:
 
     def _ensure_fresh(self) -> None:
         """Hook for subclasses; default no-op (run files don't mutate)."""
+
+    def load_warnings(self) -> LoadWarnings:
+        """The warnings the load recorded in this intent or run file (#432),
+        as ``sim explain`` lists them: see ``load_warnings.read``."""
+        from analysis.sim import load_warnings
+
+        self._ensure_fresh()
+        # Its own read-only connection, opened on the calling thread: a
+        # widget redraw can come from a kernel subshell (see _read_sql).
+        return self._cached("load_warnings", lambda: load_warnings.read_file(self._db_path))
+
+    def lot_growth_series(self) -> dict[tuple[str, str], str]:
+        """Each lot's growth series, by (account, lot): the series its
+        generated growth rule reads (ADR-005 §5). A lot growing at a blend,
+        or not at all, is absent."""
+        from .asset_classes import GROWTH_SERIES_SQL
+
+        self._ensure_fresh()
+        frame = self._read_sql(
+            "SELECT a.name AS account, m.lot, g.series FROM (" + GROWTH_SERIES_SQL + ") g "
+            "JOIN account_lot m ON m.id = g.lot_id JOIN account a ON a.id = m.account_id"
+        )
+        return {(account, lot): series
+                for account, lot, series in zip(frame["account"], frame["lot"], frame["series"], strict=True)}
 
     def list_tags(self, role: str | None = None) -> pd.DataFrame:
         """Return distinct tags with per-item-type usage counts."""
@@ -543,6 +631,46 @@ class Connection(_TagReader):
 
 # ---------- run (read-only) ----------
 
+class HandleBudget:
+    """Caps how many of a group of ``RunConnection``s hold an open SQLite
+    handle at once, closing the least recently used one to open another.
+
+    An ensemble's members are read side by side (``ensemble.load_ensemble``),
+    and a batch can have thousands of them: one handle each runs out of file
+    descriptors (macOS allows 256 by default), which SQLite reports as
+    "unable to open database file" (#448).
+    """
+
+    DEFAULT_LIMIT = 64
+
+    def __init__(self, limit: int | None = None) -> None:
+        limit = self.DEFAULT_LIMIT if limit is None else limit
+        if limit < 1:
+            raise ValueError(f"limit must be at least 1, not {limit}")
+        self.limit = limit
+        self._open: dict[int, RunConnection] = {}  # insertion order = recency
+        self._lock = threading.Lock()
+
+    def touch(self, rc: RunConnection) -> None:
+        """Count ``rc``'s handle as open and just used, closing the least
+        recently used others' handles while more than ``limit`` are counted.
+        Called before ``rc`` opens one, so the limit holds at every moment."""
+        with self._lock:
+            self._open.pop(id(rc), None)
+            self._open[id(rc)] = rc
+            while len(self._open) > self.limit:
+                oldest = next(iter(self._open))
+                self._open.pop(oldest)._release()
+
+    def forget(self, rc: RunConnection) -> None:
+        with self._lock:
+            self._open.pop(id(rc), None)
+
+    @property
+    def open_count(self) -> int:
+        return len(self._open)
+
+
 class RunConnection(Connection):
     """Read-only access to a finalized run snapshot DB.
 
@@ -556,7 +684,6 @@ class RunConnection(Connection):
     def name(self) -> str:
         return self.metadata().scenario_name[0]
     run_path: Path
-    _con: sqlite3.Connection
     @property
     def date(self) -> pd.Timestamp:
         return pd.to_datetime(self.metadata().finished_at)[0]
@@ -566,6 +693,9 @@ class RunConnection(Connection):
         return f"{self.name}@{self.date.strftime('%Y-%m-%d %H:%M')}"
 
     _scenario: ScenarioConnection | None
+    # What CPI-constant dollars deflate by, over the run's own index (#502).
+    _cpi_scale: float = 1.0
+
     @property
     def scenario(self) -> ScenarioConnection:
         if self._scenario is None:
@@ -589,7 +719,8 @@ class RunConnection(Connection):
         return self.scenario.data_dir
 
     def __init__(self, run_path: Path | str,
-                  scenario: ScenarioConnection | str | None = None) -> None:
+                  scenario: ScenarioConnection | str | None = None,
+                  *, handles: HandleBudget | None = None) -> None:
         if isinstance(scenario, str):
             self._scenario_name = scenario
             self._scenario = None
@@ -598,15 +729,74 @@ class RunConnection(Connection):
             self._scenario = scenario
 
         self.run_path = Path(run_path)
-        self._con = connect_sim_file(self.run_path)
-        self._con.row_factory = sqlite3.Row
+        self._handles = handles
+        if handles is None:
+            self._open()
+
+    # Class defaults, so ``live()``, which skips __init__, has them too.
+    _handles: HandleBudget | None = None
+    _handle: sqlite3.Connection | None = None
+
+    def _open(self) -> sqlite3.Connection:
+        # A budgeted handle may be closed by another member's read, which in a
+        # notebook can come from a widget's subshell thread (#375), so it isn't
+        # tied to the thread that opened it.
+        kwargs = {} if self._handles is None else {"check_same_thread": False}
+        con = connect_sim_file(self.run_path, **kwargs)
+        con.row_factory = sqlite3.Row
+        self._handle = con
+        return con
+
+    @property
+    def _con(self) -> sqlite3.Connection:
+        """The run file's SQLite handle. Under a ``HandleBudget`` it opens on
+        first use and may be closed again to make room for another member's,
+        then reopens here the next time it's needed; the read caches survive."""
+        if self._handles is None:
+            if self._handle is None:
+                raise sqlite3.ProgrammingError("Cannot operate on a closed database.")
+            return self._handle
+        # Make room before opening, so no more than the limit are ever open.
+        self._handles.touch(self)
+        if self._handle is not None:
+            return self._handle
+        try:
+            return self._open()
+        except BaseException:
+            self._handles.forget(self)
+            raise
+
+    @_con.setter
+    def _con(self, con: sqlite3.Connection) -> None:
+        self._handle = con
+
+    def _release(self) -> None:
+        """Close the handle but keep the connection usable: it reopens on demand."""
+        if self._handle is not None:
+            self._handle.close()
+            self._handle = None
+
+    @classmethod
+    def live(cls, con: sqlite3.Connection) -> RunConnection:
+        """A reader on a run the engine is still writing, through the
+        engine's own connection (#441): it sees the months settled so far.
+        Each call starts with empty caches; never close it (the engine
+        does)."""
+        self = cls.__new__(cls)
+        self._scenario_name = None
+        self._scenario = None
+        self.run_path = Path("")
+        self._con = con
+        return self
 
     @property
     def _db_path(self) -> Path:
         return self.run_path
 
     def close(self) -> None:
-        self._con.close()
+        if self._handles is not None:
+            self._handles.forget(self)
+        self._release()
 
     def __enter__(self) -> RunConnection:
         return self
@@ -628,9 +818,31 @@ class RunConnection(Connection):
             nw["month"] = pd.to_datetime(nw["month"])
             nw["nominal"] = nw["nominal_cents"] / 100
             nw["cpi_constant"] = nw["constant_cents"].astype("Float64") / 100
+            # The run's own index stays as recorded (a rail's CPI-constant
+            # threshold is in this run's dollars); only what reports deflate
+            # with moves to a rebased baseline's.
+            if (scale := self.cpi_scale) != 1.0:
+                nw["cpi_constant"] = nw["cpi_constant"] / scale
             return nw.set_index("month")
 
         return self._cached("net_worth_frame", _build)
+
+    @property
+    def cpi_scale(self) -> float:
+        """What ``rebase_cpi`` scaled this run's deflator by (1 when not)."""
+        return self._cpi_scale
+
+    def rebase_cpi(self, scale: float) -> None:
+        """Deflate this run's CPI-constant dollars by its index times
+        ``scale``, so they are another run's (#502): a comparison of runs
+        that start in different months deflates them all to the baseline's
+        start. ``cpi_index`` and the frames built on it change; the run's
+        recorded index (``net_worth_frame``'s ``cumulative_index_micros``)
+        doesn't, so nothing the run computed in its own dollars moves. The
+        derived caches are dropped."""
+        self._cpi_scale = scale
+        if getattr(self, "_derived_cache", None) is not None:
+            self._derived_cache.clear()
 
     def after_tax_net_worth_frame(self) -> pd.DataFrame:
         """Month-indexed after-tax net worth (#251), ``nominal`` and
@@ -703,23 +915,23 @@ class RunConnection(Connection):
 
     def _unpaid_tax_by_month(self, months: pd.Index) -> pd.Series:
         """A finished tax year's balance due, from its year-end until the
-        month its payment posts (the April after), in dollars."""
+        month its payment posts (the April after), in dollars; a refund the
+        year is owed counts negative until it's paid back (#568)."""
         due = self.outstanding_tax_by_year()
         unpaid = pd.Series(0.0, index=months)
         if due.empty:
             return unpaid
-        # Only a tax rule's payment settles the year: other rows can carry an
+        # Only a tax settlement settles the year: other rows can carry an
         # earlier tax_year too (a next-spring IRA contribution, say).
         paid = self._read_sql(
             "SELECT tax_year, MIN(date) AS date FROM transfer_event "
             "WHERE tax_year IS NOT NULL AND CAST(substr(date, 1, 4) AS INTEGER) > tax_year "
-            "  AND reason_kind = 'rule' AND reason_id IN ("
-            "    SELECT id FROM scheduled_transaction WHERE amount_rule_kind = 'tax_accumulator') "
+            "  AND reason_kind = 'tax' "
             "GROUP BY tax_year"
         )
         settled = dict(zip(paid["tax_year"].astype(int),
                            pd.to_datetime(paid["date"]) + pd.offsets.MonthEnd(0), strict=True))
-        for year, amount in due[due > 0].items():
+        for year, amount in due[due != 0].items():
             start = pd.Timestamp(f"{int(year)}-12-31")
             end = settled.get(int(year))
             owed = (months >= start) & ((months < end) if end is not None else True)
@@ -727,10 +939,14 @@ class RunConnection(Connection):
         return unpaid
 
     def cpi_index(self) -> pd.Series:
-        """Month-indexed cumulative CPI index (micros), for CPI-constant conversion."""
-        return self._cached(
-            "cpi_index", lambda: self.net_worth_frame()["cumulative_index_micros"]
-        )
+        """Month-indexed cumulative CPI index (micros) that CPI-constant
+        conversion deflates by: the run's own, times any ``rebase_cpi`` scale."""
+
+        def _build() -> pd.Series:
+            index = self.net_worth_frame()["cumulative_index_micros"]
+            return index if self.cpi_scale == 1.0 else index.astype("Float64") * self.cpi_scale
+
+        return self._cached("cpi_index", _build)
 
     def to_cpi_constant(self, monthly: pd.DataFrame | pd.Series):
         """Convert a month-indexed dollar series/frame to this run's CPI-constant dollars.
@@ -739,7 +955,7 @@ class RunConnection(Connection):
         the scenario starts) takes the first month's CPI, and one after its
         last the last's: the run has no index for them.
         """
-        return monthly.mul(_cpi_factor(self.cpi_index(), monthly.index), axis=0)
+        return to_cpi_constant(monthly, self.cpi_index())
 
     def to_cpi_constant_annual(self, yearly: pd.DataFrame | pd.Series):
         """Convert a year-indexed dollar series/frame using each year's year-end CPI,
@@ -823,9 +1039,7 @@ class RunConnection(Connection):
             balance = -balance
         if mode != DollarMode.CPI_CONSTANT or balance.empty:
             return balance
-        if kind not in accounts.CASHFLOW_KINDS:
-            return self.to_cpi_constant(balance)
-        return self.to_cpi_constant(balance.diff().fillna(balance)).cumsum()
+        return account_balance_cpi(balance, kind, self.cpi_index())
 
     def lot_balance(
         self, account: str, lot: str, mode: DollarMode = DollarMode.NOMINAL,
@@ -845,7 +1059,7 @@ class RunConnection(Connection):
         )
         if mode != DollarMode.CPI_CONSTANT or balance.empty:
             return balance
-        return self.to_cpi_constant(balance)
+        return to_cpi_constant(balance, self.cpi_index())
 
     def lots_by_account(self, *, single: bool = False) -> dict[str, list[str]]:
         """Account name -> its lot labels in definition order, for the asset
@@ -875,6 +1089,80 @@ class RunConnection(Connection):
             return None
         seed = row["seed"].iloc[0]
         return int(row["member_index"].iloc[0]), None if pd.isna(seed) else int(seed)
+
+    def negative_balances(self) -> list[NegativeBalance]:
+        """The run's negative-balance warnings (#431), as ``sim explain``
+        lists them: see ``shortfalls.negative_balances``."""
+        from analysis.sim import shortfalls
+
+        # Its own read-only connection, opened on the calling thread: a
+        # widget redraw can come from a kernel subshell (see _read_sql).
+        return self._cached("negative_balances",
+                            lambda: shortfalls.run_negative_balances(self.run_path))
+
+    def basis_step_ups(self) -> list[BasisStepUp]:
+        """The run's basis step-ups at a death (#434), as ``sim explain``
+        lists them: see ``step_ups.basis_step_ups``. Empty for a run with
+        none."""
+        from analysis.sim import step_ups
+
+        # Its own read-only connection on the calling thread, as negative_balances.
+        return self._cached("basis_step_ups",
+                            lambda: step_ups.run_basis_step_ups(self.run_path))
+
+    def deaths(self) -> list[Death]:
+        """Each person's death in this run (#255), from ``lifespan.csv``: the
+        display name and the final month, earliest first. A chart marks them."""
+        rows = self._read_sql(
+            "SELECT p.display, l.final_month FROM person_lifespan l "
+            "JOIN person p ON p.id = l.person ORDER BY l.final_month, p.display"
+        )
+        return [Death(str(display), date.fromisoformat(str(month)))
+                for display, month in zip(rows["display"], rows["final_month"], strict=True)]
+
+    def household_end(self) -> _Date | None:
+        """The household's last death, when every member of it has a lifespan
+        (the month a ``joint`` rule stops at, ``engine._rule_lifespans``)."""
+        persons = self.items("person")
+        household = list(persons.loc[persons["role"] == "primary", "id"])
+        if not household:
+            household = list(persons.loc[persons["role"].notna(), "id"])
+        lifespans = self.items("person_lifespan").set_index("person")["final_month"]
+        if not household or not all(p in lifespans.index for p in household):
+            return None
+        return date.fromisoformat(max(str(lifespans[p]) for p in household)[:10])
+
+    def date_markers(self) -> dict[str, _Date]:
+        """Each named ``date_marker`` calendar row's date in this run."""
+        events = self.items("calendar_event")
+        return {
+            str(name): date.fromisoformat(str(when)[:10])
+            for name, kind, when in zip(events["name"], events["kind"], events["date"], strict=True)
+            if kind == "date_marker" and name
+        }
+
+    def monthly_flows(self) -> pd.DataFrame:
+        """Every transfer summed by its own date's month end (``event_month``),
+        its from and to accounts and, for a scheduled rule's expense, the
+        rule's tags (sorted, space-separated; '' otherwise): columns
+        ``month``, ``from_name``, ``to_name``, ``rule_tags``, ``cents``.
+        Enough to rebuild any guard rail's spending or withdrawals (#305), so
+        the series store keeps it for each ensemble member."""
+        events = self.items("transfer_event")
+        rules = self.items("scheduled").set_index("id")["tags"]
+        by_rule = (events["reason_kind"].isin(["rule", "ytd_rule"]) & events["reason_id"].notna()
+                   & (events["to_kind"] == "expense"))
+        tags = {int(rid): " ".join(sorted(str(cell or "").split())) for rid, cell in rules.items()}
+        flows = pd.DataFrame({
+            "month": event_month(events),
+            "from_name": events["from_name"].astype(str),
+            "to_name": events["to_name"].astype(str),
+            "rule_tags": [tags.get(int(rid), "") if rule else ""
+                          for rid, rule in zip(events["reason_id"], by_rule, strict=True)],
+            "cents": events["amount"].astype("int64"),
+        })
+        return (flows.groupby(["month", "from_name", "to_name", "rule_tags"], as_index=False)["cents"]
+                .sum())
 
     def scenario_meta(self) -> dict[str, Any]:
         """The run's merged ``scenario.meta_json`` (ADR-003 §4.5)."""
@@ -937,6 +1225,21 @@ class RunConnection(Connection):
 
         return self._cached("income_by_category", _build)
 
+    def expense_events(self) -> pd.DataFrame:
+        """Transfers into expense accounts, and a tax refund out of one
+        (#568) as a negative transfer into it, so a tax expense nets to what
+        the year cost."""
+        into = self.items("transfer_event", to_kind="expense")
+        back = self.items("transfer_event", from_kind="expense", reason_kind="tax")
+        back = back[back["to_kind"] != "expense"]
+        if back.empty:
+            return into
+        back = back.copy()
+        for side in ("account", "name", "kind", "subkind", "lot"):
+            back[f"from_{side}"], back[f"to_{side}"] = back[f"to_{side}"], back[f"from_{side}"]
+        back["amount"] = -back["amount"]
+        return pd.concat([into, back], ignore_index=True)
+
     def expenses_by_category(
         self,
         subkind_to_category: dict[str, str] = EXPENSE_SUBKIND_TO_CATEGORY,
@@ -945,7 +1248,7 @@ class RunConnection(Connection):
         """Monthly expenses by category, plus a ``total`` column, in dollars."""
 
         def _build() -> pd.DataFrame:
-            xfer_exp = self.items("transfer_event", to_kind="expense").copy()
+            xfer_exp = self.expense_events().copy()
             xfer_exp = xfer_exp[~xfer_exp["to_name"].isin(non_cash_accounts)]
             xfer_exp["month"] = event_month(xfer_exp)
             xfer_exp["category"] = (
@@ -965,10 +1268,15 @@ class RunConnection(Connection):
     def gains_by_category(self) -> pd.DataFrame:
         """Year-indexed realized (taxable/non-taxable) vs. unrealized gains, in dollars.
 
+        A taxable lot's reinvested dividends and interest (#468) count as
+        realized taxable gains: they are taxed the year they're paid, but
+        never reach cash, so ``distribution_coverage`` leaves them out.
         Social Security is split into taxable/non-taxable by this run's own
-        ``federal_taxable_ss`` (the provisional-income test), not a flat
+        ``federal_ss_taxable`` (the provisional-income test), not a flat
         assumption. Also includes ``expenses``/``distribution_coverage``
-        (realized cash vs. that year's spending).
+        (realized cash vs. that year's spending). A run whose strategies
+        harvested gains (#421: sold and rebought, so no cash moved) adds a
+        ``harvested`` column, outside the realized cash total.
         """
 
         def _build() -> pd.DataFrame:
@@ -980,42 +1288,60 @@ class RunConnection(Connection):
             gains["year"] = pd.to_datetime(gains["date"]).dt.year
 
             reaches_cash = gains["to_subkind"].isin(LIQUID_SUBKINDS)
-            is_unrealized = (gains["from_kind"] == "income") & ~reaches_cash
-            is_taxable = reaches_cash & gains["tax_character"].isin(TAXABLE_GAIN_CHARS)
+            is_payout = gains["from_name"].isin(PAYOUT_ACCOUNT_NAMES)
+            # Negative growth posts from the lot back to its counterparty: an
+            # unrealized loss, counted against the unrealized gains.
+            is_loss = gains["to_name"].isin(GROWTH_ACCOUNT_NAMES) & (gains["from_kind"] == "asset")
+            gains.loc[is_loss, "amount"] = -gains.loc[is_loss, "amount"]
+            is_unrealized = ((gains["from_kind"] == "income") & ~reaches_cash & ~is_payout) | is_loss
+            is_taxable = (reaches_cash | is_payout) & gains["tax_character"].isin(TAXABLE_GAIN_CHARS)
             is_nontaxable = reaches_cash & gains["tax_character"].isin(NONTAXABLE_GAIN_CHARS)
             is_ss = gains["tax_character"] == "ss_benefit"
+            is_harvest = (
+                (gains["reason_kind"] == "strategy") & (gains["from_lot"] == gains["to_lot"])
+                & (gains["from_account"] == gains["to_account"])
+                & gains["tax_character"].isin(["ltcg", "stcg"])
+            )
+
+            # Reinvested payouts are taxable but never reach cash, so they
+            # don't cover spending.
+            reinvested = (
+                gains[is_payout & ~reaches_cash].groupby("year")["amount"].sum() / 100
+            )
 
             gains["gain_category"] = pd.NA
             gains.loc[is_unrealized, "gain_category"] = "unrealized"
             gains.loc[is_taxable, "gain_category"] = "taxable"
             gains.loc[is_nontaxable, "gain_category"] = "non-taxable"
             gains.loc[is_ss, "gain_category"] = "social_security"
+            gains.loc[is_harvest, "gain_category"] = "harvested"
             gains = gains.dropna(subset=["gain_category"])
 
             gains_yearly = (
                 gains.groupby(["year", "gain_category"])["amount"].sum()
                 .unstack("gain_category", fill_value=0)
-                .reindex(columns=[*GAIN_CATEGORIES, "social_security"], fill_value=0)
+                .reindex(columns=[*GAIN_CATEGORIES, "social_security", "harvested"], fill_value=0)
                 / 100
             )
             gains_yearly.index.name = "year"
 
             tax_summary = self.items("tax_year_summary")
-            federal_taxable_ss = (
+            federal_ss_taxable = (
                 tax_summary.loc[
-                    tax_summary["bucket"] == "federal_taxable_ss", ["year", "amount"]
+                    tax_summary["bucket"] == "federal_ss_taxable", ["year", "amount"]
                 ].set_index("year")["amount"]
                 / 100
             )
             ss_total = gains_yearly["social_security"]
             ss_taxable = (
-                federal_taxable_ss.reindex(gains_yearly.index).fillna(0).clip(upper=ss_total)
+                federal_ss_taxable.reindex(gains_yearly.index).fillna(0).clip(upper=ss_total)
             )
             ss_nontaxable = ss_total - ss_taxable
 
             gains_yearly["taxable"] += ss_taxable
             gains_yearly["non-taxable"] += ss_nontaxable
             gains_yearly = gains_yearly.drop(columns="social_security")
+            harvested = gains_yearly.pop("harvested")
 
             gains_yearly["realized_total"] = (
                 gains_yearly["taxable"] + gains_yearly["non-taxable"]
@@ -1027,21 +1353,25 @@ class RunConnection(Connection):
                 expenses_yearly["total"].reindex(gains_yearly.index).fillna(0)
             )
             gains_yearly["distribution_coverage"] = (
-                gains_yearly["realized_total"] - gains_yearly["expenses"]
+                gains_yearly["realized_total"]
+                - reinvested.reindex(gains_yearly.index).fillna(0)
+                - gains_yearly["expenses"]
             )
+            if harvested.any():
+                gains_yearly["harvested"] = harvested
             return gains_yearly
 
         return self._cached("gains_by_category", _build)
 
     def tax_liability_by_year(self) -> pd.Series:
-        """Year-indexed total (federal + state) tax liability, in dollars."""
+        """Year-indexed total (federal + state + local) tax liability, in dollars."""
 
         def _build() -> pd.Series:
             tax_summary = self.items("tax_year_summary")
             return (
                 tax_summary.loc[
                     tax_summary["bucket"].isin(
-                        ["federal_tax_liability", "state_tax_liability"]
+                        ["federal_tax", "state_tax", "local_tax"]
                     ),
                     ["year", "amount"],
                 ]
@@ -1053,7 +1383,7 @@ class RunConnection(Connection):
         return self._cached("tax_liability_by_year", _build)
 
     def tax_reconciliation_by_year(self) -> pd.DataFrame:
-        """Year-indexed liability/withheld/due/overpaid, federal and state, in dollars.
+        """Year-indexed liability/withheld/due/overpaid, federal, state and local, in dollars.
 
         Adds ``reconciliation_year`` (year + 1): the annual reconciliation
         payment or refund for year Y settles in April of Y+1.
@@ -1083,30 +1413,37 @@ class RunConnection(Connection):
     ) -> pd.Series:
         """Year X's tax liability still unpaid at year end; it settles the April after.
 
-        Only ``*_tax_due`` buckets are used. ``*_tax_overpaid`` looks like a
-        refund but also fires when the *previous* April's settlement lands in
-        a zero-liability year, so crediting it here would double-count that
-        payment.
+        Each ``*_tax_due`` bucket less its ``*_tax_overpaid``: a year paid
+        past its tax (withholding, or a refundable credit, #568) is owed that
+        back, so it counts negative. A settlement carries the tax year it
+        settles, so the April payment of one year is never another's.
         """
+        overpaid = [b.removesuffix("_tax_due") + "_tax_overpaid" for b in buckets]
         df = self.items("tax_year_summary")
-        df = df[df["bucket"].isin(buckets)]
+        df = df[df["bucket"].isin([*buckets, *overpaid])]
         wide = (
             df.pivot(index="year", columns="bucket", values="amount")
-            .reindex(columns=buckets)
+            .reindex(columns=[*buckets, *overpaid])
             .fillna(0)
             / 100
         )
-        return wide.sum(axis=1)
+        return wide[buckets].sum(axis=1) - wide[overpaid].sum(axis=1)
 
     def tax_summary_by_year(
         self, buckets: dict[str, str] = DEFAULT_TAX_SUMMARY_BUCKETS,
     ) -> pd.DataFrame:
-        """Yearly federal/state tax and SS income/taxed-portion, plus a total-tax column."""
+        """Yearly federal/state/local tax and SS income/taxed-portion, plus a
+        total-tax column. The local tax's column is left out when there is
+        none."""
         df = self.items("tax_year_summary")
         df = df[df["bucket"].isin(buckets)]
+        if "local_tax" in buckets and not df["bucket"].eq("local_tax").any():
+            buckets = {b: label for b, label in buckets.items() if b != "local_tax"}
         wide = df.pivot(index="year", columns="bucket", values="amount") / 100
         wide = wide.rename(columns=buckets).reindex(columns=list(buckets.values()))
         wide["total tax"] = wide["federal tax"] + wide["state tax"]
+        if "local tax" in wide.columns:
+            wide["total tax"] += wide["local tax"].fillna(0)
         return wide
 
     def ss_gross_by_month(self) -> pd.Series:
@@ -1227,6 +1564,9 @@ class ScenarioConnection(Connection, traitlets.HasTraits):
         return self
 
     scenarios_dir: Path
+    loaded_fingerprint: tuple[tuple[str, int, int], ...]
+    """The lineage folders' files as the intent was loaded from them
+    (``lineage.lineage_fingerprint``), so a view can tell when they've changed."""
 
     def __init__(self, data_dir: Path | str,
                  scenario: str | None = None,
@@ -1258,6 +1598,8 @@ class ScenarioConnection(Connection, traitlets.HasTraits):
         old = getattr(self, "_con", None)
         if old is not None:
             old.close()
+        # Taken before the load, so an edit during it reads as a change too.
+        self.loaded_fingerprint = lineage_fingerprint(self.scenarios_dir, self._scenario_name)
         load_scenario(
             self.data_dir, self._scenario_name,
             intent_dir=self._intent_dir,
@@ -1290,6 +1632,17 @@ class ScenarioConnection(Connection, traitlets.HasTraits):
 
     def __exit__(self, *exc: object) -> None:
         self.close()
+
+    # -- lifespans --
+
+    def lifespans(self) -> tuple[list[PersonLifespan], list[str]]:
+        """Each person with a sex, with the age-at-death distribution the
+        life table gives (#312), and a note for each one it can't draw:
+        ``lifespan_curves.person_lifespans`` on this scenario's intent."""
+        from analysis.sim.lifespan_curves import person_lifespans
+
+        self._ensure_fresh()
+        return person_lifespans(self._con)
 
     # -- tag writes --
 

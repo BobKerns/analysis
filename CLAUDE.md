@@ -17,6 +17,14 @@ shared with Copilot; edit it there, not here:
 - Work in a worktree at `../analysis-worktrees/<branch with / flattened to ->`,
   not in the main checkout. Remove the worktree (not the branch) once its PR
   is merged.
+- The main checkout is the user's alone: never check out, switch, reset,
+  merge, stash or commit there, not even briefly. Every agent gets its own
+  worktree and branch; two agents never share one.
+- Reviewing a pull request counts too. Read its code with
+  `git show <ref>:<path>` and `git grep <pattern> <ref>`; to run or browse
+  its tree, make a detached worktree and remove it afterwards:
+  `git worktree add --detach ../analysis-worktrees/review-<n> <ref>` (with
+  the filter bypass below). Fetched `pr<n>` refs can stay.
 
 The nbstripout filter runs `<toplevel>/.venv/bin/python`, which a fresh worktree
 lacks, so bypass the filter for the initial checkout only:
@@ -27,10 +35,16 @@ git -c filter.nbstripout.clean=cat -c filter.nbstripout.smudge=cat \
     -c filter.nbstripout.required=false \
     worktree add --no-track -b <branch> ../analysis-worktrees/<flattened-branch> origin/main
 cd ../analysis-worktrees/<flattened-branch> && env -u VIRTUAL_ENV uv sync && npm ci
+# data/shared: the main checkout's data repo, or template data where it has none
+main=$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")
+if [ -e "$main/data/shared" ]; then ln -s "$(cd "$main/data/shared" && pwd -P)" data/shared
+else scripts/link-data.sh --template; fi
 ```
 
 After `uv sync` the filter works normally; `npm ci` installs the pinned
-`cspell`/`markdownlint` for the spelling and markdown gates. Run commands there with
+`cspell`/`markdownlint` for the spelling and markdown gates, and `data/shared`
+gives cspell the data repo's word list (`.cspell/data-words.txt`), without which
+it fails. Run commands there with
 `env -u VIRTUAL_ENV uv run ...`, since an editor terminal's `VIRTUAL_ENV` may
 point at the main checkout's `.venv`.
 

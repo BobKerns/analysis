@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 500" class="character bill" role="img">
+  <title>Bill</title>
+  <style>
+    .bill .skin { fill: #e6b48f; }
+    .bill .hair { fill: #b9b4ad; }
+    .bill .top { fill: #e07a5f; }
+    .bill .collar { fill: #f4efe6; }
+    .bill .ink { fill: #2a2a2a; }
+    .bill .cheek { fill: #d9805f; opacity: 0.35; }
+    .bill .line { fill: none; stroke: #2a2a2a; stroke-width: 6; stroke-linecap: round; }
+    .bill .glasses { fill: none; stroke: #2a2a2a; stroke-width: 5; }
+  </style>
+  <path class="top" d="M50 500 C50 400 118 350 200 350 C282 350 350 400 350 500 Z"/>
+  <path class="collar" d="M160 356 L200 400 L240 356 L222 346 L200 372 L178 346 Z"/>
+  <rect class="skin" x="172" y="282" width="56" height="80" rx="22"/>
+  <ellipse class="skin" cx="110" cy="210" rx="15" ry="24"/>
+  <ellipse class="skin" cx="290" cy="210" rx="15" ry="24"/>
+  <ellipse class="skin" cx="200" cy="198" rx="90" ry="102"/>
+  <path class="hair" d="M112 178 C108 112 152 80 200 80 C250 80 294 112 288 178 C276 140 250 120 200 120 C152 120 124 140 112 178 Z"/>
+  <path class="hair" d="M114 214 C120 296 162 312 200 312 C238 312 280 296 286 214 C270 258 242 272 200 272 C158 272 130 258 114 214 Z"/>
+  <circle class="glasses" cx="166" cy="204" r="24"/>
+  <circle class="glasses" cx="234" cy="204" r="24"/>
+  <path class="glasses" d="M190 202 Q200 194 210 202"/>
+  <circle class="ink" cx="166" cy="206" r="7"/>
+  <circle class="ink" cx="234" cy="206" r="7"/>
+  <path class="line" d="M144 168 L186 164"/>
+  <path class="line" d="M214 164 L256 168"/>
+  <circle class="cheek" cx="140" cy="244" r="13"/>
+  <circle class="cheek" cx="260" cy="244" r="13"/>
+  <path class="line" d="M176 254 Q200 272 224 254"/>
+</svg>

@@ -1,0 +1,2 @@
+name,description,start,end,seed,parent_scenario,created_by,meta_json
+t_crisis_then_spike,"Two episodes in one lifetime: a 2008-style crash and its years of near-zero rates, then, 1 to 10 years after they end, a post-pandemic-style price spike.",,,,t_financial_crisis:t_pandemic_spike,,{}

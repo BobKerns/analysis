@@ -1,0 +1,922 @@
+"""#300: the background builder's queue, rules and waiting readers."""
+
+from __future__ import annotations
+
+import json
+import os
+import subprocess
+import threading
+import time
+from collections.abc import Callable, Generator
+from pathlib import Path
+
+import git
+import pytest
+
+from analysis.sim import builder, freshness, locks, price_schedule, provenance
+from analysis.sim.builder import BuilderPaths
+
+
+
+
+@pytest.fixture
+def builder_on(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("ANALYSIS_BUILDER", raising=False)
+
+
+def test_builds_only_from_committed_code_matching_main(
+    commit_files: Callable[..., str],
+    code_repo: git.Repo, builder_on: None,
+) -> None:
+    trees, reason = builder.main_check()
+    assert trees is not None and reason is None
+
+    code_repo.git.checkout("-b", "feature")
+    commit_files(code_repo, {"docs/guide.md": "two\n"}, "docs only")
+    assert builder.main_check()[0] == trees  # docs aren't code paths
+
+    commit_files(code_repo, {"src/engine.py": "v2\n"}, "code")
+    assert builder.main_check() == (None, "code (src, templates, pyproject.toml, uv.lock) differs from main")
+    assert builder.main_check("feature")[0] is not None  # the workspace's branch
+    assert builder.main_check("nope") == (None, "no local nope branch")
+
+    code_repo.git.checkout("main")
+    (Path(str(code_repo.working_tree_dir)) / "src" / "engine.py").write_text("dirty\n")
+    assert builder.main_check() == (None, "uncommitted code in src, templates, pyproject.toml, uv.lock")
+
+
+@pytest.fixture
+def pair(tmp_path: Path, data_repo_sim: Path,
+         monkeypatch: pytest.MonkeyPatch) -> tuple[Path, Path]:
+    """A code worktree and data dir naming each other: (code dir, data dir)."""
+    data_dir, data_repo = data_repo_sim, data_repo_sim.parent
+    code = tmp_path / "code"
+    (code / "data").mkdir(parents=True, exist_ok=True)
+    (code / "data" / "shared").symlink_to(data_repo)
+    (data_dir / ".analysis").write_text(f"{code}\n")
+    monkeypatch.setattr(builder, "code_dir", lambda: code.resolve())
+    return code.resolve(), data_dir.resolve()
+
+
+def test_a_pair_must_name_each_other(pair: tuple[Path, Path], tmp_path: Path) -> None:
+    code, data_dir = pair
+    assert builder.pair_problems(code, data_dir) == []
+    (data_dir / ".analysis").write_text(f"{tmp_path / 'elsewhere'}\n")
+    assert builder.pair_problems(code, data_dir) == [f"{data_dir / '.analysis'} doesn't name {code}"]
+
+
+def test_install_records_the_pair_and_chains_existing_hooks(
+    pair: tuple[Path, Path], tmp_path: Path,
+) -> None:
+    _code, data_dir = pair
+    hooks = data_dir.parent / ".git" / "hooks"
+    hooks.mkdir(exist_ok=True)
+    seen = tmp_path / "seen"
+    # An early exit: anything appended after it would never run.
+    mine = f'#!/bin/sh\necho "$1" > {seen}\nexit 3\necho never\n'
+    (hooks / "post-merge").write_text(mine)
+    (hooks / "post-merge").chmod(0o755)
+    builder.install(data_dir)
+    assert builder.read_config(BuilderPaths.for_data(data_dir)) is not None
+    assert builder.HOOK_MARKER in (hooks / "post-commit").read_text()
+    assert builder.HOOK_MARKER in (hooks / "post-merge").read_text()
+    assert (hooks / "post-merge.before-builder").read_text() == mine
+    builder.install(data_dir)  # again: nothing moved twice
+    assert (hooks / "post-merge.before-builder").read_text() == mine
+    ran = subprocess.run([str(hooks / "post-merge"), "1"], cwd=data_dir, check=False)
+    assert ran.returncode == 3 and seen.read_text() == "1\n"  # theirs ran, status kept
+
+
+def test_install_refuses_when_a_hook_has_nowhere_to_move(pair: tuple[Path, Path]) -> None:
+    """Rather than leave that hook unwatched while the pair reads as installed."""
+    _code, data_dir = pair
+    hooks = data_dir.parent / ".git" / "hooks"
+    hooks.mkdir(exist_ok=True)
+    (hooks / "post-merge").write_text("#!/bin/sh\necho one\n")
+    (hooks / "post-merge.before-builder").write_text("#!/bin/sh\necho two\n")
+    with pytest.raises(ValueError, match="post-merge.before-builder both exist"):
+        builder.install(data_dir)
+    assert builder.read_config(BuilderPaths.for_data(data_dir)) is None
+
+
+def test_a_reader_asks_again_once_a_repo_changes(
+    commit_files: Callable[..., str],
+    pair: tuple[Path, Path], builder_on: None, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _code, data_dir = pair
+    builder.install(data_dir)
+    asked: list[str] = []
+    monkeypatch.setattr(builder, "_pending", lambda _p, _d, name, *_steps: asked.append(name) or [])
+    runs = BuilderPaths.for_data(data_dir).runs_dir
+    builder.await_fresh(runs, "base")
+    builder.await_fresh(runs, "base")
+    assert asked == ["base"]  # nothing changed in between
+    time.sleep(0.01)
+    commit_files(git.Repo(data_dir.parent), {"sim/notes.md": "x\n"}, "a data commit")
+    builder.await_fresh(runs, "base")
+    assert asked == ["base", "base"]
+    time.sleep(0.01)
+    builder.install(data_dir, "testing")  # another branch's code: ask again
+    builder.await_fresh(runs, "base")
+    assert asked == ["base", "base", "base"]
+
+
+def test_install_records_the_branch_every_reader_uses(pair: tuple[Path, Path]) -> None:
+    _code, data_dir = pair
+    paths = BuilderPaths.for_data(data_dir)
+    builder.install(data_dir)
+    assert builder.config_branch(builder.read_config(paths)) == "main"
+    builder.install(data_dir, "testing")
+    builder.install(data_dir)  # reinstalling (setup.sh) keeps it
+    assert builder.config_branch(builder.read_config(paths)) == "testing"
+
+
+def test_notify_starts_the_builder_only_where_installed(
+    pair: tuple[Path, Path], builder_on: None, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _code, data_dir = pair
+    started: list[Path] = []
+    monkeypatch.setattr(builder, "spawn_daemon", lambda _paths, d: started.append(d))
+    assert "aren't installed" in builder.notify(data_dir)
+    builder.install(data_dir)
+    assert builder.notify(data_dir) == "started the background builder"
+    assert started == [data_dir]
+    monkeypatch.setenv("ANALYSIS_BUILDER", "off")
+    assert "off" in builder.notify(data_dir)
+    assert started == [data_dir]
+
+
+@pytest.fixture
+def daemon(
+    pair: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch,
+) -> Generator[builder._Daemon]:
+    """A daemon over the pair, its code on main, every scenario stale, its
+    builds a stand-in command (FAKE_BUILD: sleep seconds and exit code)."""
+    _code, data_dir = pair
+    monkeypatch.setattr(builder, "main_check", lambda *_a: (("t1",), None))
+    monkeypatch.setattr(freshness, "unchanged_run", lambda *_a, **_kw: None)
+    monkeypatch.setattr(freshness, "code_tree", lambda: freshness.CodeTree(None, ("t1",)))
+    monkeypatch.setenv("FAKE_BUILD", "0 0")
+    monkeypatch.setattr(builder, "_sim_executable", lambda: [
+        "sh", "-c", 'set -- $FAKE_BUILD; sleep "$1"; exit "$2"', "sim"])
+    d = builder._Daemon(data_dir, echo=lambda _text: None)
+    d.started_trees = ("t1",)
+    yield d
+    d.cancel("test over")
+
+
+def test_a_daemon_from_other_code_does_not_start(
+    daemon: builder._Daemon, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    builder._write_json(daemon.paths.config, {
+        "data_dir": str(daemon.data_dir), "code_dir": str(builder.code_dir())})
+    monkeypatch.setattr(builder, "code_dir", lambda: tmp_path / "another-worktree")
+    lines: list[str] = []
+    daemon.echo = lines.append
+    assert daemon.run() == 1
+    assert any("but the pair's code is" in line for line in lines)
+    assert not builder.daemon_alive(daemon.paths)
+
+
+def _wait_until_done(d: builder._Daemon) -> None:
+    assert d.build is not None
+    d.build.process.wait(timeout=10)
+    assert d.finished()
+
+
+def test_queue_puts_the_current_scenario_first(daemon: builder._Daemon) -> None:
+    (daemon.data_dir / ".current_scenario").write_text("retire_alice\n")
+    daemon.scan()
+    assert daemon.queue[0] == "retire_alice" and "base" in daemon.queue
+    assert daemon.state == "building"
+    daemon.first = ["base"]
+    daemon.scan()
+    assert daemon.queue[0] == "base"
+
+
+def test_queue_follows_the_working_set_then_runs_before_ensembles(
+    daemon: builder._Daemon,
+) -> None:
+    (daemon.data_dir / ".current_scenario").write_text("base\n")
+    daemon.paths.dir.mkdir(parents=True, exist_ok=True)
+    daemon.paths.working_set.write_text("ens_b\nretire_alice\nbase\n")
+    (daemon.paths.runs_dir / "ens_a").mkdir(parents=True)
+    (daemon.paths.runs_dir / "ens_b").mkdir(parents=True)
+    queue = ["ens_a", "base", "zed", "retire_alice", "ens_b"]
+    # A recently used ensemble before an older plain run; past the working
+    # set, plain runs first, then by name.
+    assert daemon.order(queue) == ["ens_b", "retire_alice", "base", "zed", "ens_a"]
+    daemon.first = ["zed"]
+    assert daemon.order(queue)[0] == "zed"
+
+
+def test_a_failed_build_waits_for_its_inputs_to_change(
+    daemon: builder._Daemon, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    daemon.scan()
+    first = daemon.queue[0]
+    monkeypatch.setenv("FAKE_BUILD", "0 3")
+    daemon.start_next(("t1",))
+    _wait_until_done(daemon)
+    assert daemon.failed[first]["exit"] == 3
+    daemon.scan()
+    assert first not in daemon.queue  # same inputs: not retried
+    tree_id = provenance.data_stamps(daemon.data_dir, first).tree_id
+    daemon.failed[first]["key"] = [["t1"], f"not {tree_id}"]
+    daemon.scan()
+    assert first in daemon.queue  # its data changed since
+
+
+@pytest.mark.slow
+def test_a_build_whose_inputs_changed_is_cancelled(
+    daemon: builder._Daemon, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("FAKE_BUILD", "30 0")
+    daemon.scan()
+    daemon.start_next(("t1",))
+    build = daemon.build
+    assert build is not None
+    daemon.scan()
+    assert daemon.build is build  # nothing changed
+    build.key = [["t1"], "an older data tree"]
+    daemon.scan()
+    assert daemon.build is None and build.process.poll() is not None
+    assert build.scenario in daemon.queue  # requeued
+
+
+def test_the_daemon_checks_the_installed_branch(
+    daemon: builder._Daemon, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    builder.install(daemon.data_dir, "testing")
+    seen: list[str] = []
+    monkeypatch.setattr(builder, "main_check",
+                        lambda branch, *_a: seen.append(branch) or (("t1",), None))
+    daemon.scan()
+    assert seen == ["testing"]
+
+
+def test_a_wanted_scenario_preempts_the_build_in_progress(
+    daemon: builder._Daemon, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("FAKE_BUILD", "30 0")
+    daemon.scan()
+    daemon.start_next(("t1",))
+    running = daemon.build
+    assert running is not None
+    wanted = daemon.queue[0]
+    daemon.first = [wanted]
+    daemon.scan()
+    daemon.preempt()
+    assert daemon.build is None and running.process.poll() is not None
+    assert daemon.queue[:2] == [wanted, running.scenario]  # requeued next
+    daemon.start_next(("t1",))
+    assert daemon.build is not None and daemon.build.wanted
+    # A build someone is waiting on is never preempted in turn.
+    daemon.first = [running.scenario]
+    daemon.preempt()
+    assert daemon.build is not None and daemon.build.scenario == wanted
+
+
+def test_code_off_main_disables_the_builder(
+    daemon: builder._Daemon, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(builder, "main_check", lambda *_a: (None, "code differs from main"))
+    daemon.scan()
+    assert (daemon.state, daemon.queue, daemon.reason) == ("disabled", [], "code differs from main")
+
+
+def test_a_code_change_restarts_the_builder(
+    daemon: builder._Daemon, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(builder, "main_check", lambda *_a: (("t2",), None))
+    daemon.scan()
+    assert daemon.restart
+
+
+def test_readers_dont_wait_where_the_builder_is_off_or_not_installed(
+    pair: tuple[Path, Path], builder_on: None, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _code, data_dir = pair
+    paths = BuilderPaths.for_data(data_dir)
+    monkeypatch.setattr(builder, "_pending", lambda *_a: pytest.fail("checked"))
+    builder.await_fresh(paths.runs_dir, "base")  # not installed
+    builder.install(data_dir)
+    # A build (sim load/run/all) may hold the lock the builder's own build
+    # of the scenario waits for, so it never waits on the builder.
+    with locks.building():
+        builder.await_fresh(paths.runs_dir, "base")
+    monkeypatch.setenv("ANALYSIS_BUILDER", "off")
+    builder.await_fresh(paths.runs_dir, "base")
+
+
+@pytest.fixture
+def running_daemon(pair: tuple[Path, Path]) -> Generator[BuilderPaths]:
+    """The pair, installed, with its daemon lock held as a daemon would."""
+    import fcntl
+
+    _code, data_dir = pair
+    builder.install(data_dir)
+    paths = BuilderPaths.for_data(data_dir)
+    fd = os.open(paths.daemon_lock, os.O_RDWR | os.O_CREAT, 0o644)
+    fcntl.flock(fd, fcntl.LOCK_EX)
+    yield paths
+    os.close(fd)
+
+
+@pytest.mark.slow
+def test_a_reader_waits_for_a_queued_build(
+    running_daemon: BuilderPaths, builder_on: None,
+) -> None:
+    paths = running_daemon
+    builder._write_json(paths.status, {"state": "building", "queue": ["base"], "updated": 0})
+
+    def finish() -> None:
+        time.sleep(1.0)
+        requests = list(paths.requests.glob("*.json"))
+        assert requests, "the reader asked for base first"
+        builder._write_json(paths.status, {"state": "idle", "queue": [], "updated": time.time()})
+
+    lines: list[str] = []
+    finisher = threading.Thread(target=finish)
+    finisher.start()
+    started = time.monotonic()
+    builder.await_fresh(paths.runs_dir, "base", echo=lines.append)
+    finisher.join()
+    assert time.monotonic() - started >= 0.9
+    assert lines == [
+        "waiting for the background build of base (Ctrl-C to stop waiting)...",
+        "the background build of base is done",
+    ]
+
+
+def test_the_builder_never_queues_a_disabled_scenario(
+    daemon: builder._Daemon, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from analysis.sim.loader import DISABLE_FILE
+
+    daemon.scan()
+    assert "base" in daemon.queue and "base" not in daemon.cancelled
+    (daemon.data_dir / "scenarios" / "base" / DISABLE_FILE).write_text("")
+    daemon.scan()
+    assert "base" not in daemon.queue and daemon.queue
+    assert daemon.cancelled["base"]["why"] == "it was disabled"  # for a reader waiting on it
+    # Nor does a reader wait for it: the builder would never build it.
+    assert not builder._pending(daemon.paths, daemon.data_dir, "base")
+
+
+def test_a_build_with_failed_members_waits_for_its_inputs_to_change(
+    daemon: builder._Daemon,
+) -> None:
+    """`sim load` exits 0 when ensemble members fail; the batch stays stale
+    (freshness says so), and building it again at once would loop."""
+    daemon.scan()
+    first = daemon.queue[0]
+    daemon.start_next(("t1",))
+    _wait_until_done(daemon)  # exit 0, but unchanged_run is still None
+    assert daemon.failed[first]["exit"] == 0
+    daemon.scan()
+    assert first not in daemon.queue
+
+
+def test_a_reader_asking_for_the_build_alone_still_makes_its_jobs_follow(
+    daemon: builder._Daemon, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("FAKE_BUILD", "30 0")
+    daemon.scan()
+    daemon.start_next(("t1",))
+    running = daemon.build
+    assert running is not None and not running.wanted
+    daemon.first = [running.job]  # nothing else is wanted
+    daemon.preempt()
+    assert daemon.build is running and running.wanted
+    assert daemon.follow == [running.scenario] and daemon.first == []
+
+
+def test_a_build_a_reader_asks_for_while_it_runs_is_not_preempted(
+    daemon: builder._Daemon, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("FAKE_BUILD", "30 0")
+    daemon.scan()
+    daemon.start_next(("t1",))
+    running = daemon.build
+    assert running is not None and not running.wanted
+    daemon.first = [running.scenario]  # a reader waits on it
+    daemon.scan()
+    daemon.first.append(daemon.queue[0])  # then another, on something else
+    daemon.preempt()
+    assert daemon.build is running and running.wanted
+
+
+# -- #309: an edit cancels, never waits ---------------------------------------
+
+
+@pytest.mark.slow
+def test_an_edit_cancels_the_build_and_its_dependents_wait_for_a_commit(
+    commit_files: Callable[..., str],
+    daemon: builder._Daemon, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Editing base makes its build, and retire_alice's (built on it), stale:
+    the build is cancelled, not requeued, until the edit is committed."""
+    from click.testing import CliRunner
+
+    from analysis.cli import main
+
+    data_repo = git.Repo(daemon.data_dir.parent)
+    commit_files(data_repo, {}, "the scenarios")
+    monkeypatch.setenv("FAKE_BUILD", "30 0")
+    daemon.first = ["base"]
+    daemon.scan()
+    daemon.start_next(("t1",))
+    build = daemon.build
+    assert build is not None and build.scenario == "base"
+    from analysis.sim import loader
+
+    waited: list[str] = []
+    monkeypatch.setattr(loader, "_await_fresh", lambda _runs, name, *_mode: waited.append(name))
+    poked: list[Path] = []
+    monkeypatch.setattr(builder, "notify", lambda data_dir, **_kw: poked.append(data_dir) or "")
+    result = CliRunner().invoke(main, ["sim", "scenario", "edit", "base", "--description", "edited",
+                                       "--data-dir", str(daemon.data_dir)])
+    assert result.exit_code == 0, result.output
+    assert poked == [daemon.data_dir]  # the edit asked the builder to look again
+    assert waited == []  # and never waited for the build it makes stale
+    daemon.scan()
+    assert daemon.build is None and build.process.poll() is not None
+    assert "base" not in daemon.queue and "retire_alice" not in daemon.queue
+    assert daemon.waiting == {"base": "data dirty", "retire_alice": "data dirty"}
+    assert daemon.cancelled["base"]["why"] == "its data has uncommitted changes"
+    # retire_alice was only queued, but a reader waiting on it hears the same.
+    assert daemon.cancelled["retire_alice"]["why"] == "its data has uncommitted changes"
+    daemon.write_status()
+    again = builder._Daemon(daemon.data_dir, echo=lambda _text: None)
+    assert set(again.cancelled) == {"base", "retire_alice"}  # kept across a restart
+
+
+@pytest.mark.slow
+def test_a_reader_waiting_on_a_cancelled_build_says_so(
+    running_daemon: BuilderPaths, builder_on: None,
+) -> None:
+    paths = running_daemon
+    builder._write_json(paths.status, {"state": "building", "queue": ["base"], "updated": 0})
+
+    def cancel() -> None:
+        time.sleep(1.0)
+        builder._write_json(paths.status, {
+            "state": "idle", "queue": [], "updated": time.time(),
+            "cancelled": {"base": {"at": time.time(), "why": "its inputs changed"}}})
+
+    lines: list[str] = []
+    canceller = threading.Thread(target=cancel)
+    canceller.start()
+    builder.await_fresh(paths.runs_dir, "base", echo=lines.append)
+    canceller.join()
+    assert lines[-1] == ("the background build of base was cancelled: its inputs changed; "
+                         "opening its latest results, which are out of date")
+
+
+def test_a_reader_waits_for_a_job_its_run_turned_up(
+    running_daemon: BuilderPaths, builder_on: None,
+) -> None:
+    """A run that writes a batch can leave its series store to build: a
+    Monte Carlo reader waits for that too, though it wasn't pending when the
+    reader came, but not for the sensitivity batch it doesn't read."""
+    paths = running_daemon
+    made = time.time()
+
+    def build() -> None:
+        time.sleep(0.6)
+        builder._write_json(paths.status, {
+            "state": "building", "updated": time.time(),
+            "current": {"job": "base:series"}, "queue": ["base:sensitivity"]})
+        time.sleep(0.8)
+        builder._write_json(paths.status, {
+            "state": "building", "updated": time.time(),
+            "current": {"job": "base:sensitivity"}, "queue": []})
+
+    builder._write_json(paths.status, {
+        "state": "building", "updated": made, "current": {"job": "base"}, "queue": []})
+    lines: list[str] = []
+    worker = threading.Thread(target=build)
+    worker.start()
+    builder._wait(paths, "base", ["base"], made, lines.append, ("run", "series"))
+    worker.join()
+    assert lines[1:] == ["the background build of base is done",
+                         "the background build of base (series store) is done"]
+
+
+def test_looking_up_a_scenario_never_waits_for_its_build(
+    running_daemon: BuilderPaths, builder_on: None, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#309: the lookup hands back the run as something to wait on; only
+    asking for the run itself waits."""
+    from analysis.sim import loader
+
+    paths = running_daemon
+    config = builder.read_config(paths)
+    assert config is not None
+    data_dir = Path(config["data_dir"])
+    builder._write_json(paths.status, {"state": "building", "current": {"scenario": "base"},
+                                       "queue": [], "updated": time.time()})
+    waited: list[str] = []
+    monkeypatch.setattr(loader, "_await_fresh", lambda _runs, name, *_mode: waited.append(name))
+    ref = loader.resolve_scenario_name(data_dir, "base")
+    assert not ref.run.done()  # its build is in progress
+    assert ref.run.latest() is None and "no runs" in ref.describe()
+    assert "yet; one is being built" in ref.describe() and "newer" not in ref.describe()
+    assert waited == []
+    assert ref.run_path is None
+    assert waited and set(waited) == {"base"}
+    asked = len(waited)
+    assert ref.run_path is None and len(waited) == asked  # waited for once
+
+
+def test_a_builds_output_is_logged_indented_under_its_record(
+    daemon: builder._Daemon, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from analysis.sim import builder_log
+
+    monkeypatch.setattr(builder, "_sim_executable", lambda: [
+        "sh", "-c", 'echo "loading"; echo "oops" >&2; exit 3', "sim"])
+    daemon.scan()
+    name = daemon.queue[0]
+    daemon.start_next(("t1",))
+    _wait_until_done(daemon)
+    records = builder_log.read_records(daemon.paths.dir)
+    assert [r.text.split(" (")[0] for r in records] == [f"building {name}",
+                                                       f"{name} failed"]
+    assert records[0].body == ["  loading", "  oops"]
+    assert records[1].text.startswith(f"{name} failed (exit 3, ")
+    assert "sim builder log" in daemon.failed[name]["message"]
+
+
+def test_a_cancelled_builds_output_stays_under_its_record(
+    daemon: builder._Daemon, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from analysis.sim import builder_log
+
+    monkeypatch.setattr(builder, "_sim_executable", lambda: [
+        "sh", "-c", 'echo "started"; sleep 30', "sim"])
+    daemon.scan()
+    name = daemon.queue[0]
+    daemon.start_next(("t1",))
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline and not any(
+            r.body for r in builder_log.read_records(daemon.paths.dir)):
+        time.sleep(0.02)
+    daemon.cancel("test")
+    records = builder_log.read_records(daemon.paths.dir)
+    assert [r.text for r in records] == [f"building {name}", f"cancelled {name}: test"]
+    assert records[0].body == ["  started"] and records[1].body == []
+
+
+# -- #308: a command that commits and builds holds its scenarios ---------------
+
+
+def test_a_held_scenario_stops_its_build_and_waits_for_the_command(
+    daemon: builder._Daemon, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    builder._write_json(daemon.paths.config, {"data_dir": str(daemon.data_dir)})
+    monkeypatch.setattr(builder, "_holding", {})
+    monkeypatch.setenv("FAKE_BUILD", "30 0")
+    daemon.scan()
+    daemon.queue.remove("base")
+    daemon.queue.insert(0, "base")
+    daemon.start_next(("t1",))
+    assert daemon.build is not None and daemon.build.scenario == "base"
+
+    builder.hold(daemon.data_dir, ["base"])
+    daemon.scan()
+    assert daemon.build is None  # stopped, not left to race the command
+    assert "base" not in daemon.queue and "retire_alice" in daemon.queue
+    assert daemon.cancelled["base"]["why"] == f"a command (pid {os.getpid()}) is building it"
+    assert not builder._pending(daemon.paths, daemon.data_dir, "base")
+
+    # Its command ends without its exit handler (killed): the hold lapses.
+    gone = subprocess.Popen(["true"])
+    gone.wait()
+    builder._write_json(daemon.paths.holds / f"{os.getpid()}.json",
+                        {"pid": gone.pid, "scenarios": ["base"]})
+    assert builder.held(daemon.paths) == {}
+    daemon.scan()
+    assert "base" in daemon.queue
+
+
+def test_hold_does_nothing_where_the_builder_is_not_installed(
+    pair: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _code, data_dir = pair
+    monkeypatch.setattr(builder, "_holding", {})
+    builder.hold(data_dir, ["base"])
+    assert not BuilderPaths.for_data(data_dir).holds.exists()
+
+
+# -- #454: series stores and sensitivity batches -------------------------------
+
+
+def test_jobs_are_named_for_their_scenario_and_step() -> None:
+    assert builder.job_key("base", "run") == "base"
+    assert builder.job_key("ens", "sensitivity") == "ens:sensitivity"
+    assert builder.parse_job("ens:series") == ("ens", "series")
+    assert builder.parse_job("base") == ("base", "run")
+
+
+def test_the_builder_runs_everything_then_series_stores_then_sensitivities(
+    daemon: builder._Daemon,
+) -> None:
+    (daemon.data_dir / ".current_scenario").write_text("b\n")
+    queue = ["a:sensitivity", "b:series", "a", "b:sensitivity", "b", "a:series"]
+    assert daemon.order(queue) == ["b", "a", "b:series", "a:series", "b:sensitivity", "a:sensitivity"]
+
+
+def test_a_requested_scenarios_other_jobs_follow_it_at_once(
+    daemon: builder._Daemon,
+) -> None:
+    """Once a reader has waited on a's run, a's series store and sensitivity
+    batch come before anyone else's run."""
+    queue = ["a", "b", "a:series", "a:sensitivity", "b:sensitivity"]
+    daemon.first = ["a"]
+    assert daemon.order(queue)[0] == "a"
+    daemon.queue = daemon.order(queue)
+    daemon.start_next(("t1",))
+    assert daemon.build is not None and daemon.build.wanted
+    assert daemon.follow == ["a"]
+    assert daemon.order(daemon.queue) == ["a:series", "a:sensitivity", "b", "b:sensitivity"]
+
+
+def test_a_series_store_comes_before_a_requested_sensitivity_batch(
+    daemon: builder._Daemon, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A reader asked for a's run and sensitivity batch; the run's batch
+    needs a series store, found only later: it goes before the sensitivity
+    batch, and that request never preempts it."""
+    daemon.first = ["a", "a:sensitivity"]
+    assert daemon.order(["b", "a:sensitivity", "a:series"]) == ["a:series", "a:sensitivity", "b"]
+    monkeypatch.setenv("FAKE_BUILD", "30 0")
+    daemon.first = ["a:sensitivity"]
+    daemon.queue = ["a:series", "a:sensitivity", "b"]
+    daemon.start_next(("t1",))
+    running = daemon.build
+    assert running is not None and running.job == "a:series"
+    daemon.preempt()
+    assert daemon.build is running and running.wanted
+
+
+def test_a_readers_later_steps_stay_wanted_while_its_scenario_builds(
+    daemon: builder._Daemon, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A Monte Carlo reader asks for run and series though only the run is
+    pending: the series store the run turns up is then wanted too, so no
+    other reader preempts it; a step its scenario no longer needs drops."""
+    monkeypatch.setenv("FAKE_BUILD", "30 0")
+    daemon.scan()
+    daemon.start_next(("t1",))
+    running = daemon.build
+    assert running is not None
+    daemon.first = [running.job, f"{running.scenario}:series", "gone:series"]
+    daemon.scan()
+    daemon.preempt()
+    assert daemon.build is running and running.wanted
+    assert daemon.first == [f"{running.scenario}:series"]
+
+
+def test_each_step_runs_its_own_command(daemon: builder._Daemon) -> None:
+    data = daemon.data_dir
+    assert builder.step_command(data, "e", "run") == ["load", "e", "--data-dir", str(data)]
+    assert builder.step_command(data, "e", "series") == [
+        "builder", "series", "e", "--data-dir", str(data)]
+    assert builder.step_command(data, "e", "sensitivity") == [
+        "run", "e", "--sensitivity", "--data-dir", str(data)]
+
+
+def test_a_sensitivity_batch_is_made_again_with_its_quantiles(
+    daemon: builder._Daemon, fake_state: Callable[..., Path],
+) -> None:
+    from analysis.sim.ensemble import write_batch_manifest
+
+    batch = daemon.paths.runs_dir / "e" / "sensitivity" / "2026-01-01T000000Z"
+    batch.mkdir(parents=True)
+    write_batch_manifest(batch, member_count=5, failures=[], mode="sensitivity",
+                         quantiles=(0.1, 0.25, 0.75, 0.9), rows=["r"])
+    assert builder.step_command(daemon.data_dir, "e", "sensitivity")[3:5] == [
+        "--quantiles", "0.1,0.25,0.75,0.9"]
+
+
+def test_which_steps_an_ensemble_needs(
+    daemon: builder._Daemon, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A stale run needs running; a current batch without a current series
+    store needs one; an ensemble needs a sensitivity batch unless its latest
+    one is current, whatever its Monte Carlo results are, so a reader of a
+    stale sensitivity batch always has a job to wait on."""
+    from analysis.sim import scenario, series_db
+
+    runs = daemon.paths.runs_dir
+    batch = runs / "e" / "monte-carlo" / "2026-01-01T000000Z"
+    batch.mkdir(parents=True)
+    fresh: dict[str, freshness.Unchanged | None] = {"monte_carlo": None, "sensitivity": None}
+    monkeypatch.setattr(freshness, "unchanged_run",
+                        lambda *_a, mode="monte_carlo", **_kw: fresh[mode])
+    size: dict[str, int | None] = {"e": 4}
+    monkeypatch.setattr(scenario, "ensemble_settings", lambda _d, name: (None, size[name]))
+    current = {"store": False}
+    monkeypatch.setattr(series_db, "series_db_current", lambda _b: current["store"])
+    needs = lambda: builder.needed_steps(daemon.data_dir, runs, "e", None)  # noqa: E731
+    assert needs() == ["run", "sensitivity"]
+    fresh["monte_carlo"] = freshness.Unchanged(batch)
+    assert needs() == ["series", "sensitivity"]
+    current["store"] = True
+    fresh["sensitivity"] = freshness.Unchanged(batch)
+    assert needs() == []
+    # Only a single run (or nothing) for Monte Carlo: a stale sensitivity
+    # batch still needs making again.
+    fresh["monte_carlo"] = None
+    fresh["sensitivity"] = None
+    assert needs() == ["run", "sensitivity"]
+    size["e"] = None  # not an ensemble: nothing to vary
+    assert needs() == ["run"]
+
+
+@pytest.mark.slow
+def test_a_sensitivity_reader_waits_only_for_the_sensitivity_batch(
+    running_daemon: BuilderPaths, builder_on: None,
+) -> None:
+    paths = running_daemon
+    builder._write_json(paths.status, {
+        "state": "building", "current": {"scenario": "base", "job": "base"},
+        "queue": ["base:sensitivity"], "updated": 0})
+
+    def finish() -> None:
+        time.sleep(1.0)
+        [request] = [json.loads(p.read_text()) for p in paths.requests.glob("*.json")]
+        assert request["steps"] == ["sensitivity"]
+        builder._write_json(paths.status, {"state": "building", "current": {"job": "base"},
+                                           "queue": [], "updated": time.time()})
+
+    lines: list[str] = []
+    finisher = threading.Thread(target=finish)
+    finisher.start()
+    builder.await_fresh(paths.runs_dir, "base", echo=lines.append, mode="sensitivity")
+    finisher.join()
+    assert lines == [
+        "waiting for the background build of base (sensitivity batch) (Ctrl-C to stop waiting)...",
+        "the background build of base (sensitivity batch) is done",
+    ]
+
+
+# -- #306: saying when local main is behind the last-fetched origin/main --------
+
+
+def _fetched_upstream(commit_files: Callable[..., str], repo: git.Repo, files: dict[str, str]) -> None:
+    """``origin/main`` as if a fetch had brought a commit with ``files``,
+    leaving local main where it is."""
+    fetched = "refs/remotes/origin/main" in [ref.path for ref in repo.refs]
+    repo.git.checkout("-B", "upstream", "origin/main" if fetched else "main")
+    commit_files(repo, files, "upstream")
+    repo.git.update_ref("refs/remotes/origin/main", "upstream")
+    repo.git.checkout("main")
+    (Path(repo.git_dir) / "FETCH_HEAD").write_text("")
+
+
+def test_main_behind_counts_only_code_commits(commit_files: Callable[..., str], code_repo: git.Repo) -> None:
+    assert builder.behind_upstream() is None  # nothing fetched to compare with
+    _fetched_upstream(commit_files, code_repo, {"docs/guide.md": "two\n"})
+    assert builder.behind_upstream() is None  # docs don't change a build
+    _fetched_upstream(commit_files, code_repo, {"src/engine.py": "v2\n"})
+    behind = builder.behind_upstream()
+    assert behind is not None and (behind.branch, behind.upstream, behind.commits) == ("main", "origin/main", 1)
+    assert behind.describe() == ("local main is 1 commit behind origin/main in src, templates, "
+                                 "pyproject.toml, uv.lock, as of the last fetch just now")
+    code_repo.git.merge("upstream")
+    assert builder.behind_upstream() is None
+
+
+def test_main_behind_follows_the_tracking_branch(commit_files: Callable[..., str], code_repo: git.Repo) -> None:
+    _fetched_upstream(commit_files, code_repo, {"src/engine.py": "v2\n"})
+    code_repo.git.update_ref("refs/remotes/mirror/main", "main")
+    code_repo.git.config("branch.main.remote", "mirror")
+    code_repo.git.config("branch.main.merge", "refs/heads/main")
+    assert builder.behind_upstream() is None  # mirror/main, not origin/main
+
+
+def test_a_behind_main_is_noted_once_where_the_builder_builds_from_it(
+    commit_files: Callable[..., str],
+    pair: tuple[Path, Path], code_repo: git.Repo, builder_on: None, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _code, data_dir = pair
+    paths = BuilderPaths.for_data(data_dir)
+    monkeypatch.setattr(builder, "_noted_behind", set())
+    notes: list[str] = []
+    _fetched_upstream(commit_files, code_repo, {"src/engine.py": "v2\n"})
+    builder.note_behind(paths.state_dir, notes.append)
+    assert notes == []  # not installed: the builder isn't building from main
+    builder.install(data_dir)
+    with monkeypatch.context() as m:
+        m.setattr(builder, "_noted_behind", set())
+        m.setattr(builder, "main_check", lambda *_a: (None, "code differs from main"))
+        builder.note_behind(paths.state_dir, notes.append)
+    assert notes == []  # off: `sim builder status` says why
+    with monkeypatch.context() as m:
+        m.setattr(builder, "_noted_behind", set())
+        m.setenv(locks.BUILDER_CHILD_ENV, "1")
+        builder.note_behind(paths.state_dir, notes.append)
+    assert notes == []  # not into the builder's log at every build
+    monkeypatch.setattr(builder, "_noted_behind", set())
+    builder.note_behind(paths.state_dir, notes.append)
+    builder.note_behind(paths.state_dir, notes.append)
+    assert len(notes) == 1 and notes[0].startswith("NOTE: local main is 1 commit behind origin/main")
+
+
+def test_the_daemon_fetches_prices_when_due_and_waits_for_the_fetch(
+    daemon: builder._Daemon, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from analysis.sim import price_schedule
+
+    lines: list[str] = []
+    daemon.echo = lines.append
+    daemon.prices_tick(True)
+    assert daemon.fetcher is None  # not installed: no fetch
+
+    builder._write_json(daemon.paths.config, {"data_dir": str(daemon.data_dir), "prices": True})
+    daemon.prices_tick(True)
+    assert daemon.fetcher is None  # the tests' switch is on
+
+    monkeypatch.delenv(price_schedule.SWITCH_ENV)
+    daemon.prices_tick(True)
+    assert daemon.fetcher is not None and any("fetching prices" in line for line in lines)
+    daemon.fetcher.wait(timeout=10)
+    daemon.prices_tick(False)
+    assert daemon.fetcher is None and any(line.endswith("fetched prices") for line in lines)
+
+
+def test_the_daemon_rolls_scenarios_when_due_and_waits_for_the_roll(
+    daemon: builder._Daemon, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from analysis.sim import roll_schedule
+
+    lines: list[str] = []
+    daemon.echo = lines.append
+    builder._write_json(daemon.paths.config, {"data_dir": str(daemon.data_dir), "roll": True})
+    daemon.roll_tick(True)
+    assert daemon.roller is None  # the tests' switch is on
+
+    monkeypatch.delenv(roll_schedule.SWITCH_ENV)
+    monkeypatch.setattr(roll_schedule, "due", lambda *_a: True)
+    daemon.roll_tick(True)
+    assert daemon.roller is not None and any("rolling scenarios forward" in line for line in lines)
+    daemon.roller.wait(timeout=30)
+    daemon.roll_tick(False)
+    # Not again within the hour, even if the roll didn't record its night.
+    assert daemon.roller is None and any(line.endswith("rolled scenarios forward") for line in lines)
+
+
+def test_the_daemon_merges_fetched_prices_only_between_builds(
+    commit_files: Callable[..., str],
+    daemon: builder._Daemon, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from datetime import date, timedelta
+    from decimal import Decimal
+
+    from analysis.sim import price_schedule
+
+    class OneClose:
+        name = "one"
+
+        def closes(self, symbol: str, start: date, end: date) -> list[tuple[date, Decimal]]:
+            return [(end - timedelta(days=1), Decimal("101"))]
+
+    monkeypatch.delenv(price_schedule.SWITCH_ENV)
+    builder._write_json(daemon.paths.config, {"data_dir": str(daemon.data_dir), "prices": True})
+    (daemon.data_dir / "securities.csv").write_text("symbol,name\nVTI,Total market\n")
+    with git.Repo(daemon.data_dir.parent) as repo:
+        commit_files(repo, {}, "VTI")
+        before = repo.head.commit.hexsha
+        price_schedule.fetch(daemon.data_dir, daemon.paths.prices_worktree, provider=OneClose())
+        daemon.fetch_ended = time.monotonic()  # no fetch of its own in this test
+        daemon.build = object()  # ty: ignore[invalid-assignment] -- any build in progress
+        daemon.prices_tick(True)
+        assert repo.head.commit.hexsha == before
+        daemon.build = None
+        daemon.prices_tick(True)
+        assert repo.head.commit.hexsha != before
+        assert repo.head.commit.author.name == "sim builder"
+
+
+def test_notify_forgets_the_repository_of_the_hook_that_ran_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#627: what git sets for a hook would aim the daemon, and everything it
+    starts, at the worktree that ran the hook."""
+    for name in price_schedule.HOOK_GIT_ENV:
+        monkeypatch.setenv(name, "/elsewhere")
+    builder.forget_hook_repository()
+    assert not set(price_schedule.HOOK_GIT_ENV) & set(os.environ)
+
+
+@pytest.mark.parametrize("hook", ["post-checkout", "post-commit", "post-merge", "post-rewrite"])
+def test_the_builder_hooks_start_notify_without_the_hooks_repository(
+    repo_root: Path, hook: str,
+) -> None:
+    text = (repo_root / ".githooks" / hook).read_text()
+    assert "builder notify" in text
+    for name in price_schedule.HOOK_GIT_ENV:
+        assert f"-u {name} " in text

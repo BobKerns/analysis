@@ -5,23 +5,24 @@ description = "Personal finance analysis and planning tools"
 readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
-  "click>=8.5.0",
+  "click>=8.5.1",
   "gitpython>=3.2.1",
   "ipywidgets>=8.1.9",
   "matplotlib>=3.11.2",
-  "pandas>=3.0.6",
+  "pandas>=3.1.1",
   "rich>=15.0.0",
   "ipykernel>=7.4.0",
-  "jupyterlab>=4.6.4",
+  "jupyterlab>=4.6.6",
   # 2.21.0 breaks under tornado >= 6.5.9: every /static request 500s (#62)
   "jupyter-server>=2.21.1",
-  "numpy>=2.5.4",
+  "numpy>=2.5.5",
   "scipy>=1.18.1",
   "truststore>=0.10.5",
-  "markdown-it-py>=4.2.0",
+  "markdown-it-py>=4.3.0",
   "anywidget>=0.11.0",
-  "playwright>=1.64.0",
+  "playwright>=1.65.2",
   "pyyaml>=6.0.3",
+  "jinja2>=3.1.6",
 ]
 
 [project.scripts]
@@ -36,15 +37,15 @@ dependabot = [
 ]
 dev = [
   "nbstripout>=0.9.1",
-  "pytest>=9.1.1",
+  "pytest>=9.2.0",
   "pytest-cov>=7.1.0",
-  "ruff>=0.17.1",
+  "ruff>=0.17.5",
   "pytest-xdist>=3.8.0",
-  "ty>=0.0.90",
+  "ty>=0.0.104",
 ]
 
 [build-system]
-requires = ["hatchling>=1.32.4"]
+requires = ["hatchling>=1.33.0"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
@@ -61,9 +62,15 @@ packages = ["src/analysis"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
+# Any warning a test doesn't expect fails it, unclosed files and SQLite
+# connections included. A test that expects one captures it (pytest.warns,
+# or the allow_negative_balance marker); one irrelevant to a test is
+# ignored in that test, as narrowly as it can be.
+filterwarnings = ["error"]
 markers = [
     "uses_current_scenario_write: exempt from the no-op write_current_scenario fixture (see tests/conftest.py)",
-    "allow_negative_balance: exempt from the negative-balance-is-an-error fixture (see tests/conftest.py)",
+    "uses_working_set_write: exempt from the no-op .working_set write fixture (see tests/conftest.py)",
+    "allow_negative_balance: the test runs an account short on purpose; the went-negative warning must fire (see tests/conftest.py)",
     "uses_real_cpu_count: exempt from the one-CPU sim run --jobs default fixture (see tests/conftest.py)",
     "slow: takes about a second or more; the local gate runs -m 'not slow', CI runs everything",
 ]
@@ -76,8 +83,16 @@ target-version = "py314"
 select = ["E", "F", "I", "UP", "B"]
 ignore = ["I001", "F541"]
 
+[tool.ruff.lint.per-file-ignores]
+# The plugin's scripts are dense one-file tools Claude runs; long lines kept.
+"plugins/**" = ["E501"]
+
 [tool.ty.environment]
 python-version = "3.14"
 
 [tool.ty.src]
-include = ["src", "tests"]
+include = ["src", "tests", "plugins"]
+# The example household tax calculator extends a built-in's nested Params
+# class (`class Params(StateTables.Params)`), the documented pattern, which ty
+# refuses as an override of a class-literal attribute.
+exclude = ["tests/data/sim/tax_calculators/taxes"]

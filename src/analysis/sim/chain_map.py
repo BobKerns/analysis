@@ -172,6 +172,13 @@ def chain_map(sc: ScenarioConnection) -> ChainMap:
             cmap.uses.setdefault(row.from_name, []).append(Use("draw", what, row.to_name))
         if row.to_name in cmap.steps:
             cmap.uses.setdefault(row.to_name, []).append(Use("sweep", what, row.from_name))
+    # A tax jurisdiction pays from its source chain (#507).
+    taxes = sc._read_sql(
+        "SELECT t.name, s.name AS source FROM tax_jurisdiction t "
+        "JOIN chain s ON s.id = t.source_chain_id")
+    for name, source in zip(taxes["name"], taxes["source"], strict=True):
+        if source in cmap.steps:
+            cmap.uses.setdefault(source, []).append(Use("draw", f"the {name} tax (taxes/{name}.csv)"))
     # A calendar transfer becomes a rule only when the engine runs, so the
     # intent's calendar rows are read directly; only these two kinds move money.
     for row in named_rows(sc.items("calendar_event")):

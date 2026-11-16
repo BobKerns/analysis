@@ -1,4 +1,5 @@
-2026-04-30,Income_Salary_Alice,Asset_Checking,6200000,ordinary,ytd
+2026-04-30,Income_Salary_Alice,Asset_Checking,3200000,ordinary,ytd
+2026-04-30,Income_Salary_Bill,Asset_Checking,3000000,ordinary,ytd
 2026-04-30,Asset_Checking,Expense_Taxes_Federal,930000,none,ytd
 2025-12-31,Income_CapitalGain,Income_CapitalGain,-150000,ltcg,ytd
 2026-05-31,interest_income,Asset_Checking,1250,ordinary,rule

@@ -25,8 +25,13 @@ def open_run_file(
     allow_dirty_code: bool = False,
     run_args: dict[str, Any] | None = None,
     engine_options: dict[str, Any] | None = None,
+    reserved: bool = False,
 ) -> sqlite3.Connection:
     """Create a new run file at ``run_path`` from ``intent_path``.
+
+    With ``reserved``, ``run_path`` is the empty file
+    ``locks.reserve_run_path`` claimed for this run (#300); otherwise it
+    must not exist yet.
 
     Applies the run schema, snapshots the intent tables (preserving ids),
     and writes the ``simulation_run`` row with ``status='running'`` and
@@ -36,7 +41,10 @@ def open_run_file(
     run_path = Path(run_path)
     intent_path = Path(intent_path).resolve()
     run_path.parent.mkdir(parents=True, exist_ok=True)
-    if run_path.exists():
+    if reserved:
+        if not run_path.is_file() or run_path.stat().st_size:
+            raise FileExistsError(f"not an empty reserved run file: {run_path}")
+    elif run_path.exists():
         raise FileExistsError(f"run file already exists: {run_path}")
 
     con = connect_sim_file(run_path)

@@ -5,6 +5,7 @@ controls and default recipe."""
 from __future__ import annotations
 
 import shutil
+from contextlib import closing
 import sqlite3
 from pathlib import Path
 from typing import Any, cast
@@ -147,13 +148,13 @@ def test_balance_history_plots_the_picked_lots(two_lot_run: RunConnection,
 
     from analysis.sim.notebook_ui import accounts_plots
 
-    shown: list[object] = []
-    monkeypatch.setattr(accounts_plots, "display", lambda *args, **kwargs: shown.extend(args))
+    shown: list[Figure] = []
+    monkeypatch.setattr(accounts_plots, "show_figure", shown.append)
     widget = accounts_plots.account_history_widget(two_lot_run, "asset", "Balances")
     picker = widget.children[1]
     picker.account_picker.value = (BROKERAGE,)
     picker.lot_picker.picker.value = ("a", "b")
-    figure = [item for item in shown if isinstance(item, Figure)][-1]
+    figure = shown[-1]
     assert [line.get_label() for line in figure.axes[0].lines] == [
         f"{BROKERAGE}/a", f"{BROKERAGE}/b", "Total",
     ]
@@ -227,8 +228,8 @@ def _copy_recipe(runs_dir: Path, name: str, rename_lot: str | None = None) -> No
     shutil.copytree(runs_dir / "two_lot", runs_dir / name)
     if rename_lot is None:
         return
-    for member in (runs_dir / name).glob("*/member_*.sqlite3"):
-        with sqlite3.connect(member) as con:
+    for member in (runs_dir / name).glob("*/*/member_*.sqlite3"):
+        with closing(sqlite3.connect(member)) as con, con:
             con.execute("UPDATE account_lot SET lot = 'renamed' WHERE lot = ?", (rename_lot,))
 
 
@@ -295,10 +296,34 @@ def test_lot_picker_offers_only_the_shown_recipes_lots(
 
 
 @pytest.mark.slow
+def test_a_disabled_default_recipe_still_offers_its_lots(
+    two_lot_ensemble_runs_dir: Path, test_data_dir: Path,
+) -> None:
+    """A widget keeps a disabled recipe that is its default (#300); the
+    shared controls must still know that recipe's lots (#401)."""
+    from analysis.sim.loader import set_scenario_enabled
+    from analysis.sim.notebook_ui import ensemble_widgets
+
+    _copy_recipe(two_lot_ensemble_runs_dir, "base_ensemble", rename_lot="a")
+    (test_data_dir / "scenarios" / "base_ensemble").mkdir()
+    set_scenario_enabled(test_data_dir, "base_ensemble", enabled=False)
+    # As ensemble.ipynb builds them: one set of controls, from the data repo.
+    controls = ensemble_widgets.EnsembleControls(
+        data_dir=test_data_dir, runs_dir=two_lot_ensemble_runs_dir)
+    fan = ensemble_widgets.ensemble_widget(
+        data_dir=test_data_dir, runs_dir=two_lot_ensemble_runs_dir, controls=controls,
+        default="base_ensemble")
+    dropdown, row, _loading, _out = fan.children
+    assert dropdown.value == "base_ensemble"
+    row.controls.account_picker.account_picker.value = BROKERAGE
+    assert [label for label, _ in row.lot_picker.picker.options] == [ALL_LOTS, "renamed", "b"]
+
+
+@pytest.mark.slow
 def test_compare_lots_are_the_baseline_and_variants_own(
     two_lot_ensemble_runs_dir: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The comparison offers the union of its baseline's and variants' lots,
+    """The comparison offers the union of its baseline's and variant's lots,
     independent of the fan's, and a lot one side lacks gets a note."""
     from analysis.sim.notebook_ui import ensemble_widgets
     from analysis.sim.notebook_ui.styled import StyledMarkdown
@@ -319,7 +344,7 @@ def test_compare_lots_are_the_baseline_and_variants_own(
         return [label for label, _ in picker.picker.options]
 
     assert offered(lot_picker) == [ALL_LOTS, "renamed", "b"]  # baseline only
-    recipe_pickers.children[1].value = ("two_lot",)
+    recipe_pickers.children[1].value = "two_lot"
     assert offered(lot_picker) == [ALL_LOTS, "renamed", "b", "a"]
     assert offered(fan.children[1].lot_picker) == [ALL_LOTS, "renamed", "b"]
     assert fan.children[1].lot_picker is controls.recipe_lot_picker
@@ -327,7 +352,7 @@ def test_compare_lots_are_the_baseline_and_variants_own(
     shown.clear()
     lot_picker.picker.value = ("a",)
     assert any(isinstance(item, StyledMarkdown)
-               and f"`base_ensemble` has no account {BROKERAGE} lot a" in str(item.data)
+               and f"No account {BROKERAGE} lot a in `base_ensemble`" in str(item.data)
                for item in shown)
 
 
@@ -369,7 +394,7 @@ def test_compare_widget_log_scale_uses_symlog(
     box = ensemble_widgets.ensemble_compare_widget(runs_dir=runs_dir, default="baseline")
     recipe_pickers, row, _loading, _out = box.children
     controls = row.controls
-    recipe_pickers.children[1].value = ("child",)
+    recipe_pickers.children[1].value = "child"
     assert figures[-1].axes[0].get_yscale() == "linear"
     controls.log_linear_picker.value = LogLinearMode.LOG
     assert figures[-1].axes[0].get_yscale() == "symlog"
