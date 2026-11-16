@@ -13,10 +13,13 @@ The expected age is the simulator's own reading of the table
 age, deaths spread evenly through each month, and nobody past
 ``registries.MAX_AGE_AT_DEATH``. A fractional age interpolates both values
 linearly between the whole ages either side.
+
+:func:`blend` mixes tables into a new one (``sim lifespan blend``).
 """
 
 from __future__ import annotations
 
+import csv
 import math
 from dataclasses import dataclass
 from pathlib import Path
@@ -28,8 +31,8 @@ from analysis.sim.life_table import LIFE_TABLE_KIND, LifeTable, life_table_from_
 from analysis.sim.lineage import TEMPLATE_AUX_DIR, TEMPLATE_SCENARIOS_DIR
 
 __all__ = [
-    "DEFAULT_NAME", "SEXES", "TableFile", "at_age", "at_age_frame", "expected_ages",
-    "find_tables", "read_table", "comparison",
+    "DEFAULT_NAME", "SEXES", "TableFile", "at_age", "at_age_frame", "blend", "expected_ages",
+    "find_table", "find_tables", "read_table", "comparison", "write_table",
 ]
 
 # What the unnamed life_table.csv is called here; lifespan.csv leaves its
@@ -146,3 +149,55 @@ def at_age_frame(data_dir: Path, age: float) -> pd.DataFrame:
     frame.index = pd.MultiIndex.from_tuples(frame.index, names=["table", "location"])
     frame.columns = pd.MultiIndex.from_tuples(frame.columns, names=["sex", "measure"])
     return frame
+
+
+def find_table(data_dir: Path, table: str) -> Path:
+    """The file a table names: a label :func:`find_tables` gives, or a path
+    to a life table CSV. Raises ``ValueError`` when it is neither."""
+    for each in find_tables(data_dir):
+        if each.label == table:
+            return each.path
+    if (path := Path(table)).is_file():
+        return path
+    known = ", ".join(t.label for t in find_tables(data_dir))
+    raise ValueError(f"no life table {table!r}: give one of {known}, or a CSV file")
+
+
+def blend(tables: list[tuple[dict[str, LifeTable], float]]) -> dict[str, LifeTable]:
+    """One table from ``(table by sex, weight)`` pairs, for a person between
+    populations (#315). At every age and for each sex the yearly hazard,
+    ``-log(1 - q)``, is the weighted average of the inputs', so equal weights
+    are a person whose risk each year sits halfway between them. (Averaging
+    ``q`` itself is nearly the same at most ages; averaging survival curves
+    would instead describe a mixed group, part of whom follow each table.)
+    Weights are scaled to add to 1, and a weight of 0 leaves its table out.
+    Past an input's last age its ``q`` is 1, so the blend ends where the
+    shortest weighted input does. Raises ``ValueError`` for a negative
+    weight or none above 0."""
+    total = sum(weight for _, weight in tables)
+    if total <= 0 or any(weight < 0 for _, weight in tables):
+        raise ValueError("weights must be zero or more, and not all zero")
+    weighted = [(by_sex, weight / total) for by_sex, weight in tables if weight]
+    blended = {}
+    for sex in registries.LIFE_TABLE_Q_COLUMNS:
+        last = min(len(by_sex[sex].q) for by_sex, _ in weighted)
+        blended[sex] = LifeTable(tuple(
+            -math.expm1(sum(share * math.log1p(-by_sex[sex].q[age]) for by_sex, share in weighted))
+            if all(by_sex[sex].q[age] < 1 for by_sex, _ in weighted) else 1.0
+            for age in range(last)
+        ) + (1.0,) * (max(len(by_sex[sex].q) for by_sex, _ in tables) - last))
+    return blended
+
+
+def write_table(path: Path, effective: str, by_sex: dict[str, LifeTable]) -> None:
+    """Write a life table CSV, one vintage dated ``effective``, ``q`` to six
+    places, as the aux tables are."""
+    ages = max(len(t.q) for t in by_sex.values())
+    columns = registries.LIFE_TABLE_Q_COLUMNS
+    with path.open("w", newline="", encoding="utf-8") as fh:
+        writer = csv.writer(fh, lineterminator="\n")
+        writer.writerow(["effective_date", "age", columns["f"], columns["m"]])
+        for age in range(ages):
+            writer.writerow([effective, age, *(
+                f"{by_sex[sex].q[age] if age < len(by_sex[sex].q) else 1.0:.6f}"
+                for sex in ("f", "m"))])

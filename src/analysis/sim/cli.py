@@ -158,7 +158,7 @@ from analysis.sim.staging import (
     StagedEdit,
     staged_edit,
 )
-from analysis.sim.life_table import equivalent_multiplier
+from analysis.sim.life_table import equivalent_multiplier, table_file
 from analysis.sim.dates import (
     MONTH_FORMAT_HINT, is_full_date, is_marker_name, is_month_or_date, month_before, month_end_iso, parse_day,
     parse_relative_date, parse_vary_date,
@@ -17555,6 +17555,72 @@ def lifespan_check_command(age: float | None, data_dir: Path | None) -> None:
             f"{v:.6f}" if measure == "q" else f"{v:.2f}"
             for v, (_, measure) in zip(values, frame.columns, strict=True)))
     _print_wide(table)
+
+
+@lifespan_tables_group_command.command("blend")
+@click.argument("name", required=False)
+@click.option("--table", "tables", type=(completion.LIFE_TABLE_FILE, float), multiple=True,
+              metavar="TABLE WEIGHT",
+              help="A table to blend, as `sim lifespan tables` names it or a CSV file, "
+                   "and its weight; repeat for each.")
+@click.option("--replace", is_flag=True, help="Replace the scenario's table of that name.")
+@_scenario_options
+def lifespan_blend_command(
+    name: str | None, tables: tuple[tuple[str, float], ...], replace: bool,
+    scenario: str | None, data_dir: Path | None,
+) -> None:
+    """Blend life tables into a new one, life_table__NAME.csv, for a person
+    between populations (someone who has lived in two countries).
+
+    `--table default 0.5 --table jp 0.5` gives a table whose yearly death
+    rate at each age, for each sex, sits halfway between the two. Weights
+    are scaled to add to 1. Each table's latest vintage is used, and the
+    blend is dated the latest of them. Past a table's last age its death
+    rate is 1, so the blend ends where the shortest does.
+
+    It is written to the scenario's aux/, where the scenario and those built
+    on it (a mix-in's, wherever it is mixed in) find it, and is used by a
+    lifespan whose lifespan.csv life_table is NAME (`sim person lifespan set
+    PERSON AGE --vary life_table --life-table NAME`). Whatever is left out is asked for: the
+    name, then each table and weight until a blank table.
+    """
+    from analysis.sim import lifespan_tables
+
+    data = _resolve_data_dir(data_dir)
+    if name is None:
+        name = _ask_new_name("name of the new life table")
+    name = name.strip()
+    if problem := rename.name_problem("life table", name):
+        raise click.ClickException(problem)
+    if name == lifespan_tables.DEFAULT_NAME:
+        raise click.ClickException(f"{name!r} is the unnamed life_table.csv; give the blend a name")
+    pairs = list(tables)
+    if not pairs:
+        choices = [t.label for t in lifespan_tables.find_tables(data)]
+        while table := _prompt_with_completion(
+                "table to blend (blank when done)", choices, default="").strip():
+            pairs.append((table, click.prompt("  weight", type=float)))
+    if len(pairs) < 2:
+        raise click.ClickException("a blend needs two tables or more")
+    dates, inputs = [], []
+    try:
+        for table, weight in pairs:
+            effective, by_sex = lifespan_tables.read_table(lifespan_tables.find_table(data, table))
+            dates.append(effective)
+            inputs.append((by_sex, weight))
+        blended = lifespan_tables.blend(inputs)
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from None
+    ref = _resolve_scenario(data, scenario)
+    folder = ref.path / "aux"
+    path = folder / table_file(name)
+    if path.exists() and not replace:
+        raise click.ClickException(f"{_shown(path)} exists; --replace replaces it")
+    with _scenario_edit(data, ref.name) as edit:
+        edit.path(folder).mkdir(parents=True, exist_ok=True)
+        lifespan_tables.write_table(edit.path(path), max(dates), blended)
+    ages = max(len(t.q) for t in blended.values())
+    click.echo(f"wrote life table {name!r}, ages 0-{ages - 1}, to {_shown(path)}")
 
 
 @sim_group_command.group(name="person")

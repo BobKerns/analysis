@@ -345,6 +345,16 @@ ITEMIZATION = NameType(_in_scenario(names.itemization_names), "itemization",
 LIFE_TABLE = NameType(
     _in_scenario(lambda d, s: names.series_names(d, s, "life_table")), "life table",
 )  # #315: the <name> of an aux life_table__<name>.csv
+
+
+def _life_table_labels(ctx: click.Context, data_dir: Path) -> list[str]:  # noqa: ARG001
+    from analysis.sim.lifespan_tables import find_tables
+
+    return [t.label for t in find_tables(data_dir)]
+
+
+# Every life table, as `sim lifespan tables` labels them; a CSV path does too.
+LIFE_TABLE_FILE = NameType(_life_table_labels, "life table", check=False)
 def _with_joint(ids: list[str]) -> list[str]:
     """The persons and the household, ``joint``, which the loader supplies
     when persons.csv has no row for it."""

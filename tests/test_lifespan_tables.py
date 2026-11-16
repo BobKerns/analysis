@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+import math
 from pathlib import Path
 
 import pandas as pd
@@ -145,3 +146,96 @@ def test_at_age_widget_redraws_for_a_new_age(
     assert box.value == 65
     box.value = 70.5
     assert asked == [65, 70.5]
+
+
+def _by_sex(female: tuple[float, ...], male: tuple[float, ...]) -> dict[str, LifeTable]:
+    return {"f": LifeTable(female), "m": LifeTable(male)}
+
+
+def test_the_blend_averages_hazards_by_weight() -> None:
+    a = _by_sex((0.1, 0.5), (0.2, 0.5))
+    b = _by_sex((0.3,), (0.2,))
+
+    mixed = lifespan_tables.blend([(a, 3), (b, 1)])
+
+    hazard = 0.75 * -math.log(0.9) + 0.25 * -math.log(0.7)
+    assert mixed["f"].q[0] == pytest.approx(1 - math.exp(-hazard))
+    assert mixed["m"].q[0] == pytest.approx(0.2)
+    assert mixed["f"].q[1] == mixed["m"].q[1] == 1.0  # past b's last age
+
+
+def test_a_blend_leaves_out_a_table_weighted_zero() -> None:
+    a = _by_sex((0.1, 0.5), (0.2, 0.5))
+    b = _by_sex((0.9,), (0.9,))
+    assert lifespan_tables.blend([(a, 1), (b, 0)])["f"].q == pytest.approx((0.1, 0.5))
+
+
+@pytest.mark.parametrize("weights", [(0, 0), (1, -1)])
+def test_a_blend_refuses_weights_that_add_to_nothing_or_go_negative(weights: tuple[int, int]) -> None:
+    a = _by_sex((0.1,), (0.2,))
+    with pytest.raises(ValueError, match="weights"):
+        lifespan_tables.blend([(a, weights[0]), (a, weights[1])])
+
+
+def test_a_written_table_reads_back(tmp_path: Path) -> None:
+    path = tmp_path / "life_table__x.csv"
+    lifespan_tables.write_table(path, "2023-12-31", _by_sex((0.25, 1.0), (0.5,)))
+    effective, by_sex = lifespan_tables.read_table(path)
+    assert effective == "2023-12-31"
+    assert by_sex["f"].q == (0.25, 1.0)
+    assert by_sex["m"].q == (0.5, 1.0)  # padded to the longer sex
+
+
+def test_find_table_takes_a_label_or_a_file(data_dir: Path, tmp_path: Path) -> None:
+    assert lifespan_tables.find_table(data_dir, "jp").name == "life_table__jp.csv"
+    path = _write_table(tmp_path / "mine.csv", "2023-12-31,0,1,1\n")
+    assert lifespan_tables.find_table(data_dir, str(path)) == path
+    with pytest.raises(ValueError, match="no life table 'nowhere'"):
+        lifespan_tables.find_table(data_dir, "nowhere")
+
+
+def test_lifespan_blend_writes_the_scenarios_table(
+    sim: Callable[..., Result], test_data_dir: Path,
+) -> None:
+    result = sim("lifespan", "blend", "us_jp", "--table", "default", "0.5", "--table", "jp", "0.5",
+                 "--scenario", "retire_alice")
+    assert result.exit_code == 0, result.output
+    path = test_data_dir / "scenarios" / "retire_alice" / "aux" / "life_table__us_jp.csv"
+    _, blended = lifespan_tables.read_table(path)
+    _, us = lifespan_tables.read_table(lifespan_tables.find_table(test_data_dir, "default"))
+    _, jp = lifespan_tables.read_table(lifespan_tables.find_table(test_data_dir, "jp"))
+    assert jp["f"].q[70] < blended["f"].q[70] < us["f"].q[70]
+    labels = [t.label for t in lifespan_tables.find_tables(test_data_dir)]
+    assert "us_jp" in labels
+
+
+def test_lifespan_blend_asks_for_what_is_left_out(
+    sim: Callable[..., Result], test_data_dir: Path,
+) -> None:
+    result = sim("lifespan", "blend", "--scenario", "retire_alice",
+                 input="mix\ndefault\n3\njp\n1\n\n")
+    assert result.exit_code == 0, result.output
+    assert (test_data_dir / "scenarios" / "retire_alice" / "aux" / "life_table__mix.csv").is_file()
+
+
+def test_lifespan_blend_replaces_only_when_asked(sim: Callable[..., Result]) -> None:
+    args = ("lifespan", "blend", "us_jp", "--table", "default", "1", "--table", "jp", "1",
+            "--scenario", "retire_alice")
+    assert sim(*args).exit_code == 0
+    again = sim(*args)
+    assert again.exit_code != 0 and "--replace replaces it" in again.output
+    assert sim(*args, "--replace").exit_code == 0
+
+
+@pytest.mark.parametrize(("args", "message"), [
+    (("default", "--table", "default", "1", "--table", "jp", "1"), "unnamed life_table.csv"),
+    (("x", "--table", "default", "1"), "two tables or more"),
+    (("x", "--table", "default", "1", "--table", "nowhere", "1"), "no life table 'nowhere'"),
+    (("x", "--table", "default", "0", "--table", "jp", "0"), "weights"),
+])
+def test_lifespan_blend_refuses(
+    sim: Callable[..., Result], args: tuple[str, ...], message: str,
+) -> None:
+    result = sim("lifespan", "blend", *args, "--scenario", "retire_alice")
+    assert result.exit_code != 0
+    assert message in result.output
