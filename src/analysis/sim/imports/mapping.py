@@ -34,18 +34,21 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 __all__ = [
-    "ACCOUNTS", "ACCOUNTS_HEADER", "CATEGORIES", "CATEGORIES_HEADER", "EXCLUDED_PAYEES",
-    "EXCLUDED_PAYEES_HEADER", "EXPENSE_ACCOUNTS", "EXPENSE_ACCOUNTS_HEADER", "IMPORTS", "INCOME_ACCOUNTS", "NO_RULE",
-    "PAYEES", "PAYEES_HEADER", "SPLITS", "SPLITS_HEADER", "TRANSFER", "AccountMap", "AccountTarget",
-    "ExpenseAccounts", "PayeeMap", "expense_accounts_path", "imports_dir", "income_accounts_path", "load_account_map",
-    "load_category_map", "load_category_splits", "load_excluded_payees", "load_expense_accounts",
-    "load_payee_map", "payee_key", "payee_matches", "rename_account", "rename_lot", "source_dir",
+    "ACCOUNTS", "ACCOUNTS_HEADER", "BUDGET_CHOICES", "BUDGET_CHOICES_HEADER", "CATEGORIES",
+    "CATEGORIES_HEADER", "EXCLUDED_PAYEES", "EXCLUDED_PAYEES_HEADER", "EXPENSE_ACCOUNTS",
+    "EXPENSE_ACCOUNTS_HEADER", "IMPORTS", "INCOME_ACCOUNTS", "NO_RULE", "PAYEES", "PAYEES_HEADER", "SPLITS",
+    "SPLITS_HEADER", "TRANSFER", "AccountMap", "AccountTarget", "BudgetChoice", "BudgetChoices",
+    "ExpenseAccounts", "PayeeMap", "budget_choices_path", "expense_accounts_path", "imports_dir",
+    "income_accounts_path", "load_account_map", "load_budget_choices", "load_category_map",
+    "load_category_splits", "load_excluded_payees", "load_expense_accounts", "load_payee_map", "payee_key",
+    "payee_matches", "rename_account", "rename_lot", "source_dir",
 ]
 
 IMPORTS = "imports"
 ACCOUNTS = "accounts.csv"
 CATEGORIES = "categories.csv"
 SPLITS = "splits.csv"
+BUDGET_CHOICES = "budget_choices.csv"
 EXCLUDED_PAYEES = "excluded_payees.csv"
 EXPENSE_ACCOUNTS = "expense_accounts.csv"
 INCOME_ACCOUNTS = "income_accounts.csv"
@@ -56,6 +59,7 @@ CATEGORIES_HEADER = ("outside_category", "category")
 SPLITS_HEADER = ("category", "outside_account", "target_category")
 EXCLUDED_PAYEES_HEADER = ("payee_pattern",)
 EXPENSE_ACCOUNTS_HEADER = ("category", "account")
+BUDGET_CHOICES_HEADER = ("category", "use", "budget", "actual")
 PAYEES_HEADER = ("payee_pattern", "category")
 TRANSFER = "transfer"
 """A ``payees.csv`` category for a move between the household's own accounts
@@ -80,6 +84,10 @@ def income_accounts_path(data_dir: Path) -> Path:
 
 def expense_accounts_path(data_dir: Path) -> Path:
     return imports_dir(data_dir) / EXPENSE_ACCOUNTS
+
+
+def budget_choices_path(data_dir: Path) -> Path:
+    return imports_dir(data_dir) / BUDGET_CHOICES
 
 
 def _read(path: Path, header: tuple[str, ...]) -> Iterable[tuple[int, dict[str, str]]]:
@@ -266,6 +274,55 @@ def load_expense_accounts(path: Path | str) -> ExpenseAccounts:
             raise ValueError(
                 f"{path} row {number}: an account is required ({NO_RULE!r} for no rule)")
         found.accounts[category] = account
+    return found
+
+
+@dataclass(frozen=True)
+class BudgetChoice:
+    """Which of the two a category's rule is made from, and the two monthly
+    amounts, in cents, the choice was made between."""
+
+    use: str
+    """``budget`` or ``actual``."""
+    budget_cents: int
+    actual_cents: int
+
+
+@dataclass
+class BudgetChoices:
+    """``imports/budget_choices.csv``: for each category that both a budget
+    and the transactions have, which one its rule is made from. Shared by
+    every scenario, as the categories' accounts are."""
+
+    path: Path
+    choices: dict[str, BudgetChoice] = field(default_factory=dict)
+
+    def save(self) -> None:
+        from analysis.sim.imports.holdings import format_dollars
+
+        _write(self.path, BUDGET_CHOICES_HEADER, (
+            (category, each.use, format_dollars(each.budget_cents), format_dollars(each.actual_cents))
+            for category, each in self.choices.items()))
+
+
+def load_budget_choices(path: Path | str) -> BudgetChoices:
+    """The choices at ``path``; none if there's no file yet."""
+    found = BudgetChoices(Path(path))
+    if not found.path.is_file():
+        return found
+    for number, row in _read(found.path, BUDGET_CHOICES_HEADER):
+        category = row["category"]
+        if not category:
+            continue
+        if category in found.choices:
+            raise ValueError(f"{path} row {number}: duplicate category {category!r}")
+        if row["use"] not in ("budget", "actual"):
+            raise ValueError(f"{path} row {number}: use must be budget or actual, not {row['use']!r}")
+        try:
+            amounts = [round(float(row[column] or 0) * 100) for column in ("budget", "actual")]
+        except ValueError:
+            raise ValueError(f"{path} row {number}: budget and actual are dollar amounts") from None
+        found.choices[category] = BudgetChoice(row["use"], *amounts)
     return found
 
 

@@ -454,7 +454,7 @@ def _found(*payments: tuple[str, str, float]) -> list[tuple[str, int, bool]]:
     return [(each.payee, len(each.paid), each.repeats) for each in found]
 
 
-def test_occasional_payments_are_a_month_or_two_of_each_year_and_say_whether_they_came_round() -> None:
+def test_occasional_payments_are_a_few_months_of_each_year_and_say_whether_they_came_round() -> None:
     years = (2024, 2025, 2026)
     yearly = [(f"{year}-03-01", "Mutual Insurance", 900.0) for year in years]
     twice = [(f"{year}-{month}-01", "County Tax", 2000.0) for year in years for month in ("04", "12")]
@@ -470,10 +470,24 @@ def test_occasional_payments_leave_out_a_bill_that_began_and_mark_a_one_time_exp
     # A car payment that began in November is monthly; furniture bought once may never come again.
     assert _found(*year, *_monthly("Auto Loan", "2026-11-01", 2, 500.0),
                   ("2026-05-10", "Furniture Store", 2000.0)) == [("Furniture Store", 1, False)]
-    # A summer's program is a season, and a quarterly bill is neither monthly nor yearly.
+
+
+def test_occasional_payments_take_a_quarterly_bill_and_no_season_s_nor_one_paid_every_other_month() -> None:
+    # A summer's program is a season; a quarterly bill is four months of the year, each its own.
     two_years = _monthly("Gym", "2025-01-01", 24)
-    assert _found(*two_years, *_monthly("Summer Camp", "2025-06-01", 4, 400.0),
-                  *[(f"2025-{month:02d}-01", "Water", 300.0) for month in (1, 4, 7, 10)]) == []
+    quarterly = [(f"{year}-{month:02d}-01", "Water", 300.0) for year in (2025, 2026) for month in (1, 4, 7, 10)]
+    assert _found(*two_years, *_monthly("Summer Camp", "2025-06-01", 4, 400.0), *quarterly) == [("Water", 8, True)]
+    # Every other month is six months of a year, closer than a quarter: spread, as a monthly bill is.
+    assert _found(*two_years, *[(f"2025-{month:02d}-01", "Trash", 300.0) for month in range(1, 13, 2)]) == []
+
+
+def test_occasional_payments_in_one_year_are_never_seen_to_come_round() -> None:
+    # A job's deposit in January and its last payment in December are eleven months apart.
+    job = [("2026-01-10", "Roofing Co.", 5000.0), ("2026-12-10", "Roofing Co.", 5000.0)]
+    assert _found(*_monthly("Gym", "2026-01-01", 12), ("2026-12-30", "Gym", 80.0), *job) == [("Roofing Co.", 2, False)]
+    # Twelve or thirteen months apart is a year on.
+    later = [("2026-01-10", "Mutual Insurance", 900.0), ("2027-02-10", "Mutual Insurance", 900.0)]
+    assert _found(*_monthly("Gym", "2026-01-01", 14), *later) == [("Mutual Insurance", 2, True)]
 
 
 def test_occasional_payments_need_most_of_a_year_first_day_to_last() -> None:
@@ -481,3 +495,21 @@ def test_occasional_payments_need_most_of_a_year_first_day_to_last() -> None:
     payments = [("2025-01-31", "Gym", 80.0), ("2025-12-01", "Gym", 80.0), ("2025-06-01", "County Tax", 2000.0)]
     assert occasional_payments(_paid(*payments)) is None
     assert _found(*payments, ("2026-01-30", "Gym", 80.0)) == [("County Tax", 1, False)]
+
+
+def test_occasional_payments_say_where_a_payee_came_from_and_whether_it_is_paid_elsewhere() -> None:
+    baseline = _paid(*_monthly("Corner Store 114", "2025-01-01", 13),
+                     ("2025-03-01", "Corner Store 220", 900.0), ("2025-09-01", "Mutual Insurance", 900.0))
+    used = baseline.transactions
+    # The store is paid monthly for food, and once for something large in another category.
+    used.loc[used["payee"].eq("Corner Store 114"), "category"] = "Food"
+    used["origin"] = ["bank"] * 13 + ["card", "card"]
+
+    found = occasional_payments(baseline)
+
+    assert found is not None
+    assert [(each.payee, each.category, each.sources, each.elsewhere) for each in found] == [
+        ("Corner Store 220", "Insurance", ("card",), True), ("Mutual Insurance", "Insurance", ("card",), False)]
+    # A frame read without `sim import` has no source to name.
+    plain = occasional_payments(_paid(*_monthly("Gym", "2025-01-01", 13), ("2025-09-01", "Mutual Insurance", 900.0)))
+    assert plain is not None and [each.sources for each in plain] == [()]
