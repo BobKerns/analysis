@@ -11,6 +11,7 @@ import re
 import sys
 from collections.abc import Callable, Collection, Mapping
 from datetime import date
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
@@ -2388,9 +2389,14 @@ def test_ofx_reads_amounts_as_institutions_write_them(
                    .replace("-1000.00", "-1.000,00").replace("-200.00", "-200"), encoding="cp1252")
     assert list(import_ofx.read_transactions(odd).transactions["amount_cents"]) == [
         -15000, 500000, -40000, -15000, -100000, -20000]
+    # Whole dollars with a thousands separator are thousands, not dollars and a thousandth.
+    odd.write_text(text.replace("5000.00", "5,000").replace("-1000.00", "-1,500")
+                   .replace("-400.00", "-4,5").replace("-200.00", "-1,234,567"), encoding="cp1252")
+    assert list(import_ofx.read_transactions(odd).transactions["amount_cents"]) == [
+        -15000, 500000, -450, -15000, -150000, -123456700]
 
-    # A fraction of a cent is not rounded away, and a lone comma is a decimal point.
-    for amount, why in (("-200.005", "has a fraction of a cent"), ("-1,234", "has a fraction of a cent"),
+    # A fraction of a cent is not rounded away.
+    for amount, why in (("-200.005", "has a fraction of a cent"), ("-1,2345", "has a fraction of a cent"),
                         ("two hundred", "is not an amount"), ("NaN", "is not an amount")):
         odd.write_text(text.replace("-200.00", amount), encoding="cp1252")
         with pytest.raises(ValueError, match=f"TRNAMT '{amount}' {why}"):
@@ -2401,6 +2407,15 @@ def test_ofx_reads_amounts_as_institutions_write_them(
     unrounded.write_text(ofx_brokerage_download.read_text(encoding="utf-8").replace("400000.00", "400000.005"),
                          encoding="utf-8")
     assert import_ofx.read_holdings(unrounded).holdings[0].value_cents == 40000001
+    # A value with a thousands separator is thousands; shares that read two ways are refused.
+    brokerage = ofx_brokerage_download.read_text(encoding="utf-8")
+    unrounded.write_text(brokerage.replace("<MKTVAL>400000.00", "<MKTVAL>400,000"), encoding="utf-8")
+    assert import_ofx.read_holdings(unrounded).holdings[0].value_cents == 40000000
+    unrounded.write_text(brokerage.replace("<UNITS>2500<", "<UNITS>2,500<"), encoding="utf-8")
+    with pytest.raises(ValueError, match="UNITS '2,500' could be thousands or a decimal"):
+        import_ofx.read_holdings(unrounded)
+    unrounded.write_text(brokerage.replace("<UNITS>2500<", "<UNITS>2.500,25<"), encoding="utf-8")
+    assert import_ofx.read_holdings(unrounded).holdings[0].quantity == Decimal("2500.25")
     # No transactions, and the columns still have their types.
     empty = import_ofx.read_transactions(ofx_brokerage_download).transactions
     assert (empty["source_row"].dtype, empty["amount_cents"].dtype) == ("int64", "int64")

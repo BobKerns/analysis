@@ -72,17 +72,25 @@ def _text(element: Element | None, tag: str) -> str:
     return (found.text or "").strip() if found is not None else ""
 
 
-def _number(text: str) -> Decimal:
+def _number(text: str, *, money: bool) -> Decimal:
     """An OFX number. The specification allows a decimal comma and no
     thousands separators, and files have both, so of two kinds of separator
     the last is the decimal point and the other is dropped, and one that
-    repeats separates thousands. A lone comma is a decimal point, as the
-    specification has it: ``1,234`` is 1.234, which an amount of money
-    then refuses, and is not guessed to be 1234."""
+    repeats separates thousands.
+
+    A lone comma before exactly three digits could be either: ``5,000`` is
+    five thousand or five. For ``money`` it separates thousands, as the
+    other sources read it, since money has two decimals and not three. A
+    count of shares often has three, so there it is refused and not
+    guessed: the two readings differ a thousand times."""
     plain = text.strip().replace(" ", "")
     comma, point = plain.rfind(","), plain.rfind(".")
     decimal = "," if comma > point else "."
     if plain.count(decimal) > 1:
+        decimal = ""
+    elif decimal == "," and point < 0 and len(plain) - comma == 4:
+        if not money:
+            raise _Ambiguous(text)
         decimal = ""
     whole = "".join(c for c in plain if c not in ",." or c == decimal)
     number = Decimal(whole.replace(",", "."))
@@ -91,12 +99,16 @@ def _number(text: str) -> Decimal:
     return number
 
 
+class _Ambiguous(InvalidOperation):
+    """A number that reads two ways."""
+
+
 def _cents(path: Path, text: str, what: str, *, exact: bool = True) -> int:
     """``text`` as cents. A fraction of a cent is refused, as Quicken's
     reader refuses one, except where ``exact`` is off: a position's value
     is shares times a price, which some brokerages don't round."""
     try:
-        cents = _number(text) * 100
+        cents = _number(text, money=True) * 100
     except InvalidOperation:
         raise ValueError(f"{path}: {what} {text!r} is not an amount") from None
     if exact and cents != cents.to_integral_value():
@@ -243,7 +255,11 @@ def read_holdings(path: Path) -> Snapshot:
             symbol, name = tickers.get(unique, ("", ""))
             units = _text(position, "UNITS")
             try:
-                quantity = _number(units) if units else None
+                quantity = _number(units, money=False) if units else None
+            except _Ambiguous:
+                raise ValueError(
+                    f"{path}: a position's UNITS {units!r} could be thousands or a decimal; "
+                    "it is not guessed") from None
             except InvalidOperation:
                 raise ValueError(f"{path}: a position's UNITS {units!r} is not a number") from None
             value = _cents(path, _text(position, "MKTVAL"), "a position's MKTVAL", exact=False)

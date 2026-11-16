@@ -535,8 +535,10 @@ taken to be that fund, and only the cash beyond them is added. Check the
 account's total against the statement.
 
 Amounts are read as institutions write them, with a thousands separator or
-a decimal comma. An amount with a fraction of a cent is refused, except a
-position's value, which is rounded to the cent.
+a decimal comma (`5,000` is five thousand dollars). An amount with a
+fraction of a cent is refused, except a position's value, which is rounded
+to the cent. A number of shares written like `2,500`, which could be 2500
+or 2.5, is refused and not guessed.
 
 Not read: a brokerage's transactions (buys, sales, dividends,
 reinvestments), which are investment activity and not spending.
