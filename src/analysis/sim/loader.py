@@ -3634,8 +3634,9 @@ def _validate_card_rules(
     leaves: _LeafIndex, issues: list[str],
 ) -> None:
     """What #641 added for a revolving debt. A ``fixed_amount`` into a
-    liability may leave its amount blank, to pay what was owed when the month
-    opened; nothing else about it can then scale an amount. A
+    liability that is no mortgage may leave its amount blank, to pay what
+    was owed when the month opened; nothing else about it can then scale an
+    amount, and no other ``fixed_amount`` may be blank. A
     ``card_interest`` rule charges a liability's unpaid balance to an expense
     account at its ``rate``; like ``fill_bracket`` it has no priority, since
     it follows the month's payments wherever they sit. Run after the rows'
@@ -3649,8 +3650,14 @@ def _validate_card_rules(
         kind = row.get("amount_rule_kind")
         where = f"{where} ({row.get('name', '')})"
         if kind == "fixed_amount" and not row.get("amount"):
-            if of(row.get("to_account", "")).get("kind") != "liability":
-                continue  # the engine refuses it when it fires, as it always has
+            paid = of(row.get("to_account", ""))
+            if paid.get("kind") != "liability" or paid.get("subkind") == "mortgage":
+                # Here and not when the rule first fires: the run would stop there.
+                issues.append(
+                    f"{where}: fixed_amount needs an amount; only a payment into a credit card "
+                    "or a loan that isn't amortized (to_account, not a chain or a mortgage) may "
+                    "leave it blank, to pay what is owed")
+                continue
             for column, why in (
                 ("series", "no amount to index"), ("ytd_preroll", "no amount to replay"),
             ):

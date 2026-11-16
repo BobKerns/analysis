@@ -128,10 +128,12 @@ def needs(column: str) -> Callable[[Answers], bool]:
 
 def pays_liability(ctx: GuideContext, answers: Mapping[str, object]) -> bool:
     """Whether the rule is a ``fixed_amount`` into a liability, which may
-    leave its amount blank to pay what is owed (#641)."""
+    leave its amount blank to pay what is owed (#641). Not a mortgage: a
+    payment that pays one off whole is not what leaving a cell blank says,
+    and its ``mortgage_payment`` would amortize nothing after."""
     return (answers.get("amount_rule_kind") == "fixed_amount"
             and ctx.subkinds.get(str(answers.get("to_account")))
-            in registries.ACCOUNT_SUBKINDS["liability"])
+            in registries.ACCOUNT_SUBKINDS["liability"] - {"mortgage"})
 
 
 def _amount_needed(answers: Answers) -> bool:

@@ -9670,7 +9670,8 @@ def import_transactions(
         rows.sort(key=lambda row: row["name"])
     scheduled_path = scenario_dir / "scheduled.csv"
     counts = _show_generated_changes(scenario_dir, scenario_name, rows, (BASELINE_GENERATED_TAG,))
-    payments = _card_payments(scenario_dir, rows, cards, from_account, from_lot, start)
+    payments = _card_payments(scenario_dir, rows, cards, from_account, from_lot, start,
+                              _chain_accounts(data_dir_p, scenario_name) if cards else {})
     for row in payments:
         click.echo(f"  {row['name']}: pays {row['to_account']} in full each month from "
                    f"{from_account} (added once; yours to change)")
@@ -9724,10 +9725,13 @@ def _cards_charged(
 
     With ``ask``, an account with no row is asked about, while the scenario
     has a card that no outside account of any source is mapped to: once each
-    card has its account, a bank's file is known not to be one. Away from a
-    terminal the same accounts are noted instead."""
+    card has its account, a bank's file is known not to be one. The answer
+    may be any account of the scenario, which is saved as the outside
+    account's row, so one that is no card is asked about once and not at
+    every import. Away from a terminal the same accounts are noted instead."""
     with _intent_db(data_dir, scenario) as (con, _):
         lot_info = _lot_info(con)
+        every = [row[0] for row in con.execute("SELECT name FROM account ORDER BY name")]
         scenario_cards = {row[0] for row in con.execute(
             "SELECT name FROM account WHERE kind = 'liability' AND subkind = 'credit_card'")}
     if not scenario_cards:
@@ -9751,11 +9755,13 @@ def _cards_charged(
         if target is None and unclaimed and ask:
             click.echo(f"{account!r} ({source}) has no row in {_shown(saved.path)}: is it one of "
                        f"the scenario's credit cards ({', '.join(sorted(unclaimed))})? Its spending "
-                       "is then charged to the card; leave blank if it isn't one.")
+                       "is then charged to the card. If it isn't one, name the account it is and it "
+                       "isn't asked about again, or leave blank to be asked next time.")
             card = ""
             while (card := _prompt_with_completion(
-                    "  card", choices=sorted(unclaimed), default="").strip()) and card not in scenario_cards:
-                click.echo(f"  one of: {', '.join(sorted(scenario_cards))}")
+                    "  account", choices=[*sorted(unclaimed), *every], default="").strip()) and card not in every:
+                click.echo(f"  a card ({', '.join(sorted(scenario_cards))}), another account of "
+                           f"{scenario}, or blank")
             if card:
                 lot = ""
                 lots = lot_info.get(card)
@@ -9790,18 +9796,43 @@ def _paid_most(baseline: BaselineResult, cards: Cards, otherwise: Payer) -> dict
 
 def _card_payments(
     scenario_dir: Path, rows: Sequence[Mapping[str, str]], cards: Cards,
-    from_account: str, from_lot: str, start: str,
+    from_account: str, from_lot: str, start: str, chains: Mapping[str, Collection[str]],
 ) -> list[dict[str, str]]:
-    """A payment rule for each card of ``cards`` that ``rows`` charge and
-    that no rule the scenario loads pays into yet (#641): the household's
-    own payment, or the one an earlier run wrote, stays as it is."""
-    loaded = _overlay_rows(scenario_dir, "scheduled.csv")
-    paid = {found.row.get("to_account", "") for found in loaded.values()}
-    charged = {(row["from_account"], row["from_lot"]) for row in rows}
+    """A payment rule for each card of ``cards`` that is charged, by
+    ``rows`` or by a rule the scenario has (a yearly rule the script
+    added, whose payee is then left out of ``rows``), and that no rule the
+    scenario loads pays into yet (#641): the household's own payment, or
+    the one an earlier run wrote, stays as it is. A rule pays into a card
+    through a chain too (``chains``: each destination chain's accounts)."""
+    loaded = [found.row for found in _overlay_rows(scenario_dir, "scheduled.csv").values()]
+    paid = {account for row in loaded
+            for account in chains.get(row.get("to_account", ""), (row.get("to_account", ""),))}
+    # Not the generated rows the scenario has: ``rows`` replace them.
+    kept = [row for row in loaded if BASELINE_GENERATED_TAG not in row.get("tags", "").split()]
+    charged = {(row["from_account"], row.get("from_lot", "")) for row in [*rows, *kept]}
     return [
         card_payment_row(card, from_account=from_account, from_lot=from_lot, start=start)
         for card in sorted(set(cards.values()))
         if card in charged and card[0] not in paid]
+
+
+def _chain_accounts(data_dir: Path, scenario: str) -> dict[str, set[str]]:
+    """The accounts each of the scenario's chains reaches, by its name:
+    through its steps, and theirs."""
+    with _intent_db(data_dir, scenario) as (con, _):
+        reached = con.execute(
+            """WITH RECURSIVE reach(top, id) AS (
+                   SELECT id, id FROM chain WHERE account_id IS NULL
+                   UNION SELECT reach.top, chain_steps.draw_from_chain_id
+                   FROM reach JOIN chain_steps ON chain_steps.chain_id = reach.id)
+               SELECT top.name, account.name FROM reach
+               JOIN chain AS top ON top.id = reach.top
+               JOIN chain AS leaf ON leaf.id = reach.id
+               JOIN account ON account.id = leaf.account_id""").fetchall()
+    found: dict[str, set[str]] = {}
+    for chain, account in reached:
+        found.setdefault(chain, set()).add(account)
+    return found
 
 
 def _budget_rule_name(each: import_budget_.Planned) -> str:

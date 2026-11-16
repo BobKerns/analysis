@@ -177,8 +177,9 @@ def run_scenario(
             ).fetchall()
         ]
         # A month posts in registries.MONTH_PHASES order: its rules (by
-        # priority among themselves), the tax settlement (None here), then
-        # fill_bracket's conversions.
+        # priority among themselves), card_interest on what their payments
+        # left, the tax settlement (None here), then fill_bracket's
+        # conversions.
         month_steps: list[list[Any] | None] = [
             step for phase in registries.MONTH_PHASES
             for step in ([None] if phase == "tax_settlement"

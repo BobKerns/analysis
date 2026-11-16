@@ -504,9 +504,11 @@ sim import transactions Checking1.csv Card.csv --from Asset_Checking
 ```
 
 The import needs to know which file's account is the card. At a terminal it
-asks, once for each account it doesn't know, until every card has its
-account; the answer is saved in `imports/<source>/accounts.csv`, where
-`sim import map` shows and changes it. Then:
+asks about each account it doesn't know, until every card has its account.
+Answer with the card, or with the account it is when it is no card, and it
+isn't asked about again; the answer is saved in
+`imports/<source>/accounts.csv`, where `sim import map` shows and changes
+it. Then:
 
 - Each category the card paid for gets a rule from the card, named for it
   (`baseline_expense_food__liability_card`), beside the category's rule
@@ -516,7 +518,10 @@ account; the answer is saved in `imports/<source>/accounts.csv`, where
   the card was owed when the month opened: last month's charges are paid
   this month, as a statement is.
 - That payment rule is written once. Later imports leave it alone, and add
-  none if you already have a rule that pays the card. It is yours to change.
+  none if you already have a rule that pays the card, directly or through a
+  chain. It is yours to change.
+- A card charged only by yearly rules is paid too: the yearly script has a
+  `pay_card` line for it.
 
 A card that carries a balance wants two changes. Give the payment an amount
 (`sim scheduled edit card_payment_liability_card`), and add the card's

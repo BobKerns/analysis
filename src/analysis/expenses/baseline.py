@@ -390,8 +390,15 @@ def build_scheduled_baseline_rows(
         parts = [(name, (from_account, from_lot), rest)] if rest > 0 or not by_card else []
         parts += [(f"{name}__{payer_slug(card)}", card, cents) for card, cents in sorted(by_card.items())]
         for rule, (payer, lot), cents in parts:
+            # A category no card paid is worked out as it always was, from
+            # its dollars: by its cents a half cent rounds the other way,
+            # and a run on unchanged data would show its rule as changed.
+            amount = round(cents / observed_months) / 100 if by_card \
+                else round(float(record["amount_total"]) / observed_months, 2)
+            if by_card and not amount:
+                continue  # a few cents over the months: no rule of 0.00
             rows.append(generated_row(
-                rule, category, f"{round(cents / observed_months) / 100:.2f}",
+                rule, category, f"{amount:.2f}",
                 from_account=payer, from_lot=lot, to_account=to_account, start=start,
                 series=series, priority=priority, provenance=provenance))
     return rows

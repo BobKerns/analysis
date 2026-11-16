@@ -139,3 +139,13 @@ def test_blank_amount_refusals(
     card("card_payment", **columns)
     with pytest.raises(LoadError, match=refusal):
         load_test_copy()
+
+
+@pytest.mark.parametrize("paid", ["Expense_Living", "Liability_Mortgage"])
+def test_blank_amount_is_refused_at_load_where_nothing_is_owed_or_a_mortgage_is(
+    card: Callable[..., None], load_test_copy: Callable[[], LoadResult], paid: str,
+) -> None:
+    """Not left for the run to stop at; and a blank cell doesn't pay a mortgage off."""
+    card("blank", to_account=paid)
+    with pytest.raises(LoadError, match=r"\(blank\): fixed_amount needs an amount"):
+        load_test_copy()

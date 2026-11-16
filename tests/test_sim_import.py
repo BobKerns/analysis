@@ -560,7 +560,7 @@ def test_yearly_script_counts_a_bill_that_moved_a_month_once() -> None:
 def test_yearly_script_keeps_a_payee_s_line_break_out_of_the_commands() -> None:
     text, _ = _script(_seen("Home\nRepair", "Roofing Co.\ntouch /tmp/x #", (date(2027, 5, 1), 900_000), repeats=False))
 
-    block = text.split("\nyearly() {")[1].split("\n}\n", 1)[1]
+    block = text.split("\npay_card() {")[1].split("\n}\n", 1)[1]
     assert all(line.startswith("#") for line in block.splitlines() if line)
     assert "'Yearly: Roofing Co. touch /tmp/x # (Home Repair)'" in block
 
@@ -2416,6 +2416,84 @@ def test_sim_import_transactions_asks_which_account_is_a_card_until_each_card_ha
     assert again.exit_code == 0 and "has no row" not in again.output
 
 
+@pytest.mark.usefixtures("at_a_terminal")
+def test_sim_import_transactions_asks_once_about_an_account_named_as_no_card(
+    test_data_dir: Path, card_import: Callable[..., Result], credit_card: str,
+    retire_alice_csv: Callable[[str], Path],
+) -> None:
+    # A second card that no file has: without it named, checking would be asked about at every import.
+    accounts = retire_alice_csv("accounts.csv")
+    lines = accounts.read_text(encoding="utf-8").splitlines()
+    accounts.write_text("\n".join([*lines, next(
+        line for line in lines if line.startswith(f"{credit_card},")).replace(credit_card, "Liability_Card_Two")])
+        + "\n", encoding="utf-8")
+
+    result = card_import(input="Asset_Checking\nLiability_Card\n")
+
+    assert result.exit_code == 0, result.output
+    saved = test_data_dir / "imports" / "quicken" / "accounts.csv"
+    assert saved.read_text(encoding="utf-8").splitlines()[1:] == [
+        "Checking,,map,Asset_Checking,,", "Rewards Card,,map,Liability_Card,,"]
+    again = card_import()
+    assert again.exit_code == 0 and "has no row" not in again.output
+
+
+def test_card_payments_see_a_payment_through_a_chain_and_a_card_only_yearly_rules_charge(
+    test_data_dir: Path, credit_card: str, append_scheduled_row: Callable[..., None],
+) -> None:
+    scenario = test_data_dir / "scenarios" / "retire_alice"
+    cards = {("quicken", "Rewards Card"): (credit_card, "")}
+
+    def payments(chains: Mapping[str, Collection[str]]) -> list[str]:
+        return [row["name"] for row in cli._card_payments(
+            scenario, [], cards, "Asset_Checking", "", "2026-05-31", chains)]
+
+    # Nothing charges the card: nothing to pay.
+    assert payments({}) == []
+    # A yearly rule the script added charges it, though this run's monthly rules don't.
+    append_scheduled_row(name="yearly_mutual_insurance", from_account=credit_card, to_account="Expense_Living",
+                         amount_rule_kind="fixed_amount", amount="900.00", tax_character="none",
+                         start="2026-05-31", cadence="annual", month_of_year="3")
+    assert payments({}) == ["card_payment_liability_card"]
+    # The chains are the scenario's own, each with the accounts it reaches.
+    assert cli._chain_accounts(test_data_dir, "retire_alice")["asset_checking_liquidity"] >= {
+        "Asset_Savings", "Asset_TraditionalIRA_Alice"}
+    # The household pays it through a chain that reaches it: its own payment stays the only one.
+    append_scheduled_row(name="my_card_bill", from_account="Asset_Checking", to_account="pay_card",
+                         amount_rule_kind="fixed_amount", amount="300.00", tax_character="none",
+                         start="2026-05-31")
+    assert payments({"pay_card": {credit_card}}) == []
+
+
+@pytest.mark.slow
+def test_yearly_script_run_charges_the_card_and_adds_its_payment(
+    test_data_dir: Path, credit_card: str, tmp_path: Path, load_test_copy: Callable[[], object],
+) -> None:
+    charged = dataclasses.replace(
+        _seen("Insurance", "Mutual Insurance", (date(2026, 3, 1), 90_000)), accounts=(("card", "Rewards Card"),))
+    text, _, _ = import_yearly.script(
+        [charged], data_dir=test_data_dir, scenario="retire_alice", start="2026-05",
+        from_account="Asset_Checking", expense_accounts={"Insurance": "Expense_Living"},
+        accounts=["Expense_Living"], source="card", cards={("card", "Rewards Card"): (credit_card, "")},
+        sim=str(Path(sys.executable).parent / "sim"))
+    script = tmp_path / "yearly.sh"
+    script.write_text(text, encoding="utf-8")
+
+    ran = subprocess.run(["sh", str(script)], capture_output=True, text=True, check=False)
+
+    assert ran.returncode == 0, ran.stdout + ran.stderr
+    rules = _rules(test_data_dir)
+    assert rules["yearly_mutual_insurance"]["from_account"] == credit_card
+    payment = rules["card_payment_liability_card"]
+    assert (payment["from_account"], payment["to_account"], payment["amount"], payment["tags"]) == (
+        "Asset_Checking", credit_card, "", "generated:card_payment")
+    load_test_copy()
+    # Run again, it adds neither a second time.
+    rerun = subprocess.run(["sh", str(script)], capture_output=True, text=True, check=False)
+    assert rerun.stdout.splitlines() == [
+        "already added: yearly_mutual_insurance", "already added: card_payment_liability_card"]
+
+
 def test_sim_import_transactions_summary_shows_what_each_card_was_charged(
     card_import: Callable[..., Result], write_import_map: MapWriter,
 ) -> None:
@@ -2462,3 +2540,17 @@ def test_yearly_script_pays_a_payee_from_the_card_all_of_it_was_charged_to() -> 
     assert "# Charged to a card only in part: the rules below pay from FROM.\n" in text
     assert "yearly yearly_county_tax Taxes 2100.00 4 2027-04 'Yearly: County Tax (Taxes)'\n" in text
     assert "if [ $# -ge 7 ]; then from=$7; lot=${8:-}; else from=$FROM; lot=$FROM_LOT; fi" in text
+    # The card these rules charge is paid: the import writes a payment only for a card its
+    # monthly rules charge.
+    assert text.rstrip().endswith("\npay_card card_payment_liability_card Liability_Card")
+    # Not when the scenario has the rule, and commented out with the rules that wait.
+    again, _, _ = import_yearly.script(
+        [charged], data_dir=Path("/data"), scenario="retire_alice", start="2028-01",
+        from_account="Asset_Checking", expense_accounts={}, accounts=["Insurance"],
+        source="bank", cards=cards, taken=["card_payment_liability_card"])
+    assert "\npay_card " not in again and "# pay_card " not in again
+    waiting, _, _ = import_yearly.script(
+        [dataclasses.replace(charged, repeats=False)], data_dir=Path("/data"), scenario="retire_alice",
+        start="2028-01", from_account="Asset_Checking", expense_accounts={}, accounts=["Insurance"],
+        source="bank", cards=cards)
+    assert waiting.rstrip().endswith("\n# pay_card card_payment_liability_card Liability_Card")
