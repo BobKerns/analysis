@@ -13352,10 +13352,13 @@ def import_holdings(
             if _interactive():
                 for key in dict.fromkeys(map(decided, result.unmapped)):
                     covered = of_row(key, result.unmapped)
+                    # By symbol where any holding has one: one with none beside
+                    # them (a brokerage's cash) goes to the account's lot with
+                    # none, and must not make the answer one lot for them all.
                     target = _ask_holding_target(
                         _outside_label(covered, whole=True), sum(h.value_cents for h in covered),
                         snapshot.source, rows, "has no saved mapping",
-                        held=holding_lots if (listed := all(h.asset for h in covered)) else with_lots,
+                        held=holding_lots if (listed := any(h.asset for h in covered)) else with_lots,
                         # A file of holdings gives each holding's type, not the account's.
                         by_symbol=listed, hint="" if listed else covered[0].hints.get("type", ""),
                         add=add_account_or_not, taken=taken)
@@ -13369,7 +13372,7 @@ def import_holdings(
                         _outside_label(covered, whole=not key[1]), sum(h.value_cents for h in covered),
                         snapshot.source, rows,
                         f"is mapped to {old.label}, which {scen_name} doesn't have",
-                        held=holding_lots if (listed := all(h.asset for h in covered)) else with_lots,
+                        held=holding_lots if (listed := any(h.asset for h in covered)) else with_lots,
                         # A file of holdings gives each holding's type, not the account's.
                         by_symbol=listed, hint="" if listed else covered[0].hints.get("type", ""),
                         add=add_account_or_not, taken=taken)

@@ -14,7 +14,9 @@ of the specification, and institutions' files have such fields. Nothing
 else here knows the library, so it can be replaced.
 
 Not read: investment transactions (buys, dividends, reinvestments), which
-are investment income and not spending.
+are investment income and not spending. A brokerage account's banking
+(``INVBANKTRAN``: its checks, card purchases and bill payments) is read, as
+a bank account's is.
 """
 
 from __future__ import annotations
@@ -31,6 +33,8 @@ from xml.etree.ElementTree import Element
 import pandas as pd
 
 from analysis.sim.imports.forms import CORRECTS, FLOW_COLUMNS, REFERENCE, REMOVES, Flows, Holding, Snapshot
+from analysis.sim.imports.holdings import format_dollars
+from analysis.sim.imports.mapping import payee_key
 
 __all__ = ["NAME", "is_ofx", "read_holdings", "read_transactions"]
 
@@ -39,9 +43,11 @@ NAME = "ofx"
 # An OFX 1 file's first header line, an OFX 2 file's processing
 # instruction, or the body's own tag where a file has no header at all.
 _SIGNS = (b"OFXHEADER", b"<?OFX", b"<OFX>")
-# Statements that have transactions of spending: a bank account's, a card's.
+# Statements with a ledger balance: a bank account's, a card's.
 _SPENDING = ("STMTRS", "CCSTMTRS")
 _INVESTMENT = "INVSTMTRS"
+# The group naming each kind of statement's own account.
+_OWN = {"STMTRS": "BANKACCTFROM", "CCSTMTRS": "CCACCTFROM", _INVESTMENT: "INVACCTFROM"}
 # The currency every amount is taken to be in: nothing is converted.
 _DOLLARS = "USD"
 
@@ -57,13 +63,79 @@ def is_ofx(path: Path) -> bool:
     return any(sign in head for sign in _SIGNS)
 
 
+def _builder():  # noqa: ANN202  the class is made here, where the library is first needed
+    """The library's tree builder, made to close what a file leaves open.
+
+    The library ends an element at any closing tag, whichever it names, so
+    a value left empty (``<MEMO>`` with nothing after it) takes the
+    closing tag of the transaction around it, and the next transaction,
+    or the next statement, lands inside this one. Here a closing tag ends
+    the element it names and whatever is open inside it, and those are
+    kept (``unclosed``) for ``_tree`` to make leaves of. ``<MEMO/>`` is
+    an empty ``MEMO`` and not an open element named ``MEMO/``."""
+    from ofxtools.Parser import TreeBuilder
+
+    class Builder(TreeBuilder):
+        def __init__(self) -> None:
+            super().__init__()
+            self.open: list[str] = []
+            self.unclosed: list[Element] = []
+
+        def start(self, tag: str, attrs: dict[str, str]) -> Element:
+            self.open.append(tag)
+            return super().start(tag, attrs)
+
+        def end(self, tag: str) -> Element:
+            if tag not in self.open:
+                # A closing tag of nothing open closes nothing.
+                return Element(tag)
+            while True:
+                name = self.open.pop()
+                ended = super().end(name)
+                if name == tag:
+                    return ended
+                self.unclosed.append(ended)
+
+        def _start(self, tag: str, text: str | None, closetag: str | None) -> None:
+            if tag.endswith("/") and not text:
+                tag = closetag = tag.removesuffix("/").strip()
+            super()._start(tag, text, closetag)
+
+    return Builder()
+
+
+def _leaves(root: Element, unclosed: list[Element]) -> None:
+    """Make each of ``unclosed`` the empty value it was: what the builder
+    put inside it becomes what follows it."""
+    parents = {child: parent for parent in root.iter() for child in parent}
+    for element in unclosed:
+        if (parent := parents.get(element)) is None:
+            continue
+        place = list(parent).index(element)
+        for child in list(element):
+            element.remove(child)
+            place += 1
+            parent.insert(place, child)
+            parents[child] = parent
+
+
+def _refusal(error: Exception) -> str:
+    """Why the library refused a file, without the library's own words:
+    its message for text after a closing tag carries the whole file, every
+    account number in it included."""
+    said = str(error)
+    why = "text follows a closing tag" if said.startswith("Tail text") else type(error).__name__
+    place = re.search(r"position=\[(\d+):\d+\]", said)
+    return why + (f", at character {place.group(1)} of its body" if place else "")
+
+
 def _tree(path: Path) -> Element:
     """``path`` as an element tree. The library reads a file as its header
     says to; one it refuses is read again from its ``<OFX>`` tag on, for
     what institutions get wrong about the wrapping: no header at all, or a
     payee in the bank's own code page under a header that says UTF-8 or
     ASCII."""
-    from ofxtools.Parser import OFXTree, TreeBuilder
+    from ofxtools.Parser import OFXTree
 
     try:
         # A byte-order mark is no part of the header's first line.
@@ -71,13 +143,14 @@ def _tree(path: Path) -> Element:
     except OSError as error:
         raise ValueError(f"{path}: not an OFX file that can be read: {error}") from None
     root: Element | None
+    builder = _builder()
     try:
         parser = OFXTree()
-        parser.parse(io.BytesIO(raw))
+        parser.parse(io.BytesIO(raw), parser=builder)
         root = parser.getroot()
     except Exception as error:  # noqa: BLE001  the library raises several kinds of its own
         start = raw.upper().find(b"<OFX>")
-        refused = ValueError(f"{path}: not an OFX file that can be read: {error}")
+        refused = ValueError(f"{path}: not an OFX file that can be read: {_refusal(error)}")
         if start < 0:
             raise refused from None
         try:
@@ -86,35 +159,27 @@ def _tree(path: Path) -> Element:
             # Every byte is some character in Latin-1, which cp1252 is but for a few.
             body = raw[start:].decode("cp1252", errors="replace")
         try:
-            builder = TreeBuilder()
+            builder = _builder()
             builder.feed(body)
             root = builder.close()
         except Exception:  # noqa: BLE001  as above; the first refusal says more
             raise refused from None
+    if root is not None:
+        _leaves(root, builder.unclosed)
     if root is None or not _statements(root, *_SPENDING, _INVESTMENT):
         raise ValueError(f"{path}: not an OFX file that can be read: it has no account's statement")
     return root
 
 
 def _find(element: Element | None, tag: str) -> Element | None:
-    """``element``'s first ``tag`` below it, but not one inside another
-    element of ``element``'s own kind.
+    """``element``'s first ``tag``, at any depth; None without."""
+    return None if element is None else element.find(f".//{tag}")
 
-    Not its child only, and not any descendant: the library reads a value
-    left empty (``<MEMO>`` with nothing after it, or ``<MEMO/>``) as the
-    start of a group, so what follows it lands a level down, the next
-    transaction inside this one. Looking at any depth would then read the
-    next transaction's payee or correction as this one's."""
-    if element is None:
-        return None
-    waiting = list(reversed(element))
-    while waiting:
-        each = waiting.pop()
-        if each.tag == tag:
-            return each
-        if each.tag != element.tag:
-            waiting.extend(reversed(each))
-    return None
+
+# A character reference closed by ';'. html.unescape alone also reads
+# HTML's old ones that have none, so a bare '&' in a payee ('QUICK&COPY',
+# 'S&LT') would change the text.
+_REFERENCE = re.compile(r"&(?:#\d+|#[xX][0-9a-fA-F]+|[A-Za-z][A-Za-z0-9]*);")
 
 
 def _text(element: Element | None, tag: str) -> str:
@@ -126,7 +191,8 @@ def _text(element: Element | None, tag: str) -> str:
     found = _find(element, tag)
     if found is None:
         return ""
-    return html.unescape(found.text or "").replace("\N{NO-BREAK SPACE}", " ").strip()
+    text = _REFERENCE.sub(lambda reference: html.unescape(reference.group()), found.text or "")
+    return text.replace("\N{NO-BREAK SPACE}", " ").strip()
 
 
 # A whole number in groups of three, and what may follow its last group.
@@ -145,11 +211,12 @@ def _number(text: str, *, money: bool) -> Decimal:
     (``1,000,00``) is refused.
 
     One group after a lone comma could be either: ``5,000`` is five
-    thousand or five. For ``money`` it separates thousands, as the other
-    sources read it, since money has two decimals and not three. A count
-    of shares often has three, so there it is refused and not guessed: the
-    two readings differ a thousand times. A lone point is the decimal
-    point (``1.234``), as everywhere."""
+    thousand or five. For ``money``, an amount in whole cents, it
+    separates thousands, as the other sources read it: such an amount has
+    two decimals and not three. A count of shares often has three, and so
+    may a value that is shares times a price, so there it is refused and
+    not guessed: the two readings differ a thousand times. A lone point
+    is the decimal point (``1.234``), as everywhere."""
     plain = text.strip().replace(" ", "")
     sign = -1 if plain.startswith("-") else 1
     digits = plain[1:] if plain[:1] in "+-" else plain
@@ -175,7 +242,9 @@ def _cents(path: Path, text: str, what: str, *, exact: bool = True) -> int:
     reader refuses one, except where ``exact`` is off: a position's value
     is shares times a price, which some brokerages don't round."""
     try:
-        cents = _number(text, money=True) * 100
+        cents = _number(text, money=exact) * 100
+    except _Ambiguous:
+        raise ValueError(f"{path}: {what} {text!r} could be thousands or a decimal; it is not guessed") from None
     except InvalidOperation:
         raise ValueError(f"{path}: {what} {text!r} is not an amount") from None
     if exact and cents != cents.to_integral_value():
@@ -196,11 +265,9 @@ def _day(path: Path, text: str, what: str) -> dt.date:
 
 
 def _own(statement: Element) -> Element | None:
-    """The group naming the statement's own account."""
-    for tag in ("BANKACCTFROM", "CCACCTFROM", "INVACCTFROM"):
-        if (found := _find(statement, tag)) is not None:
-            return found
-    return None
+    """The group naming the statement's own account, by the statement's
+    kind: a transfer's other side is a group of another kind's name."""
+    return _find(statement, _OWN[statement.tag])
 
 
 def _kind(statement: Element) -> str:
@@ -208,8 +275,9 @@ def _kind(statement: Element) -> str:
     ``CREDITCARD`` for a card's statement, blank for an investment's. Only
     the statement's own account is asked: a transfer's other side
     (``BANKACCTTO``) has a type too."""
-    return _text(_find(statement, "BANKACCTFROM"), "ACCTTYPE").upper() \
-        or ("CREDITCARD" if statement.tag == "CCSTMTRS" else "")
+    if statement.tag == "STMTRS":
+        return _text(_own(statement), "ACCTTYPE").upper()
+    return "CREDITCARD" if statement.tag == "CCSTMTRS" else ""
 
 
 def _account(root: Element, statement: Element) -> str:
@@ -255,10 +323,6 @@ def _accounts(path: Path, root: Element, statements: list[Element]) -> list[str]
     return names
 
 
-def _money(cents: int) -> str:
-    return f"${Decimal(cents) / 100:,.2f}"
-
-
 def _foreign(account: str, statement: Element, items: str) -> list[str]:
     """Notes of what in ``statement`` is not in dollars: nothing is
     converted, and an amount in another currency is read as it is."""
@@ -279,9 +343,10 @@ def _statements(root: Element, *tags: str) -> list[Element]:
 
 
 def read_transactions(path: Path) -> Flows:
-    """The transactions of ``path``'s bank and card statements. They have
-    no categories (a payee map gives them), and each has its ``reference``,
-    the institution's id for it.
+    """The transactions of ``path``'s bank and card statements, and of
+    an investment statement's banking. They have no categories (a payee
+    map gives them), and each has its ``reference``, the institution's id
+    for it.
 
     A correction is a row too, with the reference it corrects in
     ``CORRECTS`` and, where it only removes that transaction, ``REMOVES``
@@ -290,7 +355,9 @@ def read_transactions(path: Path) -> Flows:
     root = _tree(path)
     rows: list[dict[str, object]] = []
     notes: list[str] = []
-    statements = _statements(root, *_SPENDING)
+    # In an investment statement only its banking has a STMTTRN: a buy or
+    # a dividend is an aggregate of its own.
+    statements = _statements(root, *_SPENDING, _INVESTMENT)
     for statement, account in zip(statements, _accounts(path, root, statements), strict=True):
         notes += _foreign(account, statement, "STMTTRN")
         for each in statement.iter("STMTTRN"):
@@ -311,6 +378,7 @@ def read_transactions(path: Path) -> Flows:
                 CORRECTS: _text(each, "CORRECTFITID"),
                 REMOVES: _text(each, "CORRECTACTION").upper() == "DELETE",
             })
+    notes += _generic(rows)
     frame = pd.DataFrame(rows, columns=[*FLOW_COLUMNS, REFERENCE, CORRECTS, REMOVES])
     # As Quicken's reader: an empty frame's columns must still have their types.
     frame["date"] = pd.to_datetime(frame["date"])
@@ -318,6 +386,27 @@ def read_transactions(path: Path) -> Flows:
     frame["source_row"] = frame["source_row"].astype("int64")
     frame[REMOVES] = frame[REMOVES].astype("bool")
     return Flows(source=NAME, transactions=frame, notes=tuple(notes))
+
+
+# How many different memos under one payee are noted.
+_MANY = 5
+
+
+def _generic(rows: list[dict[str, object]]) -> list[str]:
+    """Notes of payees that may name no one. The payee is ``NAME``, and
+    some banks write there what kind of payment it was (``POS PURCHASE``)
+    with the merchant in ``MEMO``; the payee map then gives every such
+    purchase one category. A file can't say that it does so, so it is
+    noted where one payee's payments all have memos, and many different
+    ones (read as a payee is, so a date or a number in them doesn't count)."""
+    memos: dict[tuple[str, str], list[str]] = {}
+    for row in rows:
+        if key := payee_key(str(row["payee"])):
+            memos.setdefault((str(row["account"]), key), []).append(payee_key(str(row["memo"])))
+    return [
+        f"{account}: {len(said)} transactions have the payee {payee!r}, with {len(set(said))} different memos; "
+        "if the memo is where this institution names who was paid, a payee rule gives them all one category"
+        for (account, payee), said in memos.items() if all(said) and len(set(said)) >= _MANY]
 
 
 def _tickers(root: Element) -> dict[str, tuple[str, str]]:
@@ -401,12 +490,14 @@ def read_holdings(path: Path) -> Snapshot:
         # is priced at a dollar too, and is no part of AVAILCASH.
         if swept and cash > swept:
             notes.append(
-                f"{account}: {_money(cash - swept)} of its cash of {_money(cash)} is added, taking the rest to "
-                f"be its position(s) priced at a dollar a share ({_money(swept)}); check the account's total")
+                f"{account}: {format_dollars(cash - swept)} of its cash of {format_dollars(cash)} is added, taking "
+                f"the rest to be its position(s) priced at a dollar a share ({format_dollars(swept)}); "
+                "check the account's total")
         elif 0 < cash < swept:
             notes.append(
-                f"{account}: its cash of {_money(cash)} is not added, taken to be in its position(s) priced "
-                f"at a dollar a share ({_money(swept)}); if it is apart from them, the account's total is short by it")
+                f"{account}: its cash of {format_dollars(cash)} is not added, taken to be in its position(s) "
+                f"priced at a dollar a share ({format_dollars(swept)}); if it is apart from them, the account's "
+                "total is short by it")
         # Money borrowed on margin is less than no cash, or a margin
         # balance below zero where the cash doesn't show it. Left out, the
         # account would be worth what was bought with the loan as well.

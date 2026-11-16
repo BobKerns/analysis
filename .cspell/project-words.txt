@@ -199,6 +199,7 @@ inspectable
 intraday
 INVACCTFROM
 INVBAL
+INVBANKTRAN
 INVBUY
 INVPOS
 INVPOSLIST
@@ -265,6 +266,7 @@ MKTVAL
 MMKX
 modelcontextprotocol
 mojimoji
+MONEYMRKT
 movflags
 msecs
 mtimes

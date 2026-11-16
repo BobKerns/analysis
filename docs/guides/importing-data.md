@@ -503,7 +503,7 @@ One download feeds both commands:
 
 | In the file | Becomes |
 | --- | --- |
-| A bank account's or a card's transactions | spending, for `sim import transactions` |
+| A bank account's or a card's transactions, and a brokerage account's checks, card purchases and bill payments | spending, for `sim import transactions` |
 | Each transaction's own id | what lets two downloads overlap: a transaction in both is counted once |
 | The institution's name, a bank account's type and the account's number | the outside account, as `First Example Bank checking ...4321`: the last four digits only |
 | The statement's balance and its date | the account's balance, for `sim import holdings` (what a card owes is a debt) |
@@ -535,6 +535,19 @@ twice. The import prints a note when two outside accounts have
 transactions with the same id, day and amount; if you see it, import
 downloads that don't overlap.
 
+The ids themselves are trusted only so far. A transaction is the one an
+earlier download had when its id, day and amount are all the same. Some
+institutions number each download from the start again, and some give a
+transaction a new id every time; either way overlapping downloads can't be
+matched. The import prints a note when an id comes back with another day or
+amount, or a day and amount come back under another id, and keeps the
+transactions: import downloads that don't overlap from such an institution.
+
+The payee is the file's name for it. Some banks write only the kind of
+payment there (`POS PURCHASE`) and put the merchant in the memo, so one
+`payees.csv` row would cover every purchase. The import prints a note when
+one payee has many different memos.
+
 Nothing is converted from another currency. An account or a transaction
 that is not in US dollars is read as it is, with a note.
 
@@ -554,19 +567,21 @@ statement.
 Amounts are read as institutions write them, with a thousands separator or
 a decimal comma (`5,000` is five thousand dollars). An amount with a
 fraction of a cent is refused, except a position's value, which is rounded
-to the cent. A number of shares written like `2,500`, which could be 2500
-or 2.5, is refused and not guessed.
+to the cent. A number of shares or a position's value written like `2,500`,
+which could be 2500 or 2.5, is refused and not guessed.
 
 Files that stray from the format are read where they can be: one with no
 header, one that starts with a byte-order mark, one with an accented payee
-in the bank's own encoding. A payee written `A &amp; B` is read as
-`A & B`, so the same pattern in `payees.csv` matches it from any bank.
+in the bank's own encoding, one that leaves a value empty. A payee written
+`A &amp; B` is read as `A & B`, so the same pattern in `payees.csv` matches
+it from any bank. A file that can't be read is refused without quoting it,
+since it has whole account numbers in it.
 
 A bank's correction of a transaction replaces or removes the one it
 names, whether that is in the same file or in an earlier download given in
 the same run.
 
-Not read: a brokerage's transactions (buys, sales, dividends,
+Not read: a brokerage's investment transactions (buys, sales, dividends,
 reinvestments), which are investment activity and not spending.
 
 ## A budget: `sim import budget`
