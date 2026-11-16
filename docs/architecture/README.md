@@ -21,6 +21,27 @@ needs fixing.
 | [ADR-010](ADR-010-responsive-strategies.md) | Responsive strategies: code that decides a chain's draws and placements | |
 | [ADR-011](ADR-011-tax-calculators.md) | Tax calculators: built-in and household code that computes each jurisdiction's return | |
 
+## The guides
+
+The ADRs say what the design is; the guides explain it to a person using it.
+Each diagram below links the guides that go with it.
+
+| Guide | For |
+| --- | --- |
+| [User guide](../user-guide.md) | Scenarios, the glossary, how tax is handled, common tasks, reading results |
+| [Chains](../guides/chains.md) | Where money is drawn from and where extra money goes |
+| [Ensembles](../guides/ensembles.md) | Varying rows, correlation and factors, pools, sensitivity |
+| [How the simulator draws random futures](../guides/simulation-basics.md) | Seeds, streams, distributions, copulas |
+| [Historical calibration](../guides/historical-calibration.md) | What numbers to put in; the template scenarios |
+| [A century of rates](../guides/century-of-rates.md), [historical information](../guides/historical-information.md) | What history says about inflation, rates and returns |
+| [Importing your data](../guides/importing-data.md) | Holdings, transactions and budgets from outside files |
+| [Guard rails](../guides/guard-rails.md) | Lines spending should stay inside, and reading their margins |
+| [State income tax](../guides/state-income-tax.md), [tax calculators](../guides/tax-calculators.md) | Each state's rules; writing a household's own |
+| [Finance research](../guides/finance-research.md) | Tear sheets and fund weights with Claude |
+| [Startup stock options](../guides/startup-stock-options.md) | What they are worth and how to model them |
+| [A private remote for the data repo](../guides/data-repo-remote.md) | Backing up and sharing the data repo |
+| [The SQLite guide](../sqlite-guide.md) | What is in a run file, and asking questions of it |
+
 ## The diagrams
 
 Overviews (functional blocks, data flow, input tiers), then detail that
@@ -35,7 +56,7 @@ SQLite state, gray is what a person reads.
 | --- | --- | --- |
 | [1. Functional blocks](#1-functional-blocks) | The layers, and how the three stores relate | 001, 002 |
 | [2a. Data flow](#2a-data-flow) | Files to intent to run to readers | 002, 004, 006 |
-| [2b. Where the inputs come from](#2b-where-the-inputs-come-from) | Edits, imports, prices, calibration, the nightly roll | 003, 004 |
+| [2b. Where the inputs come from](#2b-where-the-inputs-come-from) | Edits, imports, prices, research, calibration, the nightly roll | 003, 004 |
 | [2c. Ensembles](#2c-ensembles-three-kinds-of-batch) | Monte Carlo, sensitivity and pooled batches | 006, 007, 009 |
 | [3a. One month in the engine](#3a-one-month-in-the-engine) | The order of a month | 001, 003, 010 |
 | [3b. One debit through a chain](#3b-one-debit-through-a-chain) | Chains, refill, strategy draws | 003, 010 |
@@ -52,6 +73,8 @@ SQLite state, gray is what a person reads.
 Six layers, read top to bottom, plus the machinery that runs alongside. The one idea to take from it: everything authored is plain files in git, everything in SQLite is derived and can be rebuilt, and the only code that is not the simulator's own (tax calculators, strategies) is fenced into one box that gets a read-only view and hands back an answer.
 
 Not drawn: the registries and schema (`registries.py`, `schema.py`), which the loader, engine and reports all share, and the side tools that share the `analysis` command but none of the simulator (the Amazon categorizer, the video builder).
+
+Guides: [User guide](../user-guide.md) (what a household does with each layer), [setup](../SETUP.md) (the two repos and activation), [notebooks](../../notebooks/README.md).
 
 ```mermaid
 flowchart TB
@@ -147,6 +170,8 @@ flowchart TB
 
 One path from files to results. An ensemble is not a different engine: the vary step writes ordinary intents, and the same engine runs each. A run file carries its own copy of the intent and the plug-in source, so it stays readable after the data repo moves on. Everything from the intent on lives under the data repo's `state/`, is derived, and is pruned by `.retention.yaml`.
 
+Guides: [Looking at your results](../user-guide.md#5-looking-at-your-results), [the SQLite guide](../sqlite-guide.md) (what is in a run file and how to ask about it), [how the simulator draws random futures](../guides/simulation-basics.md).
+
 ```mermaid
 flowchart TB
   csv["<b>Scenario CSVs</b><br/>decimal dollars, percents,<br/>names, YYYY-MM"]
@@ -198,7 +223,11 @@ flowchart TB
 
 What writes to the files diagram 2 starts from. Everything a command writes
 to a scenario goes through a staged edit; nothing but the nightly roll and the
-price fetch writes without a person asking.
+price fetch writes without a person asking. The dotted research arrow is
+planned ([#640](https://github.com/BobKerns/analysis/issues/640)): the builder
+researching one symbol a night.
+
+Guides: [Importing your data](../guides/importing-data.md), [historical calibration](../guides/historical-calibration.md) (what numbers to put in, and the template scenarios built from them), [finance research](../guides/finance-research.md), [bringing the plan up to date](../user-guide.md#421-bring-the-plan-up-to-date-each-year), [a private remote for the data repo](../guides/data-repo-remote.md).
 
 ```mermaid
 flowchart LR
@@ -212,6 +241,8 @@ flowchart LR
   price_files[("<b>prices/</b>")]
   history[("<b>historical_data/</b><br/>in the code repo")]
   templates[("<b>templates/</b><br/>t_ scenarios · aux tables")]
+  research["<b>Claude research</b><br/>fund and company tear sheets<br/>from public web pages"]
+  allocation_files[("<b>allocations.csv</b> · <b>research/</b><br/>fund weights and the tear sheets")]
   roll["<b>Roll forward a month</b><br/>lots open at the last run's projection,<br/>months gone by become year-to-date rows"]
 
   people -->|"sim ... add / edit"| staged
@@ -219,12 +250,14 @@ flowchart LR
   staged --> scenario_files
   roll -->|"sim scenario roll,<br/>nightly by the builder"| scenario_files
   market -->|"sim prices fetch,<br/>daily by the builder"| price_files
+  research -->|"sim symbol research"| allocation_files
+  research -.->|"planned: one symbol a night<br/>by the builder, each about monthly"| allocation_files
   public -->|"analysis historical"| history
   history -.->|calibrates| templates
 
-  class people,exports,market,public out
+  class people,exports,market,public,research out
   class staged,roll proc
-  class scenario_files,price_files,history,templates input
+  class scenario_files,price_files,allocation_files,history,templates input
   classDef input fill:#FFF4D6,stroke:#B8860B,color:#3b2f00
   classDef code fill:#EDE3FF,stroke:#6B46C1,color:#2a1a55
   classDef proc fill:#DCEBFF,stroke:#2B6CB0,color:#0f2a4a
@@ -238,6 +271,8 @@ flowchart LR
 One recipe, an ordinary scenario whose `vary_` rows give each uncertain
 number a distribution, feeds two kinds of run. A pool runs nothing new: it
 is a weighted selection of members other ensembles already ran.
+
+Guides: The [ensembles guide](../guides/ensembles.md) explains what the diagram leaves out, with its own diagrams: [correlated parameters](../guides/ensembles.md#correlated-parameters), [factors](../guides/ensembles.md#modeling-a-shared-driver), [pooling](../guides/ensembles.md#pooling-several-kinds-of-trouble) and [sensitivity](../guides/ensembles.md#which-varying-rows-matter-and-when-sensitivity). Also [how the simulator draws random futures](../guides/simulation-basics.md) and [a century of rates](../guides/century-of-rates.md).
 
 ```mermaid
 flowchart TB
@@ -279,6 +314,8 @@ flowchart TB
 
 The order things happen in a month. This is where tax and strategies attach, so the two detail diagrams below hang off steps 3 to 8. Purple steps are where household or built-in strategy code is asked.
 
+Guides: [Calendar for more complex changes](../user-guide.md#48-calendar-for-more-complex-changes), [the glossary](../user-guide.md#2-glossary).
+
 ```mermaid
 flowchart TB
   s0(["last month's lot_state"])
@@ -308,6 +345,8 @@ flowchart TB
 ## 3b. One debit through a chain
 
 Every debit resolves the same way, whoever asked for it. A strategy can choose the lots, but the engine posts the legs, and whatever the strategy leaves undecided falls through to the chain as written.
+
+Guides: [Chains: where money comes from, and where extra money goes](../guides/chains.md), [chains as default policies](../user-guide.md#46-chains-as-default-policies).
 
 ```mermaid
 flowchart TB
@@ -343,6 +382,8 @@ flowchart TB
 ## 4a. Income tax: accumulate, compute, settle
 
 There is no tax accumulator rule (the `tax_accumulator` kind was retired with [#507](https://github.com/BobKerns/analysis/issues/507)). The ledger does the accumulating: each transfer already carries its tax character, and each April the engine sums the year into a read-only TaxYear and asks the calculators. The same prepared year answers every what-if, which is why `fill_bracket`, IRMAA and after-tax net worth agree with the April bill.
+
+Guides: [How tax is handled](../user-guide.md#3-how-tax-is-handled), [state income tax, state by state](../guides/state-income-tax.md), [itemized deductions](../user-guide.md#49-itemized-deductions), [IRMAA](../user-guide.md#414-medicares-income-surcharge-irmaa).
 
 ```mermaid
 flowchart TB
@@ -393,6 +434,8 @@ flowchart TB
 
 A strategy is a kind (code) bound to something it owns (a chain, tagged rules, or guard rails). The engine asks at fixed moments, the strategy answers with moves, and the engine posts them through its own paths. No answer means the scenario behaves as written.
 
+Guides: User guide: [draw from whatever is overweight](../user-guide.md#416-draw-from-whatever-is-overweight-responsive-strategies), [spend less after bad years](../user-guide.md#417-spend-less-after-bad-years-spending-strategies), [tax-aware moves each December](../user-guide.md#418-tax-aware-moves-each-december-year-end-strategies), [respond when a guard rail is crossed](../user-guide.md#419-respond-when-a-guard-rail-is-crossed-strategy-triggers). Also the [guard rails guide](../guides/guard-rails.md).
+
 ```mermaid
 flowchart TB
   def["<b>Scenario: strategies/NAME.csv</b> (one row)<br/>kind + params_json, and what it owns:<br/>a <b>chain</b> · the <b>rules</b> carrying a tag · guard rails as <b>trigger</b><br/>strategy_vary/NAME.csv: the params an ensemble varies"]
@@ -433,6 +476,8 @@ flowchart TB
 
 Tax calculators and strategies share the same loading, snapshot and purity rules. This is what keeps a run reproducible even though it ran code from the data repo.
 
+Guides: [Tax calculators: your own state's rules](../guides/tax-calculators.md), a worked example of household code from tag to check.
+
 ```mermaid
 flowchart TB
   src["<b>Data repo</b><br/>strategies/*.py<br/>taxes/*.py"]
@@ -462,6 +507,8 @@ flowchart TB
 ## 5. Input data: three tiers
 
 Where each kind of file lives, and which tier stands in for which. Templates ship with the code; the data repo keeps only what the household changes; a scenario folder holds one scenario's own rows.
+
+Guides: [templates/README.md](../../templates/README.md) (every CSV column), [scenarios build on each other](../user-guide.md#1-scenarios-build-on-each-other), [template scenarios](../guides/historical-calibration.md#template-scenarios).
 
 ```mermaid
 flowchart TB
@@ -539,6 +586,8 @@ What a scenario folder holds, and how each file is overlaid down the lineage
 ## 6a. Inheritance: the load order
 
 An example scenario, `bear_2030`, built on the prototype's `base` and `retire_alice` (`hsa_2027` and `bear_2030` are made up for the picture). Solid arrows are parents, dotted ones mix-ins. The numbers are the order the folders are overlaid in.
+
+Guides: [Scenarios build on each other](../user-guide.md#1-scenarios-build-on-each-other).
 
 ```mermaid
 flowchart TB
