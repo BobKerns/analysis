@@ -225,7 +225,7 @@ What writes to the files diagram 2 starts from. Everything a command writes
 to a scenario goes through a staged edit; nothing but the nightly roll and the
 price fetch writes without a person asking. The dotted research arrow is
 planned ([#640](https://github.com/BobKerns/analysis/issues/640)): the builder
-researching one symbol a night.
+researching one symbol each morning.
 
 Guides: [Importing your data](../guides/importing-data.md), [historical calibration](../guides/historical-calibration.md) (what numbers to put in, and the template scenarios built from them), [finance research](../guides/finance-research.md), [bringing the plan up to date](../user-guide.md#421-bring-the-plan-up-to-date-each-year), [a private remote for the data repo](../guides/data-repo-remote.md).
 
@@ -251,7 +251,7 @@ flowchart LR
   roll -->|"sim scenario roll,<br/>nightly by the builder"| scenario_files
   market -->|"sim prices fetch,<br/>daily by the builder"| price_files
   research -->|"sim symbol research"| allocation_files
-  research -.->|"planned: one symbol a night<br/>by the builder, each about monthly"| allocation_files
+  research -.->|"planned: one symbol each morning<br/>by the builder, each about monthly"| allocation_files
   public -->|"analysis historical"| history
   history -.->|calibrates| templates
 
