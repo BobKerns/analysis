@@ -17762,6 +17762,109 @@ def calendar_list(
         click.echo(factor_note)
 
 
+@sim_group_command.group(name="lifespan")
+def lifespan_tables_group_command() -> None:
+    """Compare the life tables a lifespan can be drawn from.
+
+    To set a person's lifespan, see `sim person lifespan`.
+    """
+
+
+def _life_tables(data: Path) -> list[tuple[Any, str, dict[str, Any], dict[str, list[float]]]]:
+    """Each life table found, with its effective date, its table by sex and
+    the expected ages at death by sex."""
+    from analysis.sim import lifespan_tables
+
+    found = []
+    for each in lifespan_tables.find_tables(data):
+        effective, by_sex = lifespan_tables.read_table(each.path)
+        found.append((each, effective, by_sex,
+                      {sex: lifespan_tables.expected_ages(t) for sex, t in by_sex.items()}))
+    if not found:
+        raise click.ClickException(f"no life tables under templates/aux or {data}")
+    return found
+
+
+@lifespan_tables_group_command.command("tables")
+@_LISTING_DATA_DIR_OPTION
+def lifespan_tables_command(data_dir: Path | None) -> None:
+    """List every life table and its values at each age.
+
+    The tables are the code repository's templates/aux/, the data repo's
+    aux/ and each scenario's aux/ life_table.csv (default) and
+    life_table__<name>.csv files, each at its latest vintage. For each sex,
+    q is the chance of dying before the next birthday, and expected is the
+    expected age at death for someone who has just reached that age, as the
+    simulator reads the table.
+    """
+    from rich.markup import escape
+    from rich.table import Table
+
+    from analysis.sim.lifespan_tables import SEXES
+
+    found = _life_tables(_resolve_data_dir(data_dir))
+    files = Table(title="life tables", header_style="bold")
+    for column in ("Table", "Location", "Effective", "Ages"):
+        files.add_column(column)
+    for each, effective, by_sex, _ in found:
+        files.add_row(escape(each.label), escape(each.location), effective,
+                      f"0-{max(len(t.q) for t in by_sex.values()) - 1}")
+    _print_wide(files)
+
+    values = Table(title="q and expected age at death", header_style="bold")
+    values.add_column("Age", justify="right")
+    for each, _, by_sex, _ in found:
+        for sex in by_sex:
+            for measure in ("q", "expected"):
+                values.add_column(f"{escape(each.label)}\n{SEXES[sex]}\n{measure}", justify="right")
+    for age in range(max(len(t.q) for _, _, by_sex, _ in found for t in by_sex.values())):
+        cells = [str(age)]
+        for _, _, by_sex, expected in found:
+            for sex, table in by_sex.items():
+                there = age < len(table.q)
+                cells += [f"{table.q[age]:.6f}" if there else "-",
+                          f"{expected[sex][age]:.2f}" if there else "-"]
+        values.add_row(*cells)
+    _print_wide(values)
+
+
+@lifespan_tables_group_command.command("check")
+@click.argument("age", type=float, required=False)
+@_LISTING_DATA_DIR_OPTION
+def lifespan_check_command(age: float | None, data_dir: Path | None) -> None:
+    """Show each life table's values at AGE, for each sex.
+
+    q is the chance of dying within the year, and expected the expected age
+    at death for someone alive at AGE; years left is the difference. A
+    fractional AGE (67.5) is interpolated between the whole ages either side.
+    AGE is asked for when left out.
+    """
+    from rich.markup import escape
+    from rich.table import Table
+
+    from analysis.sim.lifespan_tables import at_age_frame
+
+    data = _resolve_data_dir(data_dir)
+    if age is None:
+        age = click.prompt("age", type=float)
+    if not 0 <= age <= registries.MAX_AGE_AT_DEATH:
+        raise click.BadParameter(f"must be from 0 to {registries.MAX_AGE_AT_DEATH:g}",
+                                 param_hint="AGE")
+    frame = at_age_frame(data, age)
+    if frame.empty:
+        raise click.ClickException(f"no life tables under templates/aux or {data}")
+    table = Table(title=f"life tables at age {age:g}", header_style="bold")
+    for column in ("Table", "Location"):
+        table.add_column(column)
+    for sex, measure in frame.columns:
+        table.add_column(f"{sex}\n{measure}", justify="right")
+    for (label, location), values in zip(frame.index, frame.itertuples(index=False), strict=True):
+        table.add_row(escape(label), escape(location), *(
+            f"{v:.6f}" if measure == "q" else f"{v:.2f}"
+            for v, (_, measure) in zip(values, frame.columns, strict=True)))
+    _print_wide(table)
+
+
 @sim_group_command.group(name="person")
 def person_group_command() -> None:
     """See and change the household's persons and the scenario's lifespans."""
