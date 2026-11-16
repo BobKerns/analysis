@@ -923,9 +923,14 @@ A lifespan can read another country's table: `lifespan.csv`'s optional
 `life_table.csv`. The templates ship `jp`, Japan's 2023 table, which `sim
 person lifespan set <id> 90 --vary life_table --life-table jp` picks. It is
 per scenario, like the age, so one scenario (or a mix-in) can try another
-table and another median, to compare. `scripts/blend_life_tables.py` builds
-a table between two, such as one for someone who has lived in both
-countries. Use a country's own table rather than a later
+table and another median, to compare. `sim lifespan blend` builds a table
+between two or more, such as one for someone who has lived in both
+countries: `sim lifespan blend us_jp --table default --table jp` averages
+their yearly death rates at each age and writes `life_table__us_jp.csv` to
+the scenario's `aux/` (a mix-in's, to use it wherever the mix-in goes).
+`--table jp=3` weighs a table more; each weighs 1 by default. A name the
+scenario already reads, such as `jp`, is replaced only with `--replace`.
+Use a country's own table rather than a later
 `age_at_death` on the US one. The set-forward moves the table's median but
 keeps its spread, and the US tail is fatter: for a woman alive at 60, with
 the median put at Japan's (about 90), the shifted US table gives about a

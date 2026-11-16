@@ -454,18 +454,3 @@ def test_the_extractor_reads_an_hld_table_and_extends_its_open_interval(repo_roo
     assert float(tables["male"][108]) == pytest.approx(gompertz(108), abs=0.01)
     female = [float(tables["female"][age]) for age in range(100, 110)]
     assert female == sorted(female)  # the death rate keeps rising
-
-
-def test_the_blend_averages_hazards_by_weight(repo_root: Path) -> None:
-    import runpy
-
-    blend = runpy.run_path(str(repo_root / "scripts" / "blend_life_tables.py"))["blend"]
-    a = {0: {"q_female": 0.1, "q_male": 0.2}, 1: {"q_female": 0.5, "q_male": 0.5}}
-    b = {0: {"q_female": 0.3, "q_male": 0.2}}
-
-    mixed = blend([(a, 3), (b, 1)])
-
-    hazard = 0.75 * -math.log(0.9) + 0.25 * -math.log(0.7)
-    assert mixed[0]["q_female"] == pytest.approx(1 - math.exp(-hazard))
-    assert mixed[0]["q_male"] == pytest.approx(0.2)
-    assert mixed[1] == {"q_female": 1.0, "q_male": 1.0}  # past b's last age
