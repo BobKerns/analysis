@@ -164,6 +164,11 @@ def _tree(path: Path) -> Element:
             root = builder.close()
         except Exception:  # noqa: BLE001  as above; the first refusal says more
             raise refused from None
+    if builder.open:
+        # The library reads a file cut off anywhere without complaint; an
+        # interrupted download would understate spending with nothing said.
+        raise ValueError(f"{path}: not an OFX file that can be read: it stops before its end (no </OFX>); "
+                         "download it again")
     if root is not None:
         _leaves(root, builder.unclosed)
     if root is None or not _statements(root, *_SPENDING, _INVESTMENT):

@@ -2347,6 +2347,14 @@ def test_ofx_refuses_a_file_it_cannot_read(ofx_bank_download: Path, rewrite_down
     bad = rewrite_download(ofx_bank_download, lambda raw: raw.replace(b"</STMTRS>", b"</STMTRS>stray"))
     with pytest.raises(ValueError, match="not an OFX file that can be read: text follows a closing tag, at"):
         import_ofx.read_transactions(bad)
+    # A download cut off, in a transaction or after the last one, with its header or without.
+    for cut in (b"<FITID>B0004", b"</BANKTRANLIST>"):
+        for start in (b"OFXHEADER", b"<OFX>"):
+            short = rewrite_download(ofx_bank_download, lambda raw, cut=cut, start=start:
+                                     raw[raw.index(start):raw.index(cut)])
+            for read in (import_ofx.read_transactions, import_ofx.read_holdings):
+                with pytest.raises(ValueError, match="it stops before its end"):
+                    read(short)
 
 
 def test_ofx_keeps_a_refused_file_s_text_out_of_its_message(

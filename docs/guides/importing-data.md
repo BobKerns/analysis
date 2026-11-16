@@ -575,7 +575,8 @@ header, one that starts with a byte-order mark, one with an accented payee
 in the bank's own encoding, one that leaves a value empty. A payee written
 `A &amp; B` is read as `A & B`, so the same pattern in `payees.csv` matches
 it from any bank. A file that can't be read is refused without quoting it,
-since it has whole account numbers in it.
+since it has whole account numbers in it. So is a download that was cut
+off before its end: download it again.
 
 A bank's correction of a transaction replaces or removes the one it
 names, whether that is in the same file or in an earlier download given in
