@@ -17,6 +17,15 @@ __all__ = [
 ]
 
 
+# What a holding is named (its ``asset``) when it is an account's cash, or
+# what it has borrowed, beside its holdings that have symbols. No symbol is
+# written so, and a lot for one has no symbol. With a name of its own it can
+# have a mapping row of its own, apart from the account's other holdings.
+CASH = "(cash)"
+MARGIN = "(margin)"
+UNLISTED = frozenset({CASH, MARGIN})
+
+
 @dataclass(frozen=True)
 class Holding:
     """One thing an outside account holds. Only the account and a value are

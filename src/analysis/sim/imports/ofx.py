@@ -32,7 +32,17 @@ from xml.etree.ElementTree import Element
 
 import pandas as pd
 
-from analysis.sim.imports.forms import CORRECTS, FLOW_COLUMNS, REFERENCE, REMOVES, Flows, Holding, Snapshot
+from analysis.sim.imports.forms import (
+    CASH,
+    CORRECTS,
+    FLOW_COLUMNS,
+    MARGIN,
+    REFERENCE,
+    REMOVES,
+    Flows,
+    Holding,
+    Snapshot,
+)
 from analysis.sim.imports.holdings import format_dollars
 from analysis.sim.imports.mapping import payee_key
 
@@ -483,13 +493,14 @@ def read_holdings(path: Path) -> Snapshot:
         # AVAILCASH is all the account's cash, a sweep fund's included where
         # the brokerage lists one as a position; a core cash balance has no
         # position, and left out would understate the account. The cash
-        # beyond what such positions hold is a holding with no symbol. It
-        # may be a product of shares and a price, as a position's value is.
+        # beyond what such positions hold is a holding of its own (CASH),
+        # which the mapping can place apart from the positions. It may be
+        # a product of shares and a price, as a position's value is.
         balances = _find(statement, "INVBAL")
         available = _text(balances, "AVAILCASH")
         cash = _cents(path, available, "an investment statement's AVAILCASH", exact=False) if available else 0
         if cash > swept:
-            holdings.append(Holding(account, cash - swept, hints={"name": "cash", "type": "investment"}))
+            holdings.append(Holding(account, cash - swept, asset=CASH, hints={"name": "cash", "type": "investment"}))
         # Which positions are the cash is a guess, so it is said wherever
         # it decided something: a money market fund bought as an investment
         # is priced at a dollar too, and is no part of AVAILCASH.
@@ -506,10 +517,19 @@ def read_holdings(path: Path) -> Snapshot:
         # Money borrowed on margin is less than no cash, or a margin
         # balance below zero where the cash doesn't show it. Left out, the
         # account would be worth what was bought with the loan as well.
+        # Cash below zero is all the account's cash as cash above zero is,
+        # so the positions taken to be part of it come out of it too.
+        owed = cash - swept if cash < 0 else 0
+        if owed < 0 and swept:
+            notes.append(
+                f"{account}: {format_dollars(owed)} is added as borrowed, taking its cash of "
+                f"{format_dollars(cash)} to include its position(s) priced at a dollar a share "
+                f"({format_dollars(swept)}); check the account's total")
         borrowed = _text(balances, "MARGINBALANCE")
         margin = _cents(path, borrowed, "an investment statement's MARGINBALANCE", exact=False) if borrowed else 0
-        if min(cash, margin) < 0:
-            holdings.append(Holding(account, min(cash, margin), hints={"name": "margin", "type": "investment"}))
+        if min(owed, margin) < 0:
+            holdings.append(Holding(
+                account, min(owed, margin), asset=MARGIN, hints={"name": "margin", "type": "investment"}))
     if len(days) > 1:
         raise ValueError(
             f"{path}: its balances are as of different days ({', '.join(sorted(map(str, days)))}); "

@@ -11,7 +11,7 @@ from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
 
-from analysis.sim.imports.forms import Holding, Snapshot
+from analysis.sim.imports.forms import UNLISTED, Holding, Snapshot
 from analysis.sim.imports.mapping import AccountMap, AccountTarget
 from analysis.sim.registries import DEFAULT_LOT, RETIREMENT_LOT_SUBKINDS
 from analysis.sim.types import INVESTMENT_ASSET_SUBKINDS, InvestmentAssetSubkind
@@ -145,6 +145,9 @@ def plan(
     ``undecided``, since the holdings may be meant to add up into that lot;
     ``split`` names the accounts where that was decided against, so theirs
     are ``new``. A holding with no symbol goes to the account's only lot.
+    An account's cash or borrowing beside its symbols (``forms.UNLISTED``)
+    goes to the account's lot with no symbol and never into a fund's: with
+    no such lot it is ``new``.
 
     **What is set.** A lot kept in shares (a quantity and a symbol, and no
     balance) has its ``quantity`` set; any other lot its balance, and its
@@ -219,6 +222,11 @@ def plan(
             indexes = [i for i in of_account if result.rows[i].get("lot", "") in wanted]
             if not indexes:
                 result.no_lot.append((holding, target))
+                continue
+        elif holding.asset in UNLISTED:
+            indexes = [i for i in of_account if not result.rows[i].get("symbol", "").strip()]
+            if not indexes:
+                result.new.append((holding, target))
                 continue
         elif holding.asset:
             indexes = [i for i in of_account

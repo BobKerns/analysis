@@ -9034,8 +9034,9 @@ def _ask_holding_lot(
     click.echo(
         f"{target.account} has no lot of {_outside_label([holding], whole=False)}, "
         f"{format_dollars(holding.value_cents)}.")
-    clean = _clean_symbol(holding.asset)
-    suggested = holding.asset.lower() if clean else "skip"
+    # An account's cash can have a lot of its own, with no symbol.
+    clean = _clean_symbol(holding.asset) or holding.asset in import_forms.UNLISTED
+    suggested = holding.asset.strip("()").lower() if clean else "skip"
     click.echo("  " + ("A new name adds a lot for it. " if clean else "")
                + (f"A lot the account has ({', '.join(its_lots)}) takes it in. " if its_lots else "")
                + "'skip' leaves it out, now and in later imports.")
@@ -13352,13 +13353,10 @@ def import_holdings(
             if _interactive():
                 for key in dict.fromkeys(map(decided, result.unmapped)):
                     covered = of_row(key, result.unmapped)
-                    # By symbol where any holding has one: one with none beside
-                    # them (a brokerage's cash) goes to the account's lot with
-                    # none, and must not make the answer one lot for them all.
                     target = _ask_holding_target(
                         _outside_label(covered, whole=True), sum(h.value_cents for h in covered),
                         snapshot.source, rows, "has no saved mapping",
-                        held=holding_lots if (listed := any(h.asset for h in covered)) else with_lots,
+                        held=holding_lots if (listed := all(h.asset for h in covered)) else with_lots,
                         # A file of holdings gives each holding's type, not the account's.
                         by_symbol=listed, hint="" if listed else covered[0].hints.get("type", ""),
                         add=add_account_or_not, taken=taken)
@@ -13372,7 +13370,7 @@ def import_holdings(
                         _outside_label(covered, whole=not key[1]), sum(h.value_cents for h in covered),
                         snapshot.source, rows,
                         f"is mapped to {old.label}, which {scen_name} doesn't have",
-                        held=holding_lots if (listed := any(h.asset for h in covered)) else with_lots,
+                        held=holding_lots if (listed := all(h.asset for h in covered)) else with_lots,
                         # A file of holdings gives each holding's type, not the account's.
                         by_symbol=listed, hint="" if listed else covered[0].hints.get("type", ""),
                         add=add_account_or_not, taken=taken)
@@ -13420,17 +13418,21 @@ def import_holdings(
                 progress = True
             for holding, target in result.new:
                 its_lots = [_lot.lot for _lot in lots if _lot.account == target.account]
+                # The account's cash or borrowing: its lot has no symbol.
+                unlisted = holding.asset in import_forms.UNLISTED
+                symbol = "" if unlisted else holding.asset
                 if any(row.get("account_name") == target.account
-                       and row.get("symbol", "").upper() == holding.asset.upper() for row in rows):
+                       and row.get("symbol", "").upper() == symbol.upper() for row in rows):
                     # An earlier holding of the symbol (another row of the
                     # file, or another outside account) got the lot just now.
                     continue
                 # --new-lots can't name a lot for 'Pending activity'.
-                if _interactive() and not (new_lots and _clean_symbol(holding.asset)):
+                nameable = unlisted or _clean_symbol(holding.asset)
+                if _interactive() and not (new_lots and nameable):
                     answer = _ask_holding_lot(holding, target, its_lots)
-                elif new_lots and _clean_symbol(holding.asset):
+                elif new_lots and nameable:
                     # A lot of another symbol may have the name already.
-                    base = holding.asset.lower()
+                    base = holding.asset.strip("()").lower()
                     answer = next(
                         name for name in itertools.chain([base], (f"{base}-{n}" for n in itertools.count(2)))
                         if name not in its_lots)
@@ -13443,7 +13445,7 @@ def import_holdings(
                     saved_map.set(holding.account, holding.asset, chosen)
                     to_save = True
                 else:
-                    add_lot(target.account, answer, holding.asset)
+                    add_lot(target.account, answer, symbol)
                 progress = True
             if not progress:
                 break

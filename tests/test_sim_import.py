@@ -2573,13 +2573,13 @@ def test_ofx_references_that_do_not_tell_duplicates_are_noted(
         return raw
     afresh = rewrite_download(ofx_bank_later_download, renumber)
     flows = import_sources.read_flows([ofx_bank_download, afresh])
-    # B0004 is the same day and amount in both, as far as anyone can tell the same one.
-    assert (flows.duplicates, len(flows.transactions)) == (0, 10)
-    assert [note for note in flows.notes if "another day or amount" in note] == [
+    # A reference is taken at its word, so they are left out, and it is said.
+    assert (flows.duplicates, len(flows.transactions)) == (4, 6)
+    assert flows.notes == (
         f"4 transaction(s) of 'First Example Bank checking ...4321' in {afresh} have a reference that an earlier "
-        "file gave a transaction of another day or amount, and are kept as other transactions; if this "
-        "institution numbers each download's transactions afresh, a transaction in two downloads is counted "
-        "twice: import downloads that don't overlap"]
+        "file gave a transaction of another day or amount; they are left out as that transaction, at the "
+        "earlier file's day and amount. If this institution numbers each download's transactions afresh, they "
+        "are other transactions and are missing: import downloads that don't overlap",)
 
     # A bank that gives a transaction a new id in each download: February is counted twice.
     renamed = rewrite_download(ofx_bank_later_download, lambda raw: raw.replace(b"<FITID>B", b"<FITID>N"))
@@ -2589,6 +2589,22 @@ def test_ofx_references_that_do_not_tell_duplicates_are_noted(
         f"3 transaction(s) of 'First Example Bank checking ...4321' in {renamed} have the day and amount of ones "
         "in an earlier file, under other references; if this institution gives a transaction a new reference "
         "in each download, they are counted twice: import downloads that don't overlap",)
+
+
+def test_ofx_keeps_the_copies_of_a_reference_that_an_earlier_download_did_not_have(
+    ofx_bank_download: Path, rewrite_download: Rewrite,
+) -> None:
+    """Some institutions make a reference from the day, amount and payee, so two like
+    purchases of one day share it."""
+    twice = rewrite_download(
+        ofx_bank_download, lambda raw: raw.replace(b"B0006", b"B0003").replace(b"20260220", b"20260120")
+        .replace(b"-200.00", b"-400.00"), name="twice.qfx")
+    plain = import_sources.read_flows([ofx_bank_download, twice])
+    # The first download had one B0003 and the second has two: one is the same, one is new.
+    assert (plain.duplicates, list(plain.transactions["reference"]).count("B0003")) == (5, 2)
+    # Both had two: nothing is new, in either order.
+    both = import_sources.read_flows([twice, rewrite_download(twice, lambda raw: raw)])
+    assert (both.duplicates, len(both.transactions)) == (6, 6)
 
 
 def test_ofx_notes_a_payee_that_may_name_no_one(ofx_bank_download: Path, rewrite_download: Rewrite) -> None:
@@ -2692,6 +2708,8 @@ def test_ofx_reads_a_brokerage_s_cash_that_no_position_holds(
             return raw
         read = import_ofx.read_holdings(rewrite_download(ofx_brokerage_download, change))
         assert [each.asset for each in read.holdings[:2]] == ["VTSAX", "VMFXX"]
+        # Each is named apart from the positions, so the mapping can place it apart.
+        assert all(each.asset == f"({each.hints['name']})" for each in read.holdings[2:])
         return [(each.hints["name"], each.value_cents) for each in read.holdings[2:]], read.notes
 
     # All of the cash is in the money market fund, which is a position: not counted twice.
@@ -2711,8 +2729,13 @@ def test_ofx_reads_a_brokerage_s_cash_that_no_position_holds(
     assert beside_the_funds((b"<UNITPRICE>1.00", b"<UNITPRICE>100.00"),
                             (b"<AVAILCASH>20000.00", b"<AVAILCASH>5000.00")) == ([("cash", 500000)], ())
     # Borrowed on margin: less than no cash, or a margin balance the cash doesn't show.
-    assert beside_the_funds((b"<AVAILCASH>20000.00", b"<AVAILCASH>-2000.00"),
-                            (b"<MARGINBALANCE>0", b"<MARGINBALANCE>-2000.00"))[0] == [("margin", -200000)]
+    assert beside_the_funds((b"<UNITPRICE>1.00", b"<UNITPRICE>100.00"),
+                            (b"<AVAILCASH>20000.00", b"<AVAILCASH>-2000.00"),
+                            (b"<MARGINBALANCE>0", b"<MARGINBALANCE>-2000.00")) == ([("margin", -200000)], ())
+    # Cash below zero is all the cash too: the fund priced at a dollar is not counted beside it.
+    assert beside_the_funds((b"<AVAILCASH>20000.00", b"<AVAILCASH>-500.00")) == ([("margin", -2050000)], (
+        "Example Brokerage ...5678: -20500.00 is added as borrowed, taking its cash of -500.00 to include its "
+        "position(s) priced at a dollar a share (20000.00); check the account's total",))
     assert beside_the_funds((b"<AVAILCASH>20000.00", b"<AVAILCASH>20750.00"),
                             (b"<MARGINBALANCE>0", b"<MARGINBALANCE>-1500"))[0] == [("cash", 75000), ("margin", -150000)]
 
@@ -2831,3 +2854,25 @@ def test_sim_import_holdings_asks_no_lot_for_a_brokerage_with_cash_beside_its_po
     assert lots["Asset_Roth_Bill", "vtsax"]["opening_balance"] == "400000.00"
     assert lots["Asset_Roth_Bill", "vmfxx"]["opening_balance"] == "20000.00"
     assert lots["Asset_Roth_Bill", "default"]["opening_balance"] == "750.00"
+
+
+def test_sim_import_holdings_gives_a_new_account_s_cash_a_lot_of_its_own(
+    test_data_dir: Path, ofx_brokerage_download: Path, rewrite_download: Rewrite, at_a_terminal: None,
+) -> None:
+    """A new account has no lot yet: the cash is asked about once, as a lot, and not as an
+    account the scenario lacks, which would move the positions with it."""
+    core = rewrite_download(ofx_brokerage_download, lambda raw: raw.replace(
+        b"<AVAILCASH>20000.00", b"<AVAILCASH>20750.00").replace(b"<MARGINBALANCE>0", b"<MARGINBALANCE>-100.00"))
+
+    result = _import(test_data_dir, "holdings", str(core), "--new-lots",
+                     input="Asset_New_Brokerage\ny\nasset\nbrokerage_taxable\njoint\n")
+
+    assert result.exit_code == 0, result.output
+    assert "doesn't have" not in result.output
+    lots = _all_lots(test_data_dir)
+    assert lots["Asset_New_Brokerage", "vtsax"]["opening_balance"] == "400000.00"
+    assert lots["Asset_New_Brokerage", "vmfxx"]["opening_balance"] == "20000.00"
+    # The cash and what is borrowed, in one lot with no symbol.
+    cash = lots["Asset_New_Brokerage", "cash"]
+    assert (cash["symbol"], cash["opening_balance"]) == ("", "650.00")
+    assert _saved(test_data_dir, "ofx") == ["Example Brokerage ...5678,,map,Asset_New_Brokerage,,"]

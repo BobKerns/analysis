@@ -310,9 +310,9 @@ def read_flows(
     named = dict(zip(unnamed, given, strict=True)) if given else {}
     frames: list[pd.DataFrame] = []
     met: dict[str, None] = {}
-    # The days and amounts of the referenced rows met, by their source,
-    # account, reference and what they correct.
-    seen: dict[tuple[str, str, str, str], set[tuple[dt.date, int]]] = {}
+    # The referenced rows kept so far, by their source, account, reference
+    # and what they correct: how many, and their days and amounts.
+    seen: dict[tuple[str, str, str, str], tuple[int, set[tuple[dt.date, int]]]] = {}
     # Each account's referenced rows of the files before, by day and amount.
     had: dict[tuple[str, str], Counter[tuple[dt.date, int]]] = {}
     # Accounts that one file has together, so are known to differ.
@@ -355,12 +355,18 @@ def read_flows(
                         "import each period of an outside account from one file")
             spans[key].append((first, last, key not in bare, number))
         apart.update((source.name, *pair) for pair in itertools.combinations(sorted(key[1] for key in days), 2))
-        # Within one file a reference repeated is the file's own business;
-        # across files it is the same transaction downloaded twice, where
-        # its day and amount are the same too. A correction may reuse the
-        # reference of what it corrects, so it is a row of its own.
+        # A reference is the institution's word that two rows are one
+        # transaction, and is taken at it: a row whose reference an earlier
+        # file had is left out, whatever its day and amount (a charge may
+        # post on another day, or with its tip). Within one file a
+        # reference repeated is the file's own business (some make it from
+        # the day, amount and payee, so two like purchases share one), so
+        # only as many are left out as the files before kept. A correction
+        # may reuse the reference of what it corrects, so it is a row of
+        # its own.
         corrects = frame[CORRECTS].fillna("").astype(str) if CORRECTS in frame.columns else [""] * len(frame)
         fresh: list[bool] = []
+        met_here: Counter[tuple[str, str, str, str]] = Counter()
         new: list[tuple[tuple[str, str, str, str], tuple[dt.date, int]]] = []
         again: dict[tuple[str, str], Counter[tuple[dt.date, int]]] = {}
         kept: dict[tuple[str, str], Counter[tuple[dt.date, int]]] = {}
@@ -374,13 +380,16 @@ def read_flows(
             account = (source.name, str(each))
             key = (*account, str(reference), str(correcting))
             what = (stamp.date(), int(cents))
-            fresh.append(what not in seen.get(key, ()))
-            new.append((key, what))
+            met_here[key] += 1
+            before, whats = seen.get(key, (0, set()))
+            fresh.append(met_here[key] > before)
             (kept if fresh[-1] else again).setdefault(account, Counter())[what] += 1
-            if fresh[-1] and key in seen:
+            if fresh[-1]:
+                new.append((key, what))
+                if not before and not correcting:
+                    unmet.append((account, what))
+            elif what not in whats:
                 differing[account[1]] += 1
-            elif fresh[-1] and not correcting:
-                unmet.append((account, what))
         # A row no earlier file's reference matched, though one of them has
         # a row of its day and amount that this file doesn't have as well.
         alike: Counter[str] = Counter()
@@ -391,9 +400,9 @@ def read_flows(
                 alike[account[1]] += 1
         notes += [
             f"{count} transaction(s) of {account!r} in {path} have a reference that an earlier file gave a "
-            "transaction of another day or amount, and are kept as other transactions; if this institution "
-            "numbers each download's transactions afresh, a transaction in two downloads is counted twice: "
-            "import downloads that don't overlap"
+            "transaction of another day or amount; they are left out as that transaction, at the earlier "
+            "file's day and amount. If this institution numbers each download's transactions afresh, they "
+            "are other transactions and are missing: import downloads that don't overlap"
             for account, count in differing.items()]
         notes += [
             f"{count} transaction(s) of {account!r} in {path} have the day and amount of ones in an earlier "
@@ -401,7 +410,9 @@ def read_flows(
             "download, they are counted twice: import downloads that don't overlap"
             for account, count in alike.items()]
         for key, what in new:
-            seen.setdefault(key, set()).add(what)
+            count, whats = seen.setdefault(key, (0, set()))
+            whats.add(what)
+            seen[key] = (count + 1, whats)
         for account, counted in kept.items():
             had.setdefault(account, Counter()).update(counted)
         duplicates += fresh.count(False)

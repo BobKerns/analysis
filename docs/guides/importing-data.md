@@ -484,7 +484,10 @@ for any other source. Where the card's category isn't yours, a row of
 `imports/<source>/payees.csv` for that payee wins over it. If the file has a
 reference for each transaction, name that column too (`reference`):
 downloads that all have it may then overlap, and a transaction in two of
-them is counted once. A download without references can't be matched that
+them is counted once, by its reference alone. The import prints a note if a
+reference comes back with another day or amount, or a day and amount come
+back under another reference, since then the references may not mean what
+they should. A download without references can't be matched that
 way, so it mustn't cover the same days as another.
 
 ### OFX and QFX files
@@ -508,7 +511,7 @@ One download feeds both commands:
 | The institution's name, a bank account's type and the account's number | the outside account, as `First Example Bank checking ...4321`: the last four digits only |
 | The statement's balance and its date | the account's balance, for `sim import holdings` (what a card owes is a debt) |
 | A brokerage account's positions | holdings by symbol, as for [brokerage files](#brokerage-files) |
-| A brokerage account's cash that no position holds | a holding with no symbol, for the account's lot with none |
+| A brokerage account's cash that no position holds | a holding named `(cash)`, for the account's lot with no symbol (`(margin)` for what it has borrowed) |
 
 The transactions have no categories, so they are categorized
 [by payee](#bank-and-card-files), with one map for every institution's
@@ -535,13 +538,14 @@ twice. The import prints a note when two outside accounts have
 transactions with the same id, day and amount; if you see it, import
 downloads that don't overlap.
 
-The ids themselves are trusted only so far. A transaction is the one an
-earlier download had when its id, day and amount are all the same. Some
-institutions number each download from the start again, and some give a
-transaction a new id every time; either way overlapping downloads can't be
-matched. The import prints a note when an id comes back with another day or
-amount, or a day and amount come back under another id, and keeps the
-transactions: import downloads that don't overlap from such an institution.
+An id is taken at its word: a transaction with an id an earlier download
+had is that transaction, and is left out. Some institutions break that
+promise. One that numbers each download from the start again loses
+transactions this way, and one that gives a transaction a new id every
+time has them counted twice. The import can't tell which it is looking at,
+so it prints a note when an id comes back with another day or amount, or a
+day and amount come back under another id. If you see either, import
+downloads that don't overlap from that institution.
 
 The payee is the file's name for it. Some banks write only the kind of
 payment there (`POS PURCHASE`) and put the merchant in the memo, so one
@@ -563,6 +567,12 @@ are taken to be that fund, and only the cash beyond them is added. Money
 borrowed on margin is taken off. Where that guess decided anything, a note
 says what was added or left out; check the account's total against the
 statement.
+
+The cash goes to the account's lot that has no symbol. If the account has
+none, `--new-lots` adds one named `cash`, and at a terminal you are asked.
+To put it somewhere else, give it a row of its own in
+`imports/ofx/accounts.csv`, with `(cash)` as its `asset`; the positions
+keep the account's row.
 
 Amounts are read as institutions write them, with a thousands separator or
 a decimal comma (`5,000` is five thousand dollars). An amount with a
