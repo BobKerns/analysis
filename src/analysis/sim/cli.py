@@ -8694,21 +8694,27 @@ def _show_map_file(data_dir: Path, each: _ListedMap) -> None:
                     left=1 + len(header))
 
 
+def _map_categories(data_dir: Path) -> list[str]:
+    """Every category the saved mappings name: what completes one."""
+    return sorted({
+        *import_mapping.categories(data_dir),
+        *import_mapping.load_expense_accounts(import_mapping.expense_accounts_path(data_dir)).accounts})
+
+
 def _map_choices(
-    data_dir: Path, kind: import_mapping.MapFile, accounts: Mapping[str, str],
+    kind: import_mapping.MapFile, accounts: Mapping[str, str], categories: Callable[[], Sequence[str]],
 ) -> dict[str, list[str]]:
     """What completes an answer for each column a change to a ``kind`` file
-    asks for; ``accounts`` is the scenario's, each with its kind. What a
-    file takes beyond names is the file's own to say (``MapFile``)."""
+    asks for; ``accounts`` is the scenario's, each with its kind, and
+    ``categories`` reads the known categories when a column wants them.
+    What a file takes beyond names is the file's own to say (``MapFile``)."""
     found: dict[str, list[str]] = {}
     for column in kind.header[kind.keys:]:
         match column:
             case "account":
                 names_ = [name for name, its in accounts.items() if its in kind.account_kinds]
             case "category" | "target_category":
-                names_ = sorted({
-                    *import_mapping.categories(data_dir),
-                    *import_mapping.load_expense_accounts(import_mapping.expense_accounts_path(data_dir)).accounts})
+                names_ = list(categories())
             case "use":
                 names_ = ["budget", "actual"]
             case "action":
@@ -8767,8 +8773,8 @@ def import_map(source: str | None, list_only: bool, scenario: str | None, data_d
 
     def show(only: Path | None = None) -> list[_ListedMap]:
         """Read every file, and print each with its rows numbered: all of
-        them, or just the file at ``only`` (the numbers after it may have
-        moved, and are read off the next listing of their files)."""
+        them, or just the file at ``only``, which is enough only while no
+        other file's numbers have moved."""
         listed: list[_ListedMap] = []
         count = 0
         try:
@@ -8778,7 +8784,7 @@ def import_map(source: str | None, list_only: bool, scenario: str | None, data_d
                 if only is None or path == only:
                     _show_map_file(data_dir_p, listed[-1])
                 count += len(rows)
-        except ValueError as e:
+        except (ValueError, OSError, _csv.Error) as e:
             raise click.ClickException(str(e)) from None
         if not listed:
             click.echo("no import mappings are saved yet: an import asks for them, and saves the answers")
@@ -8802,13 +8808,22 @@ def import_map(source: str | None, list_only: bool, scenario: str | None, data_d
                 loaded.append(({}, ""))
         return loaded[0]
 
+    known_categories: list[Sequence[str]] = []
+
+    def categories() -> Sequence[str]:
+        """The known categories, read once and again only after a file
+        that names some is written."""
+        if not known_categories:
+            known_categories.append(_map_categories(data_dir_p))
+        return known_categories[0]
+
     while True:
         answer = _prompt_with_completion("row to change or remove (its number), or done", default="done").strip()
         if answer in ("done", ""):
             return
-        # isdecimal, not isdigit: what int() reads.
+        # isdecimal, not isdigit: what int() reads, short enough for it to.
         found = next((each for each in listed if each.first <= int(answer) < each.first + len(each.rows)), None) \
-            if answer.isdecimal() else None
+            if answer.isdecimal() and len(answer) < 10 else None
         if found is None:
             click.echo("  a row's number from the list, or done")
             continue
@@ -8828,7 +8843,7 @@ def import_map(source: str | None, list_only: bool, scenario: str | None, data_d
         else:
             accounts, scen_name = scenario_accounts() if "account" in values else ({}, "")
             try:
-                choices = _map_choices(data_dir_p, kind, accounts)
+                choices = _map_choices(kind, accounts, categories)
             except ValueError as e:
                 # Another mapping file that doesn't read: this command is
                 # how one is put right, so it goes on without the names.
@@ -8840,27 +8855,40 @@ def import_map(source: str | None, list_only: bool, scenario: str | None, data_d
                 if column == "account" and accounts:
                     row[column] = _ask_map_account(column, row[column], choices[column], scen_name)
                     continue
+                was, offered = row[column], choices[column]
+                if column == "lot" and "account" in row:
+                    # A lot is its account's: another account's is no default.
+                    if row["account"] != found.rows[at]["account"]:
+                        was = ""
+                    if scen_name and row["account"]:
+                        offered = names.lot_names(data_dir_p, scen_name, row["account"])
+                        click.echo(f"  lots of {row['account']}: {', '.join(offered) or 'none'}")
                 given = _prompt_with_completion(
-                    f"{column} (a space clears it)" if row[column] else column,
-                    choices=choices[column], default=row[column])
+                    f"{column} (a space clears it)" if was else column, choices=offered, default=was)
                 row[column] = given.strip()
             if row == found.rows[at]:
                 # Writing would still rewrite the file (its quoting, its
                 # blank rows): a difference in the data repo that says nothing.
                 click.echo("  nothing changed")
                 continue
+        changed_only = False
         try:
             # The questions may have waited a long time, and an import or a
             # rename elsewhere may have written the file meanwhile.
             if import_mapping.read_map_rows(path, kind) != found.rows:
-                click.echo(f"  not kept: {_shown(path)} has changed since it was listed; here it is now")
+                click.echo(f"  not kept: {_shown(path)} has changed since it was listed; here they are now")
             else:
                 import_mapping.write_map_rows(path, kind, rows)
                 click.echo(f"saved {_shown(path)}")
-        except ValueError as e:
+                changed_only = todo == "change"
+                known_categories.clear()
+        except (ValueError, OSError, _csv.Error) as e:  # the file may be gone, too
             click.echo(f"  not kept: {e}")
-        # Its file listed again either way, so its numbers are those of the file as it is.
-        listed = show(only=path)
+        # A changed row moves no number, so its file alone is listed again.
+        # Anything else (a row removed, a file written elsewhere) may have
+        # moved the numbers of every file after it: all are listed, so that
+        # no number on the screen is another row's.
+        listed = show(only=path if changed_only else None)
 
 
 def _unmigrated_import_maps(data_dir: Path) -> list[Path]:
@@ -8906,7 +8934,7 @@ def _import_target_lots(
 def _ask_holding_target(
     label: str, cents: int, source: str, lots: Sequence[Mapping[str, str]], why: str,
     *, held: Collection[str], by_symbol: bool = False, hint: str = "",
-    add: Callable[[str, bool], None] | None = None, taken: Collection[str] = (),
+    add: Callable[[str, bool], bool] | None = None, taken: Collection[str] = (),
 ) -> import_mapping.AccountTarget:
     """Where one outside account goes, asked for: one of the scenario's
     accounts that holds a balance (``held``), or ``skip``; and which lot, if
@@ -8914,7 +8942,8 @@ def _ask_holding_target(
     have a symbol: those find their lots by it, so no lot is asked.
 
     With ``add``, any other name is offered as a new account, which ``add``
-    adds to the scenario (told ``by_symbol``) before this returns; ``hint``
+    adds to the scenario (told ``by_symbol``) before this returns, or says
+    it didn't (the user went back); ``hint``
     is what the file calls the account's type, shown to help say its kind.
     ``taken`` is every account and chain name of the scenario: one of those
     that isn't in ``held`` can't take this balance, and can't be added.
@@ -8934,13 +8963,12 @@ def _ask_holding_target(
         if add is None or not click.confirm(f"Add account {name}?", default=False):
             return False
         try:
-            add(name, by_symbol)
+            return add(name, by_symbol)
         except click.ClickException as e:
             # Stopping here would lose every answer so far: they are saved
             # with the balances, at the end.
             click.echo(f"  not added: {e.format_message()}")
             return False
-        return True
 
     answer = _ask_name("account", [*held, "skip"], prompt=f"account for {label} (or skip)", other=new)
     if answer == "skip":
@@ -13174,6 +13202,8 @@ def import_holdings(
     with _intent_db(data_dir_p, scen_name) as (con, _):
         accounts = {name: (kind, subkind or "") for name, kind, subkind in con.execute(
             "SELECT name, kind, subkind FROM account")}
+        # The persons `sim account add` checks an owner against, should one be added.
+        persons = [row[0] for row in con.execute("SELECT id FROM person ORDER BY id")]
         scenario_start = date.fromisoformat(con.execute("SELECT start FROM scenario").fetchone()[0][:10])
         priced: dict[str, list[tuple[date, Decimal]]] = {}
         for symbol, day, payload in con.execute(
@@ -13230,9 +13260,10 @@ def import_holdings(
         rows.append(row)
         fresh.add(len(rows) - 1)
 
-    def add_account_now(name: str, listed: bool) -> None:
+    def add_account_now(name: str, listed: bool) -> bool:
         """Add account ``name`` to the scenario as `sim account add` does,
-        asking what it is, and take it and its lot in. It is written at
+        asking what it is, and take it and its lot in; False when the user
+        went back and nothing was added. It is written at
         once and not with the balances: its questions are that command's,
         and what the import asks next (its lots) needs it loaded."""
         # `sim account add`'s own questions, asked here so that what they
@@ -13240,9 +13271,9 @@ def import_holdings(
         click.echo(f"adding account {name}")
         kind = _ask_name("kind", ["asset", "liability", "back"], prompt="kind (or back)")
         if kind == "back":
-            raise click.ClickException("back to the account question")
+            return False
         subkind = _ask_account_subkind(kind)
-        owner = _ask_account_owner(names.person_ids(data_dir_p))
+        owner = _ask_account_owner(persons)
         lot_subkind = _ask_first_lot_subkind() if subkind == registries.RETIREMENT_SUBKIND else None
         click.get_current_context().invoke(
             add_account, name=name, kind=kind, subkind=subkind, owner=owner, lot_subkind=lot_subkind,
@@ -13260,6 +13291,7 @@ def import_holdings(
         if new:
             with_lots.append(name)
         lot_context.clear()
+        return True
 
     # A dry run writes nothing, so it adds no account.
     add_account_or_not = None if dry_run else add_account_now

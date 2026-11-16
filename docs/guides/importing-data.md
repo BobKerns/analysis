@@ -79,6 +79,8 @@ row is added: an import asks for what has no row.
 If an import or a rename wrote a file while `sim import map` waited at a
 question, your change to that file is dropped and the files are listed
 again as they are now.
+Removing a row moves the numbers of the rows after it, so the whole list
+is shown again: read a row's number from the latest listing.
 You can still edit the files by hand. `sim account rename` and
 `sim account lot rename` follow into these files by themselves.
 
