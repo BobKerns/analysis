@@ -28,7 +28,7 @@ import io
 import re
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from pathlib import Path
-from xml.etree.ElementTree import Element
+from typing import TYPE_CHECKING
 
 import pandas as pd
 
@@ -45,6 +45,9 @@ from analysis.sim.imports.forms import (
 )
 from analysis.sim.imports.holdings import format_dollars
 from analysis.sim.imports.mapping import payee_key
+
+if TYPE_CHECKING:
+    from xml.etree.ElementTree import Element
 
 __all__ = ["NAME", "is_ofx", "read_holdings", "read_transactions"]
 
@@ -82,20 +85,33 @@ def _builder():  # noqa: ANN202  the class is made here, where the library is fi
     or the next statement, lands inside this one. Here a closing tag ends
     the element it names and whatever is open inside it, and those are
     kept (``unclosed``) for ``_tree`` to make leaves of. ``<MEMO/>`` is
-    an empty ``MEMO`` and not an open element named ``MEMO/``."""
+    an empty ``MEMO`` and not an open element named ``MEMO/``, and
+    ``<STMTTRN >`` is a ``STMTTRN``, which its closing tag closes.
+
+    The library's pattern for a CDATA value is greedy: in a body written
+    on one line, as many OFX 2 servers write it, the first such value
+    would run to the last one's end and take every tag between. Here it
+    ends at its own ``]]>``, and may span lines."""
+    from xml.etree.ElementTree import Element
+
     from ofxtools.Parser import TreeBuilder
 
     class Builder(TreeBuilder):
+        regex = re.compile(
+            TreeBuilder.regex.pattern.replace("(?P<cdata>.+)", "(?P<cdata>.*?)"), re.VERBOSE | re.DOTALL)
+
         def __init__(self) -> None:
             super().__init__()
             self.open: list[str] = []
             self.unclosed: list[Element] = []
 
         def start(self, tag: str, attrs: dict[str, str]) -> Element:
+            tag = tag.strip()
             self.open.append(tag)
             return super().start(tag, attrs)
 
         def end(self, tag: str) -> Element:
+            tag = tag.strip()
             if tag not in self.open:
                 # A closing tag of nothing open closes nothing.
                 return Element(tag)
@@ -111,12 +127,15 @@ def _builder():  # noqa: ANN202  the class is made here, where the library is fi
                 tag = closetag = tag.removesuffix("/").strip()
             super()._start(tag, text, closetag)
 
+    assert "(?P<cdata>.*?)" in Builder.regex.pattern, "the library's pattern has the CDATA group this replaces"
     return Builder()
 
 
 def _leaves(root: Element, unclosed: list[Element]) -> None:
     """Make each of ``unclosed`` the empty value it was: what the builder
     put inside it becomes what follows it."""
+    if not unclosed:
+        return
     parents = {child: parent for parent in root.iter() for child in parent}
     for element in unclosed:
         if (parent := parents.get(element)) is None:
@@ -144,7 +163,14 @@ def _tree(path: Path) -> Element:
     says to; one it refuses is read again from its ``<OFX>`` tag on, for
     what institutions get wrong about the wrapping: no header at all, or a
     payee in the bank's own code page under a header that says UTF-8 or
-    ASCII."""
+    ASCII.
+
+    The other way round is not refused, so it is looked for first: a body
+    that is UTF-8, with characters beyond ASCII, under a header naming a
+    code page (the usual OFX 1 header does). The library would read each
+    such character as two or three of the code page's, in a payee and in
+    the institution's name, which names the account. Text in a code page
+    is almost never valid UTF-8, so a body that is, is read as UTF-8."""
     from ofxtools.Parser import OFXTree
 
     try:
@@ -154,14 +180,24 @@ def _tree(path: Path) -> Element:
         raise ValueError(f"{path}: not an OFX file that can be read: {error}") from None
     root: Element | None
     builder = _builder()
+    start = raw.upper().find(b"<OFX>")
     try:
-        parser = OFXTree()
-        parser.parse(io.BytesIO(raw), parser=builder)
-        root = parser.getroot()
+        if start < 0 or raw.isascii():
+            raise UnicodeError  # nothing to tell: read as the header says
+        body = raw[start:].decode("utf-8")
+    except UnicodeError:
+        body = None
+    try:
+        if body is not None:
+            builder.feed(body)
+            root = builder.close()
+        else:
+            parser = OFXTree()
+            parser.parse(io.BytesIO(raw), parser=builder)
+            root = parser.getroot()
     except Exception as error:  # noqa: BLE001  the library raises several kinds of its own
-        start = raw.upper().find(b"<OFX>")
         refused = ValueError(f"{path}: not an OFX file that can be read: {_refusal(error)}")
-        if start < 0:
+        if start < 0 or body is not None:
             raise refused from None
         try:
             body = raw[start:].decode("utf-8")
@@ -188,7 +224,10 @@ def _tree(path: Path) -> Element:
 
 def _find(element: Element | None, tag: str) -> Element | None:
     """``element``'s first ``tag``, at any depth; None without."""
-    return None if element is None else element.find(f".//{tag}")
+    if element is None:
+        return None
+    # Not ElementPath's './/tag', which is parsed at each call.
+    return next((found for found in element.iter(tag) if found is not element), None)
 
 
 # A character reference closed by ';'. html.unescape alone also reads
@@ -204,17 +243,22 @@ def _text(element: Element | None, tag: str) -> str:
     to its typed models: a payee is then one text whichever institution's
     file names it, and however it escapes it."""
     found = _find(element, tag)
-    if found is None:
-        return ""
+    return "" if found is None else _said(found)
+
+
+def _said(found: Element) -> str:
+    """``found``'s own text, as ``_text`` reads it."""
     text = _REFERENCE.sub(lambda reference: html.unescape(reference.group()), found.text or "")
     return text.replace("\N{NO-BREAK SPACE}", " ").strip()
 
 
 # A whole number in groups of three, and what may follow its last group.
 _GROUPED = r"[1-9]\d{{0,2}}(?:{0}\d{{3}})+"
-_COMMAS = re.compile(rf"({_GROUPED.format(',')})(?:\.(\d*))?")
-_POINTS = re.compile(rf"({_GROUPED.format(r'\.')})(?:,(\d*))?")
-_PLAIN = re.compile(r"(\d*)(?:[.,](\d*))?")
+# ASCII digits only: a full-width digit is one to \d and to Decimal, and
+# not to the rule for separators, so it is no number here.
+_COMMAS = re.compile(rf"({_GROUPED.format(',')})(?:\.(\d*))?", re.ASCII)
+_POINTS = re.compile(rf"({_GROUPED.format(r'\.')})(?:,(\d*))?", re.ASCII)
+_PLAIN = re.compile(r"(\d*)(?:[.,](\d*))?", re.ASCII)
 
 
 def _number(text: str, *, money: bool) -> Decimal:
@@ -255,7 +299,8 @@ class _Ambiguous(InvalidOperation):
 def _cents(path: Path, text: str, what: str, *, exact: bool = True) -> int:
     """``text`` as cents. A fraction of a cent is refused, as Quicken's
     reader refuses one, except where ``exact`` is off: a position's value
-    is shares times a price, which some brokerages don't round."""
+    is shares times a price, which some brokerages don't round, and an
+    investment statement's cash or margin balance may be one too."""
     try:
         cents = _number(text, money=exact) * 100
     except _Ambiguous:
@@ -265,6 +310,18 @@ def _cents(path: Path, text: str, what: str, *, exact: bool = True) -> int:
     if exact and cents != cents.to_integral_value():
         raise ValueError(f"{path}: {what} {text!r} has a fraction of a cent")
     return int(cents.to_integral_value(ROUND_HALF_UP))
+
+
+def _count(path: Path, text: str, tag: str) -> Decimal:
+    """A position's ``tag`` (its units, its price) as a number; one that
+    reads two ways, or is none, is refused."""
+    try:
+        return _number(text, money=False)
+    except _Ambiguous:
+        raise ValueError(
+            f"{path}: a position's {tag} {text!r} could be thousands or a decimal; it is not guessed") from None
+    except InvalidOperation:
+        raise ValueError(f"{path}: a position's {tag} {text!r} is not a number") from None
 
 
 def _day(path: Path, text: str, what: str) -> dt.date:
@@ -310,7 +367,8 @@ def _account(root: Element, statement: Element) -> str:
     names. ``sources.read_flows`` notes transactions that two names share."""
     own = _own(statement)
     number = _text(own, "ACCTID")
-    signed_on = root.find(".//SONRS/FI")
+    # Not the FI group alone: left unclosed, its values are beside it.
+    signed_on = root.find(".//SONRS")
     institution = _text(signed_on, "ORG") or _text(signed_on, "FID") or _text(own, "BANKID") \
         or _text(own, "BROKERID")
     # A card and a brokerage account of one institution may end alike too.
@@ -348,14 +406,17 @@ def _accounts(path: Path, root: Element, statements: list[Element]) -> list[str]
     return names
 
 
-def _foreign(account: str, statement: Element, items: str) -> list[str]:
+def _foreign(account: str, statement: Element, items: str | None) -> list[str]:
     """Notes of what in ``statement`` is not in dollars: nothing is
-    converted, and an amount in another currency is read as it is."""
+    converted, and an amount in another currency is read as it is.
+    ``items`` is the tag of what is read from it that may have a currency
+    of its own; None where only its balance is."""
     notes = []
     stated = _text(statement, "CURDEF").upper()
     if stated and stated != _DOLLARS:
         notes.append(f"{account} is in {stated}; its amounts are read as they are, not converted")
-    symbols = {_text(_find(each, "CURRENCY"), "CURSYM").upper() for each in statement.iter(items)}
+    symbols = {_text(_find(each, "CURRENCY"), "CURSYM").upper()
+               for each in (statement.iter(items) if items else ())}
     others = sorted(symbols - {"", stated or _DOLLARS})
     if others:
         notes.append(f"{account} has amounts in {', '.join(others)}, read as they are and not converted")
@@ -386,8 +447,9 @@ def read_transactions(path: Path) -> Flows:
     for statement, account in zip(statements, _accounts(path, root, statements), strict=True):
         notes += _foreign(account, statement, "STMTTRN")
         for each in statement.iter("STMTTRN"):
-            # A payee is NAME, or a PAYEE aggregate with its own NAME.
-            payee = _text(each, "NAME")
+            # A payee is NAME, or a PAYEE aggregate with its own NAME: the
+            # first that says something, where a file has an empty NAME too.
+            payee = next((said for name in each.iter("NAME") if (said := _said(name))), "")
             check = _text(each, "CHECKNUM")
             rows.append({
                 # The file has no lines to count by: the transaction's place in it.
@@ -457,9 +519,10 @@ def read_holdings(path: Path) -> Snapshot:
     investing = _statements(root, _INVESTMENT)
     names = _accounts(path, root, [*spending, *investing])
     for statement, account in zip(spending, names[:len(spending)], strict=True):
-        notes += _foreign(account, statement, "STMTTRN")
+        notes += _foreign(account, statement, None)
         ledger = _find(statement, "LEDGERBAL")
         if ledger is None:
+            notes.append(f"{account}: the file has no balance for it (no LEDGERBAL), so its balance is left as it is")
             continue
         if stamp := _text(ledger, "DTASOF"):
             days.add(_day(path, stamp, "a balance's DTASOF"))
@@ -468,6 +531,7 @@ def read_holdings(path: Path) -> Snapshot:
             account, _cents(path, _text(ledger, "BALAMT"), "a balance's BALAMT"),
             hints={"type": kind.lower()} if kind else {}))
     tickers = _tickers(root)
+    complete: set[str] = set()
     for statement, account in zip(investing, names[len(spending):], strict=True):
         # What the positions priced at a dollar a share hold: a sweep or
         # money market fund's. Not those whose value equals their units: a
@@ -476,41 +540,46 @@ def read_holdings(path: Path) -> Snapshot:
         notes += _foreign(account, statement, "INVPOS")
         if stamp := _text(statement, "DTASOF"):
             days.add(_day(path, stamp, "an investment statement's DTASOF"))
+        # A list of positions, even an empty one, is all the account holds.
+        # A download without one (positions left out) says nothing of them.
+        positions = _find(statement, "INVPOSLIST") is not None
+        if positions:
+            complete.add(account)
         for position in statement.iter("INVPOS"):
             unique = _text(position, "UNIQUEID")
             symbol, name = tickers.get(unique, ("", ""))
             units = _text(position, "UNITS")
-            try:
-                quantity = _number(units, money=False) if units else None
-            except _Ambiguous:
-                raise ValueError(
-                    f"{path}: a position's UNITS {units!r} could be thousands or a decimal; "
-                    "it is not guessed") from None
-            except InvalidOperation:
-                raise ValueError(f"{path}: a position's UNITS {units!r} is not a number") from None
+            quantity = _count(path, units, "UNITS") if units else None
             value = _cents(path, _text(position, "MKTVAL"), "a position's MKTVAL", exact=False)
-            try:
-                dollar = _number(_text(position, "UNITPRICE"), money=False) == 1
-            except InvalidOperation:
-                dollar = False
-            if dollar:
+            # The price only says whether the position is the account's
+            # cash. One that can't be read is refused as the units are:
+            # taken as some other price, the cash would be added again.
+            price = _text(position, "UNITPRICE")
+            if price and _count(path, price, "UNITPRICE") == 1:
                 swept += value
+            elif not price:
+                notes.append(
+                    f"{account}: its position {symbol or unique} has no price, so it is taken not to be the "
+                    "account's cash; if it is (a sweep or money market fund), that cash is counted twice")
             holdings.append(Holding(
                 account, value,
                 # A security the file gives no symbol is named by its id (a CUSIP).
                 asset=symbol or unique, quantity=quantity,
                 hints={hint: said for hint, said in (("name", name), ("type", "investment")) if said}))
+        # The balances are looked for in the statement and not in its
+        # INVBAL: left unclosed, that is an empty value with these beside it.
+        available = _text(statement, "AVAILCASH")
+        borrowed = _text(statement, "MARGINBALANCE")
+        if not (available or borrowed or _find(statement, "INVBAL") is not None):
+            continue
         # AVAILCASH is all the account's cash, a sweep fund's included where
         # the brokerage lists one as a position; a core cash balance has no
         # position, and left out would understate the account. The cash
         # beyond what such positions hold is a holding of its own (CASH),
         # which the mapping can place apart from the positions. It may be
         # a product of shares and a price, as a position's value is.
-        balances = _find(statement, "INVBAL")
-        available = _text(balances, "AVAILCASH")
         cash = _cents(path, available, "an investment statement's AVAILCASH", exact=False) if available else 0
-        if cash > swept:
-            holdings.append(Holding(account, cash - swept, asset=CASH, hints={"name": "cash", "type": "investment"}))
+        margin = _cents(path, borrowed, "an investment statement's MARGINBALANCE", exact=False) if borrowed else 0
         # Which positions are the cash is a guess, so it is said wherever
         # it decided something: a money market fund bought as an investment
         # is priced at a dollar too, and is no part of AVAILCASH.
@@ -524,24 +593,32 @@ def read_holdings(path: Path) -> Snapshot:
                 f"{account}: its cash of {format_dollars(cash)} is not added, taken to be in its position(s) "
                 f"priced at a dollar a share ({format_dollars(swept)}); if it is apart from them, the account's "
                 "total is short by it")
-        # Money borrowed on margin is less than no cash, or a margin
-        # balance below zero where the cash doesn't show it. Left out, the
-        # account would be worth what was bought with the loan as well.
-        # Cash below zero is all the account's cash as cash above zero is,
-        # so the positions taken to be part of it come out of it too.
-        owed = cash - swept if cash < 0 else 0
-        if owed < 0 and swept:
+        elif cash > 0 and not positions:
+            notes.append(
+                f"{account}: the file leaves out its positions, so all its cash of {format_dollars(cash)} is "
+                "added; if a lot of the account holds some of it (a sweep or money market fund), that is "
+                "counted twice: download the account with its positions")
+        # Money borrowed on margin is what the file says is (a margin
+        # balance below zero), and without that, less than no cash. Left
+        # out, the account would be worth what was bought with the loan as
+        # well. Cash below zero is all the account's cash as cash above
+        # zero is, so the positions taken to be part of it come out of it
+        # too; a stated loan is taken as stated.
+        owed = margin if margin < 0 else cash - swept if cash < 0 else 0
+        if owed < 0 and swept and margin >= 0:
             notes.append(
                 f"{account}: {format_dollars(owed)} is added as borrowed, taking its cash of "
                 f"{format_dollars(cash)} to include its position(s) priced at a dollar a share "
                 f"({format_dollars(swept)}); check the account's total")
-        borrowed = _text(balances, "MARGINBALANCE")
-        margin = _cents(path, borrowed, "an investment statement's MARGINBALANCE", exact=False) if borrowed else 0
-        if min(owed, margin) < 0:
-            holdings.append(Holding(
-                account, min(owed, margin), asset=MARGIN, hints={"name": "margin", "type": "investment"}))
+        # Each is a holding even at nothing: the cash spent, or the loan
+        # repaid, since an earlier import must not leave its old amount.
+        # Cash's basis is what it is worth, and a loan's what is owed.
+        holdings += [
+            Holding(account, cents, asset=asset, cost_basis_cents=cents, hints={"name": name, "type": "investment"})
+            for asset, name, cents in ((CASH, "cash", max(cash - swept, 0)), (MARGIN, "margin", owed))]
     if len(days) > 1:
         raise ValueError(
             f"{path}: its balances are as of different days ({', '.join(sorted(map(str, days)))}); "
             "download each account by itself")
-    return Snapshot(source=NAME, holdings=tuple(holdings), as_of=next(iter(days), None), notes=tuple(notes))
+    return Snapshot(source=NAME, holdings=tuple(holdings), as_of=next(iter(days), None), notes=tuple(notes),
+                    complete=frozenset(complete))

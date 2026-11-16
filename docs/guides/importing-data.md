@@ -511,7 +511,7 @@ One download feeds both commands:
 | The institution's name, the account's type and the account's number | the outside account, as `First Example Bank checking ...4321` (`card` or `investment` where it is one): the last four digits only |
 | The statement's balance and its date | the account's balance, for `sim import holdings` (what a card owes is a debt) |
 | A brokerage account's positions | holdings by symbol, as for [brokerage files](#brokerage-files) |
-| A brokerage account's cash that no position holds | a holding named `(cash)`, for the account's lot with no symbol (`(margin)` for what it has borrowed) |
+| A brokerage account's cash that no position holds | a holding named `(cash)`, for the account's cash lot (`(margin)` for what it has borrowed) |
 
 The transactions have no categories, so they are categorized
 [by payee](#bank-and-card-files), with one map for every institution's
@@ -564,19 +564,29 @@ A brokerage's cash is read best effort. The file gives one figure for all
 of the account's cash, which includes a sweep or money market fund where
 that is also listed as a position. Positions priced at a dollar a share
 are taken to be that fund, and only the cash beyond them is added. Money
-borrowed on margin is taken off. Where that guess decided anything, a note
-says what was added or left out; check the account's total against the
-statement.
+borrowed on margin is taken off: the margin balance where the file gives
+one. Where that guess decided anything, a note says what was added or left
+out; check the account's total against the statement. A download that
+leaves the positions out can't tell the cash from a fund a lot already
+holds, so download the account with its positions.
 
-The cash goes to the account's lot that has no symbol. If the account has
-none, `--new-lots` adds one named `cash`, and at a terminal you are asked.
-To put it somewhere else, give it a row of its own in
-`imports/ofx/accounts.csv`, with `(cash)` as its `asset`; the positions
-keep the account's row.
+The cash goes to the account's cash lot (one with the symbol `CASH`), or
+to its lot with no symbol. If the account has neither, `--new-lots` adds a
+cash lot named `cash`, and at a terminal you are asked. To put it
+somewhere else, give it a row of its own in `imports/ofx/accounts.csv`,
+with `(cash)` as its `asset`; the positions keep the account's row.
+
+An OFX file has no cost basis. In a taxable brokerage account the cash
+lot's basis is its balance, and a note names the new lots that have none:
+set each with `sim account lot edit ACCOUNT LOT --opening-cost-basis
+AMOUNT` before a run draws on it. When one lot is split into a lot for
+each fund, the old lot is emptied and keeps the account's basis, for you
+to share among the new ones.
 
 Amounts are read as institutions write them, with a thousands separator or
 a decimal comma (`5,000` is five thousand dollars). An amount with a
-fraction of a cent is refused, except a position's value, which is rounded
+fraction of a cent is refused, except a position's value and a brokerage
+account's cash and margin balances, which are rounded
 to the cent. A number of shares or a position's value written like `2,500`,
 which could be 2500 or 2.5, is refused and not guessed.
 

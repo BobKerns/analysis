@@ -9034,7 +9034,7 @@ def _ask_holding_lot(
     click.echo(
         f"{target.account} has no lot of {_outside_label([holding], whole=False)}, "
         f"{format_dollars(holding.value_cents)}.")
-    # An account's cash can have a lot of its own, with no symbol.
+    # An account's cash can have a lot of its own.
     clean = _clean_symbol(holding.asset) or holding.asset in import_forms.UNLISTED
     suggested = holding.asset.strip("()").lower() if clean else "skip"
     click.echo("  " + ("A new name adds a lot for it. " if clean else "")
@@ -13418,9 +13418,10 @@ def import_holdings(
                 progress = True
             for holding, target in result.new:
                 its_lots = [_lot.lot for _lot in lots if _lot.account == target.account]
-                # The account's cash or borrowing: its lot has no symbol.
+                # The account's cash or borrowing: a cash lot's, by the
+                # symbol such lots have, so the plan knows what it holds.
                 unlisted = holding.asset in import_forms.UNLISTED
-                symbol = "" if unlisted else holding.asset
+                symbol = registries.CASH_SYMBOL if unlisted else holding.asset
                 if any(row.get("account_name") == target.account
                        and row.get("symbol", "").upper() == symbol.upper() for row in rows):
                     # An earlier holding of the symbol (another row of the
@@ -13542,7 +13543,8 @@ def import_holdings(
     # A symbol with no rate series, allocation or name grows as its account
     # does, which may not be what the fund does.
     if fresh:
-        known = {*context().securities, *context().growing}
+        # A cash lot's symbol needs no telling about.
+        known = {*context().securities, *context().growing, *registries.SYMBOL_ASSET_CLASS, ""}
         if strangers := sorted({rows[i]["symbol"] for i in fresh} - known):
             click.echo(
                 f"note: the plan doesn't know {', '.join(strangers)} yet, so each lot grows "

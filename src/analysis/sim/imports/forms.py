@@ -19,8 +19,9 @@ __all__ = [
 
 # What a holding is named (its ``asset``) when it is an account's cash, or
 # what it has borrowed, beside its holdings that have symbols. No symbol is
-# written so, and a lot for one has no symbol. With a name of its own it can
-# have a mapping row of its own, apart from the account's other holdings.
+# written so; its lot is the account's cash lot (the symbol ``CASH``), or one
+# with no symbol. With a name of its own it can have a mapping row of its
+# own, apart from the account's other holdings.
 CASH = "(cash)"
 MARGIN = "(margin)"
 UNLISTED = frozenset({CASH, MARGIN})
@@ -62,6 +63,11 @@ class Snapshot:
     notes: tuple[str, ...] = ()
     """What the reader guessed, or read without being sure of, for the
     user to check."""
+    complete: frozenset[str] = frozenset()
+    """The accounts (as ``Holding.account``) whose holdings the file says
+    it lists every one of, where it says so apart from the holdings: an
+    account listed in full that holds only cash, or nothing, has sold
+    what an earlier file had."""
 
 
 FLOW_COLUMNS = (

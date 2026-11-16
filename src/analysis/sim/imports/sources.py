@@ -261,6 +261,7 @@ def read_holdings(
         holdings=tuple(holding for snapshot in snapshots for holding in snapshot.holdings),
         as_of=next(iter(dates), None),
         notes=tuple(note for snapshot in snapshots for note in snapshot.notes),
+        complete=frozenset(account for snapshot in snapshots for account in snapshot.complete),
     )
 
 
@@ -377,16 +378,24 @@ class _References:
     another day, or with its tip). Within one file a reference repeated is
     the file's own business (some make it from the day, amount and payee,
     so two like purchases share one), so only as many are left out as the
-    files before kept. A correction may reuse the reference of what it
-    corrects, so it is a row of its own.
+    files before kept: those with an earlier copy's day and amount first,
+    wherever they are in the file, and only then others.
+
+    A correction may reuse the reference of what it corrects, so it is a
+    row of its own: only the same correction, in an earlier file, is its
+    duplicate. A row that corrects nothing is the duplicate of any earlier
+    row with its reference, a correction too: a later download lists a
+    corrected transaction as it stands, with nothing to say it was one.
 
     What a reference can't be trusted for is noted: rows left out whose
     day or amount is not the earlier file's, and rows kept that have the
     day and amount of an earlier file's row under another reference."""
 
     # The referenced rows kept so far, by their source, account, reference
-    # and what they correct: how many, and their days and amounts.
-    seen: dict[_Row, tuple[int, set[_What]]] = field(default_factory=dict)
+    # and what they correct: their days and amounts.
+    seen: dict[_Row, Counter[_What]] = field(default_factory=dict)
+    # The same, whatever they correct.
+    referenced: dict[tuple[str, str, str], Counter[_What]] = field(default_factory=dict)
     # Each account's referenced rows kept so far, by day and amount.
     had: dict[tuple[str, str], Counter[_What]] = field(default_factory=dict)
 
@@ -394,50 +403,57 @@ class _References:
         """Whether each row of ``frame``, the next file's (``path``), is
         new to the run, and the notes of what its references left unsure."""
         corrects = frame[CORRECTS].fillna("").astype(str) if CORRECTS in frame.columns else [""] * len(frame)
-        fresh: list[bool] = []
-        here: Counter[_Row] = Counter()
+        fresh = [True] * len(frame)
+        copies: dict[_Row, list[tuple[int, _What]]] = {}
+        for place, (each, reference, correcting, stamp, cents) in enumerate(zip(
+                frame["account"], frame[REFERENCE], corrects, frame["date"], frame["amount_cents"], strict=True)):
+            if reference:
+                key = (source, str(each), str(reference), str(correcting))
+                copies.setdefault(key, []).append((place, (stamp.date(), int(cents))))
         new: list[tuple[_Row, _What]] = []
+        # The earlier files' rows that this file's duplicates are, by day and amount.
         again: dict[tuple[str, str], Counter[_What]] = {}
         differing: Counter[str] = Counter()
         unmet: list[tuple[tuple[str, str], _What]] = []
-        for each, reference, correcting, stamp, cents in zip(
-                frame["account"], frame[REFERENCE], corrects, frame["date"], frame["amount_cents"], strict=True):
-            if not reference:
-                fresh.append(True)
-                continue
-            account = (source, str(each))
-            key = (*account, str(reference), str(correcting))
-            what = (stamp.date(), int(cents))
-            here[key] += 1
-            before, whats = self.seen.get(key, (0, set()))
-            fresh.append(here[key] > before)
-            if fresh[-1]:
+        for key, rows in copies.items():
+            account, correcting = key[:2], key[3]
+            earlier = Counter(self.seen.get(key, ()) if correcting else self.referenced.get(key[:3], ()))
+            known = bool(earlier)
+            unmatched: list[tuple[int, _What]] = []
+            for place, what in rows:
+                if earlier[what] > 0:
+                    earlier[what] -= 1
+                    fresh[place] = False
+                    again.setdefault(account, Counter())[what] += 1
+                else:
+                    unmatched.append((place, what))
+            left = sorted((+earlier).elements())
+            for (place, _), was in zip(unmatched, left, strict=False):
+                fresh[place] = False
+                again.setdefault(account, Counter())[was] += 1
+                differing[account[1]] += 1
+            for _, what in unmatched[len(left):]:
                 new.append((key, what))
-                if not before and not correcting:
+                if not known and not correcting:
                     unmet.append((account, what))
-            else:
-                again.setdefault(account, Counter())[what] += 1
-                if what not in whats:
-                    differing[account[1]] += 1
         # A row no earlier file's reference matched, though one of them has
         # a row of its day and amount that this file doesn't have as well.
         alike: Counter[str] = Counter()
-        left = {account: self.had[account] - again.get(account, Counter())
-                for account in {account for account, _ in unmet} & set(self.had)}
+        left_over = {account: self.had[account] - again.get(account, Counter())
+                     for account in {account for account, _ in unmet} & set(self.had)}
         for account, what in unmet:
-            if left.get(account, {}).get(what, 0) > 0:
-                left[account][what] -= 1
+            if left_over.get(account, {}).get(what, 0) > 0:
+                left_over[account][what] -= 1
                 alike[account[1]] += 1
         for key, what in new:
-            count, whats = self.seen.setdefault(key, (0, set()))
-            whats.add(what)
-            self.seen[key] = (count + 1, whats)
+            self.seen.setdefault(key, Counter())[what] += 1
+            self.referenced.setdefault(key[:3], Counter())[what] += 1
             self.had.setdefault(key[:2], Counter())[what] += 1
         return fresh, [
             f"{count} transaction(s) of {account!r} in {path} have a reference that an earlier file gave a "
             "transaction of another day or amount; they are left out as that transaction, at the earlier "
             "file's day and amount. If this institution numbers each download's transactions afresh, they "
-            "are other transactions and are missing: import downloads that don't overlap"
+            "are other transactions and are missing: import one download that has the whole period"
             for account, count in differing.items()] + [
             f"{count} transaction(s) of {account!r} in {path} have the day and amount of ones in an earlier "
             "file, under other references; if this institution gives a transaction a new reference in each "
@@ -459,6 +475,8 @@ def _corrected(frame: pd.DataFrame) -> pd.DataFrame:
         return frame
     corrects = frame[CORRECTS].fillna("").astype(str)
     removes = frame[REMOVES].fillna(value=False).astype(bool)
+    if not corrects.any() and not removes.any():
+        return frame.drop(columns=[CORRECTS, REMOVES])
     naming: dict[tuple[str, str, str], set[int]] = {}
     for place, (origin, account, reference) in enumerate(zip(frame[ORIGIN], frame["account"], corrects, strict=True)):
         if reference:
