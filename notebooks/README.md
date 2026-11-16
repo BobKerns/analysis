@@ -34,6 +34,7 @@ Several views also have terminal equivalents that need no notebook or kernel:
 | every run, with its status (a notebook opens a scenario's newest run that succeeded, names it under the picker, and warns of a newer one that failed) | `analysis sim list` |
 | persons and their lifespans | `analysis sim person list` |
 | each person's age-at-death distribution, and the household's last death (`lifespan.ipynb`) | `analysis sim person show [PERSON] [--graph]` |
+| every life table's death rates and expected age at death, by age and sex (`age_comparison.ipynb`) | `analysis sim lifespan tables`, `analysis sim lifespan check [AGE]` |
 | calendar events of every kind, with their variation | `analysis sim calendar list [--kind KIND] [--tag TAG]` |
 | year-to-date rows | `analysis sim ytd list` |
 | itemizations, their totals and what references them | `analysis sim itemization list`, `analysis sim itemization show NAME` |

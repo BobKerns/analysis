@@ -932,6 +932,15 @@ the median put at Japan's (about 90), the shifted US table gives about a
 12% chance of reaching 100 and 2.5% of reaching 105, while Japan's own
 gives 6.5% and 0.5%.
 
+`sim lifespan tables` lists every life table there is to choose from: the
+templates' `aux/`, the data repo's and each scenario's, each at its latest
+vintage. For each age and sex it gives `q`, the chance of dying before the
+next birthday, and the expected age at death for someone who has just
+reached that age, as the simulator reads the table. `sim lifespan check
+67.5` gives the same for one age, interpolating between whole ages, with
+the years left. `notebooks/age_comparison.ipynb` shows the tables side by
+side.
+
 `sim person lifespan set alice 80 --vary life_table` prints what the median
 means: how many years older or younger the table is read, the mortality
 multiplier that would give the same median (an insurer's "table rating",
