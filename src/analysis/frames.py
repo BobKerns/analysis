@@ -27,18 +27,17 @@ def datetime_index(data: pd.DataFrame | pd.Series) -> pd.DatetimeIndex:
     return index
 
 
-# pandas attaches DatetimeIndex's date fields (year, month, ...) at import
-# time, so a type checker can't see them; these read them in one place.
+# A frame's DatetimeIndex date fields (year, month, ...), read in one place.
 
 
 def index_years(data: pd.DataFrame | pd.Series) -> pd.Index:
     """The year of each entry of ``data``'s ``DatetimeIndex``."""
-    return datetime_index(data).year  # ty: ignore[unresolved-attribute]
+    return datetime_index(data).year
 
 
 def index_months(data: pd.DataFrame | pd.Series) -> pd.Index:
     """The month (1-12) of each entry of ``data``'s ``DatetimeIndex``."""
-    return datetime_index(data).month  # ty: ignore[unresolved-attribute]
+    return datetime_index(data).month
 
 
 def clip_years[T: pd.DataFrame | pd.Series](data: T, years: tuple[int, int] | None) -> T:

@@ -100,7 +100,7 @@ def account_history(
             if label in pivot.columns and pivot[label].notna().any():
                 frame[measure] = pivot[label].reindex(frame.index)
         if "cost_basis" in frame.columns:
-            frame.insert(frame.columns.get_loc("cost_basis") + 1, "unrealized",
+            frame.insert(list(frame.columns).index("cost_basis") + 1, "unrealized",
                          frame["balance"] - frame["cost_basis"])
     if start is not None:
         frame = frame[frame.index >= pd.Timestamp(start)]
@@ -165,13 +165,13 @@ def flows_by_year(
     if tagged_only:
         events = events[events["group"] != UNTAGGED]
     # Keep every year with flows, so a year with none tagged reads as zero.
-    monthly = (events.groupby(["month", "group"])["amount"].sum()
-               .unstack("group", fill_value=0) / 100)
+    # Cents until the years are summed, so a nominal year's total is exact.
+    monthly = events.groupby(["month", "group"])["amount"].sum().unstack("group", fill_value=0)
     monthly = monthly.reindex(monthly.index.union(months), fill_value=0)
     cash_columns = []
     if side == "income":
         cash_columns.append(CASH_INCOME)
-        cash = events[events["cash"]].groupby("month")["amount"].sum() / 100
+        cash = events[events["cash"]].groupby("month")["amount"].sum()
         monthly = monthly.reindex(monthly.index.union(cash.index), fill_value=0)
         monthly[CASH_INCOME] = cash.reindex(monthly.index, fill_value=0)
         if not tagged_only:
@@ -181,7 +181,7 @@ def flows_by_year(
             monthly[CASH_FLOW] = (monthly[CASH_INCOME]
                                   + withdrawn.reindex(monthly.index, fill_value=0))
     monthly = _cpi(rc, monthly, mode)
-    yearly = monthly.groupby(index_years(monthly)).sum()
+    yearly = monthly.groupby(index_years(monthly)).sum() / 100
     yearly.index.name = "year"
     cash_totals = yearly[cash_columns]
     yearly = yearly.drop(columns=cash_columns)
@@ -199,12 +199,12 @@ def flows_by_year(
 
 
 def _withdrawals(rc: RunConnection) -> pd.Series:
-    """Monthly dollars moved into cash accounts out of other assets: sales and
+    """Monthly cents moved into cash accounts out of other assets: sales and
     withdrawals from brokerage, retirement and other holdings. Not moves
     between cash accounts, loan proceeds, or money put back."""
     events = rc.items("transfer_event", from_kind="asset", to_kind="asset")
     events = events[_is_cash(events, "to") & ~_is_cash(events, "from")]
-    return events.groupby(event_month(events))["amount"].sum() / 100
+    return events.groupby(event_month(events))["amount"].sum()
 
 
 ECONOMIC_INCOME = "economic_income"
