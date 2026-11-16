@@ -61,7 +61,27 @@ When a saved answer names an account the scenario doesn't have, it may still
 be right for another scenario. The import asks again, uses the new answer for
 that run, and replaces the saved one only if you say so.
 
-To change an answer, edit its row in the file. `sim account rename` and
+To see the saved answers, or change one, use `sim import map`:
+
+```sh
+sim import map              # what every source shares, then each source's own
+sim import map quicken      # one source's
+sim import map --list       # print only
+```
+
+Every row has a number. At a terminal it asks for a row's number, then
+whether to change it (each thing the row says is asked for, with TAB
+completing the scenario's names and what it says now as the default) or
+remove it. An account the scenario doesn't have is asked about before it is
+kept, since it may be a slip or another scenario's account. A removed row
+is asked about again by the next import that needs it, which is also how a
+row is added: an import asks for what has no row.
+If an import or a rename wrote a file while `sim import map` waited at a
+question, your change to that file is dropped and the files are listed
+again as they are now.
+Removing a row moves the numbers of the rows after it, so the whole list
+is shown again: read a row's number from the latest listing.
+You can still edit the files by hand. `sim account rename` and
 `sim account lot rename` follow into these files by themselves.
 
 ```text
@@ -93,6 +113,15 @@ accounts hold. Export the snapshot as of the scenario's first day.
   it. One outside number can't fill two lots, so an outside account that
   the scenario keeps as several lots is best answered `skip`, and its lots
   filled from a [brokerage file](#brokerage-files) or typed.
+- An outside account the scenario has no account for can be added from
+  the question: answer with a new name, and it asks what `sim account add`
+  asks (kind, subkind, owner) and adds the account before going on. It
+  asks first whether to add it, and takes Enter as no, since a new name
+  may be a slip; `back` at the account's kind returns to the question. A dry
+  run adds nothing, so it offers only the accounts there are. A name the
+  scenario already uses for something that can't take the balance (an
+  expense account, a chain, an account with no lot yet) is not offered as
+  new: the question says so and asks again.
 - A debt is stored as a positive amount owed, whatever sign the source uses.
 - Two outside accounts mapped to one lot are added together.
 - A lot the scenario inherits from its parent is changed by writing an
