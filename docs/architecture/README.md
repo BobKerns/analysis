@@ -23,7 +23,7 @@ needs fixing.
 
 ## The diagrams
 
-Three overviews (functional blocks, data flow, input tiers), then detail that
+Overviews (functional blocks, data flow, input tiers), then detail that
 hangs off one spine, the month: tax and strategies are explained by when the
 engine calls them (3a) and what crosses the boundary (4a, 4b).
 
@@ -34,7 +34,9 @@ SQLite state, gray is what a person reads.
 | Diagram | Shows | ADRs |
 | --- | --- | --- |
 | [1. Functional blocks](#1-functional-blocks) | The layers, and how the three stores relate | 001, 002 |
-| [2. Data flow](#2-data-flow) | Files to intent to run to readers | 002, 004, 006 |
+| [2a. Data flow](#2a-data-flow) | Files to intent to run to readers | 002, 004, 006 |
+| [2b. Where the inputs come from](#2b-where-the-inputs-come-from) | Edits, imports, prices, calibration, the nightly roll | 003, 004 |
+| [2c. Ensembles](#2c-ensembles-three-kinds-of-batch) | Monte Carlo, sensitivity and pooled batches | 006, 007, 009 |
 | [3a. One month in the engine](#3a-one-month-in-the-engine) | The order of a month | 001, 003, 010 |
 | [3b. One debit through a chain](#3b-one-debit-through-a-chain) | Chains, refill, strategy draws | 003, 010 |
 | [4a. Income tax](#4a-income-tax-accumulate-compute-settle) | Accumulate, compute, settle | 003, 011 |
@@ -43,19 +45,23 @@ SQLite state, gray is what a person reads.
 | [5. Input data](#5-input-data-three-tiers) | Templates, shared base, scenario folders | 003 |
 | [6a. Load order](#6a-inheritance-the-load-order) | Parents, mix-ins, templates | 003 |
 | [6b. Merging](#6b-inheritance-how-files-are-overlaid) | The three overlay rules | 003 |
+| [6c. Worked example](#6c-inheritance-a-worked-example) | A row merge and a whole-file override | 003 |
 
 ## 1. Functional blocks
 
 Six layers, read top to bottom, plus the machinery that runs alongside. The one idea to take from it: everything authored is plain files in git, everything in SQLite is derived and can be rebuilt, and the only code that is not the simulator's own (tax calculators, strategies) is fenced into one box that gets a read-only view and hands back an answer.
 
+Not drawn: the registries and schema (`registries.py`, `schema.py`), which the loader, engine and reports all share, and the side tools that share the `analysis` command but none of the simulator (the Amazon categorizer, the video builder).
+
 ```mermaid
 flowchart TB
   subgraph UI["1 · How people drive it"]
     direction LR
-    cli ~~~ edit ~~~ nb ~~~ sql
+    cli ~~~ edit ~~~ nb ~~~ skills ~~~ sql
     cli["<b>sim CLI</b><br/>load · run · all · check"]
     edit["<b>Guided edit commands</b><br/>scenario · account · lot · scheduled<br/>calendar · chain · strategy · tax"]
     nb["<b>Jupyter notebooks</b><br/>pickers and chart widgets"]
+    skills["<b>Claude skills</b><br/>scenario-authoring<br/>analysis-results"]
     sql["<b>sim query</b><br/>read-only SQL on a run"]
   end
 
@@ -78,7 +84,7 @@ flowchart TB
   subgraph CORE["4 · Core"]
     direction LR
     loader["<b>Loader</b><br/>merge the lineage · validate<br/>dollars to cents · names to ids"]
-    ens["<b>Ensemble generator</b><br/>vary · correlate · pool"]
+    ens["<b>Ensemble generator</b><br/>vary · correlate<br/>sensitivity · pool"]
     engine["<b>Engine</b><br/>month by month<br/>every dollar a transfer event"]
     subgraph PLUG["Plug-in code: read-only view in, answer out"]
       direction TB
@@ -98,7 +104,8 @@ flowchart TB
 
   subgraph OUT["6 · Reading results"]
     direction LR
-    reports ~~~ compare ~~~ charts
+    connections ~~~ reports ~~~ compare ~~~ charts
+    connections["<b>Connections</b><br/>open a scenario's intent,<br/>latest run or batch stores"]
     reports["<b>Reports</b><br/>networth · income · expenses<br/>tax · gains · explain"]
     compare["<b>Compare</b><br/>scenarios · ensembles<br/>sensitivity · guard rails"]
     charts["<b>Chart library</b><br/>one set, used by CLI and notebooks"]
@@ -121,12 +128,12 @@ flowchart TB
   STORE --> OUT
   OUT ~~~ OPS
 
-  class cli,edit,nb,sql out
+  class cli,edit,nb,skills,sql out
   class staging,imp,prices,hist,loader,ens,engine proc
   class data,tmpl input
   class tax,strategies code
   class intent,run,batch store
-  class reports,compare,charts out
+  class connections,reports,compare,charts out
   class prov,builder,ret note
   classDef input fill:#FFF4D6,stroke:#B8860B,color:#3b2f00
   classDef code fill:#EDE3FF,stroke:#6B46C1,color:#2a1a55
@@ -136,9 +143,9 @@ flowchart TB
   classDef note fill:#ffffff,stroke:#9aa5b1,color:#3e4c59,stroke-dasharray:4 3
 ```
 
-## 2. Data flow
+## 2a. Data flow
 
-One path from files to results. An ensemble is not a different engine: the vary step writes ordinary intents, and the same engine runs each. A run file carries its own copy of the intent and the plug-in source, so it stays readable after the data repo moves on.
+One path from files to results. An ensemble is not a different engine: the vary step writes ordinary intents, and the same engine runs each. A run file carries its own copy of the intent and the plug-in source, so it stays readable after the data repo moves on. Everything from the intent on lives under the data repo's `state/`, is derived, and is pruned by `.retention.yaml`.
 
 ```mermaid
 flowchart TB
@@ -178,6 +185,87 @@ flowchart TB
   class py code
   class load,vary,engine proc
   class intent,members,batch,run store
+  class read out
+  classDef input fill:#FFF4D6,stroke:#B8860B,color:#3b2f00
+  classDef code fill:#EDE3FF,stroke:#6B46C1,color:#2a1a55
+  classDef proc fill:#DCEBFF,stroke:#2B6CB0,color:#0f2a4a
+  classDef store fill:#DDF5E3,stroke:#2F855A,color:#123524
+  classDef out fill:#F1F3F5,stroke:#5F6B7A,color:#1f2933
+  classDef note fill:#ffffff,stroke:#9aa5b1,color:#3e4c59,stroke-dasharray:4 3
+```
+
+## 2b. Where the inputs come from
+
+What writes to the files diagram 2 starts from. Everything a command writes
+to a scenario goes through a staged edit; nothing but the nightly roll and the
+price fetch writes without a person asking.
+
+```mermaid
+flowchart LR
+  people["<b>People, and Claude skills</b>"]
+  exports["<b>Outside exports</b><br/>Quicken · brokerage · budget"]
+  market["<b>Yahoo price history</b>"]
+  public["<b>Public history</b><br/>BLS · FRED · SSA · Damodaran"]
+
+  staged["<b>Staged edit</b><br/>written only if this scenario and<br/>every one built on it still load"]
+  scenario_files[("<b>scenarios/NAME/</b>")]
+  price_files[("<b>prices/</b>")]
+  history[("<b>historical_data/</b><br/>in the code repo")]
+  templates[("<b>templates/</b><br/>t_ scenarios · aux tables")]
+  roll["<b>Roll forward a month</b><br/>lots open at the last run's projection,<br/>months gone by become year-to-date rows"]
+
+  people -->|"sim ... add / edit"| staged
+  exports -->|"sim import, with the<br/>mappings saved in imports/"| staged
+  staged --> scenario_files
+  roll -->|"sim scenario roll,<br/>nightly by the builder"| scenario_files
+  market -->|"sim prices fetch,<br/>daily by the builder"| price_files
+  public -->|"analysis historical"| history
+  history -.->|calibrates| templates
+
+  class people,exports,market,public out
+  class staged,roll proc
+  class scenario_files,price_files,history,templates input
+  classDef input fill:#FFF4D6,stroke:#B8860B,color:#3b2f00
+  classDef code fill:#EDE3FF,stroke:#6B46C1,color:#2a1a55
+  classDef proc fill:#DCEBFF,stroke:#2B6CB0,color:#0f2a4a
+  classDef store fill:#DDF5E3,stroke:#2F855A,color:#123524
+  classDef out fill:#F1F3F5,stroke:#5F6B7A,color:#1f2933
+  classDef note fill:#ffffff,stroke:#9aa5b1,color:#3e4c59,stroke-dasharray:4 3
+```
+
+## 2c. Ensembles: three kinds of batch
+
+One recipe, an ordinary scenario whose `vary_` rows give each uncertain
+number a distribution, feeds two kinds of run. A pool runs nothing new: it
+is a weighted selection of members other ensembles already ran.
+
+```mermaid
+flowchart TB
+  recipe[("<b>Recipe intent</b><br/>an ordinary scenario plus vary_ rows,<br/>ensemble_size and seed")]
+
+  monte_carlo["<b>Monte Carlo</b>: sim run RECIPE<br/>N members, every varying row drawn,<br/>keyed by seed, member and row name<br/>member 0 is the scenario as authored"]
+  one_at_a_time["<b>Sensitivity</b>: sim run RECIPE --sensitivity<br/>one row at a time moved to quantiles of its<br/>own distribution (p10 and p90 by default)<br/>1 + rows × quantiles members"]
+
+  mc_batch[("<b>state/runs/RECIPE/monte-carlo/BATCH/</b><br/>member runs · draws.sqlite3 · series.sqlite3")]
+  oat_batch[("<b>state/runs/RECIPE/sensitivity/BATCH/</b><br/>member runs")]
+
+  others[("<b>Other ensembles' Monte Carlo batches</b><br/>same span, usually the same seed")]
+  pool["<b>Pool</b>: sim run POOL<br/>member j of the pool is member j of one<br/>component, shared out by weight;<br/>the files are hard-linked, nothing reruns"]
+  pool_batch[("<b>state/runs/POOL/monte-carlo/BATCH/</b><br/>reads as any Monte Carlo batch")]
+
+  read["<b>Readers</b><br/>sim ensemble summary · compare · draws<br/>sim ensemble sensitivity: one-at-a-time table from a<br/>sensitivity batch, rank correlation from a Monte Carlo batch"]
+
+  recipe --> monte_carlo --> mc_batch
+  recipe --> one_at_a_time --> oat_batch
+  mc_batch --> pool
+  others --> pool
+  pool --> pool_batch
+  mc_batch --> read
+  oat_batch --> read
+  pool_batch --> read
+
+  class recipe,mc_batch,oat_batch,others,pool_batch store
+  class monte_carlo,one_at_a_time,pool proc
   class read out
   classDef input fill:#FFF4D6,stroke:#B8860B,color:#3b2f00
   classDef code fill:#EDE3FF,stroke:#6B46C1,color:#2a1a55
@@ -307,18 +395,18 @@ A strategy is a kind (code) bound to something it owns (a chain, tagged rules, o
 
 ```mermaid
 flowchart TB
-  def["<b>Scenario: strategies/NAME.csv</b> (one row)<br/>kind + params_json, and what it owns:<br/>a <b>chain</b> · the <b>rules</b> carrying a tag · guard rails as <b>trigger</b>"]
+  def["<b>Scenario: strategies/NAME.csv</b> (one row)<br/>kind + params_json, and what it owns:<br/>a <b>chain</b> · the <b>rules</b> carrying a tag · guard rails as <b>trigger</b><br/>strategy_vary/NAME.csv: the params an ensemble varies"]
   code["<b>Code for the kind</b><br/>built in: rebalance · down_market · buckets · guardrail · threshold<br/>ceiling_floor · amortize · cut_on_breach · harvest · gift<br/>household: strategies/*.py, may subclass or delegate to a built-in"]
 
   ask["<b>The engine asks, at fixed moments</b><br/><b>draw</b>: a debit reaches an owned source chain<br/><b>place</b>: a sweep reaches an owned destination chain<br/><b>year_start</b>, then <b>scale</b> before each owned rule posts<br/><b>month_start</b> · <b>on_breach</b> (January) · <b>year_end</b> (December)"]
 
-  ctx["<b>Context</b>: read-only, nothing after this month<br/>lots · allocation · targets · budget · tax estimate<br/>history · people · the strategy's own memory"]
+  ctx["<b>Context</b>: read-only, nothing after this month<br/>lots · allocation · targets (targets.csv) · budget<br/>tax estimate · history · people · life tables<br/>triggered guard rails · the strategy's own memory"]
 
   dec{"<b>Decision</b><br/>or None"}
 
   post["<b>The engine checks the moves and posts them itself</b><br/><b>Take / Put</b>: which leaf lots, how much<br/><b>Spend</b>: deliver more or less than the budget<br/><b>Transfer / Realize</b>: sell, convert, gift, harvest"]
   fall["<b>The plain scenario applies</b><br/>chain steps in file order;<br/>the rule posts its budget"]
-  led[("<b>Ledger</b><br/>transfer_event · strategy_decision (note + numbers)<br/>spending_baseline (budget vs delivered)")]
+  led[("<b>Ledger</b><br/>transfer_event · strategy_decision (note + numbers)<br/>spending_baseline (budget vs delivered) · breach_event")]
 
   def --> ask
   code --> ask
@@ -419,6 +507,35 @@ flowchart TB
   classDef note fill:#ffffff,stroke:#9aa5b1,color:#3e4c59,stroke-dasharray:4 3
 ```
 
+The kinds of scenario folder:
+
+| Kind | What marks it | Runs by itself |
+| --- | --- | --- |
+| Ordinary | `start` and `end` somewhere in its lineage | yes |
+| Mix-in only | no dates anywhere in its lineage | no: it is mixed into others |
+| Ensemble recipe | merged `meta_json` has `ensemble_size` above 0; `vary_` rows | yes, as a batch of members |
+| Pool | its own `meta_json` has `pool`; the folder holds `scenario.csv` only | yes, from its components' batches; nothing loads it |
+| Template | a `t_` name; read from the code repo unless the data repo has the folder | yes; read-only |
+
+What a scenario folder holds, and how each file is overlaid down the lineage
+(diagram 6b):
+
+| File | Holds | Overlaid by |
+| --- | --- | --- |
+| `scenario.csv` | dates, seed, `parent_scenario`, `meta_json` | field (blank inherits); `meta_json` key by key |
+| `README.md` | title and description | not inherited |
+| `accounts.csv` | accounts: kind, subkind, owner, growth series, chains | row: `name` |
+| `account_lots.csv` | lots: symbol, opening balance and basis | row: `account_name` + `lot` |
+| `scheduled.csv` | rules: income, expenses, RMD, Social Security, mortgage, IRMAA, `fill_bracket` | row: `name` |
+| `calendar.csv` | dated changes, and an ensemble's `vary_` rows | row: `name`, else the row's key columns |
+| `lifespan.csv`, `year_to_date.csv`, `guard_rails.csv` | ages at death, the partial first year, rails | row: `person`, `name`, `name` |
+| `residence.csv` | where the household lives, by date | row: `effective_date` |
+| `targets.csv` | allocation target sets | row: `target_set` + `as_of` + `asset_class` |
+| `chains/source/`, `chains/destination/` | where money is drawn from and swept to | whole file, by chain name |
+| `taxes/<jurisdiction>.csv` | the income taxes | whole file |
+| `strategies/`, `strategy_vary/` | responsive strategies, and what an ensemble varies of them | whole file, by strategy name |
+| `series/`, `aux/`, `prices/`, `itemizations/` | rate projections, and overrides of shared tables (`itemizations/` are the `@name` sums) | whole file, by file name |
+
 ## 6a. Inheritance: the load order
 
 An example scenario, `bear_2030`, built on the prototype's `base` and `retire_alice` (`hsa_2027` and `bear_2030` are made up for the picture). Solid arrows are parents, dotted ones mix-ins. The numbers are the order the folders are overlaid in.
@@ -464,7 +581,7 @@ Each file kind follows one of three rules as the loader walks the load order.
 ```mermaid
 flowchart TB
   top["<b>Each file kind has one of three overlay rules</b>, applied down the load order"]:::note
-  rows["<b>Row by key</b><br/>accounts (name) · account_lots (account)<br/>scheduled (name) · lifespan (person)<br/>calendar (name, else its fields)<br/>year_to_date · targets · residence<br/><br/>a new key adds a row<br/>the same key replaces the whole row<br/>no delete: end-date the rule instead"]
+  rows["<b>Row by key</b><br/>accounts (name) · account_lots (account + lot)<br/>scheduled (name) · lifespan (person)<br/>calendar (name, else its fields)<br/>year_to_date · targets · residence<br/><br/>a new key adds a row<br/>the same key replaces the whole row<br/>no delete: end-date the rule instead"]
   whole["<b>Whole file by name</b><br/>chains/ROLE/NAME.csv<br/>strategies/NAME.csv · strategy_vary/NAME.csv<br/>taxes/JURISDICTION.csv<br/>series/ · aux/ · prices/ · itemizations/<br/><br/>the nearest file wins outright; then the<br/>data repo root, then templates/aux<br/>(series/ has no shared root)"]
   fields["<b>Field by field</b><br/>scenario.csv: a blank cell inherits<br/>meta_json: merged key by key<br/>(ensemble_size, reserve, after_tax, roll ...)<br/><br/>a template's dates and seed are only<br/>fallbacks, so mixing one in<br/>cannot move the scenario's span"]
   out[("<b>One intent DB</b><br/>the merged scenario, plus parents_json and load_order_json<br/>so a run file can say what it inherited")]
@@ -481,10 +598,55 @@ flowchart TB
   classDef note fill:#ffffff,stroke:#9aa5b1,color:#3e4c59,stroke-dasharray:4 3
 ```
 
+## 6c. Inheritance: a worked example
+
+The two commonest cases, with the prototype's personas: a child's row files,
+and a whole-file kind.
+
+```mermaid
+flowchart TB
+  subgraph row_files["Row files: scheduled.csv, merged by name"]
+    direction LR
+    parent_rows["<b>parent's rows</b><br/>Expense_Living 4000 a month<br/>Salary_Alice to 2028-12"]
+    child_rows["<b>child's file</b><br/>Salary_Alice, end 2027-12<br/>Expense_Travel"]
+    merged_rows[("<b>merged</b><br/>Expense_Living 4000 a month: inherited<br/>Salary_Alice to 2027-12: replaced<br/>Expense_Travel: added")]
+    parent_rows --> merged_rows
+    child_rows --> merged_rows
+  end
+  subgraph whole_files["Whole-file kinds: series/stock_us.csv"]
+    direction LR
+    no_file["<b>child has no file</b>"] -->|inherited| parent_wins[("the parent's file, as is")]
+    own_file["<b>child has its own file</b>"] -->|replaces it whole| child_wins[("the child's file, no rows merged")]
+    header_only["<b>child's file is only a header</b>"] -->|hides the parent's| nothing[("no such series")]
+  end
+  row_files ~~~ whole_files
+
+  class parent_rows,child_rows,no_file,own_file,header_only input
+  class merged_rows,parent_wins,child_wins,nothing store
+  classDef input fill:#FFF4D6,stroke:#B8860B,color:#3b2f00
+  classDef code fill:#EDE3FF,stroke:#6B46C1,color:#2a1a55
+  classDef proc fill:#DCEBFF,stroke:#2B6CB0,color:#0f2a4a
+  classDef store fill:#DDF5E3,stroke:#2F855A,color:#123524
+  classDef out fill:#F1F3F5,stroke:#5F6B7A,color:#1f2933
+  classDef note fill:#ffffff,stroke:#9aa5b1,color:#3e4c59,stroke-dasharray:4 3
+```
+
+Rules worth knowing ([ADR-003](ADR-003-registries-and-csv-schemas.md) §4.5, §4.5a, §4.1d):
+
+- A matching row replaces every column the child's file has, blanks included;
+  a column the child's header leaves out keeps the parent's value.
+- There is no delete: end an inherited rule on or before the scenario's
+  start, or set a year-to-date row's amount to 0.
+- A mix-in loads after the main parent's whole line, so its rows win over the
+  parent's. Two mix-ins that set the same thing resolve to the later one.
+- A `t_` name with no folder in the data repo is read from the code repo's
+  `templates/scenarios/`, so every data repo builds on the same templates
+  without a copy. A data repo folder of that name replaces the template whole.
+
 ## What the diagrams leave out
 
-- Ensembles get one box each: correlation, latent factors, pools and sensitivity batches are not drawn.
+- Ensembles: 2c shows the batches, not how values are drawn (distributions, correlation, latent factors, processes).
 - The priority bands in 3a are the defaults; a rule can set its own priority.
 - 3a leaves out the run's start (opening lot state, year-to-date catch-ups) and its tail (the last tax year is computed after the run, with no transfer posted).
-- The background builder, retention and locks appear only as a strip in diagram 1.
-- The Amazon expense categorizer, the other half of the repo, is not drawn.
+- The background builder appears only as a strip in diagram 1 and two arrows in 2b; retention and locks only in diagram 1.
+- The Amazon expense categorizer and the video builder, which share the `analysis` command, are not drawn.
