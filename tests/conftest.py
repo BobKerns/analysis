@@ -733,6 +733,19 @@ def write_lifespans(retire_alice_csv: Callable[[str], Path]) -> Callable[..., No
 
 
 @pytest.fixture(scope="function")
+def write_life_table(test_data_dir: Path) -> Callable[[str, str], Path]:
+    """Write a life table CSV in the private data copy, at a path relative to
+    it (``scenarios/retire_alice/aux/life_table__jp.csv``), from rows of
+    ``effective_date,age,q_female,q_male`` after the header."""
+    def _write(where: str, rows: str) -> Path:
+        path = test_data_dir / where
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("effective_date,age,q_female,q_male\n" + rows)
+        return path
+    return _write
+
+
+@pytest.fixture(scope="function")
 def fund_asset_savings(test_scenarios_dir: Path) -> Callable[[str], None]:
     """Add headroom to the private retire_alice copy's Asset_Savings opening
     balance.

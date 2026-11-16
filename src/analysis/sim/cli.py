@@ -17867,34 +17867,40 @@ def lifespan_check_command(age: float | None, data_dir: Path | None) -> None:
 
 @lifespan_tables_group_command.command("blend")
 @click.argument("name", required=False)
-@click.option("--table", "tables", type=(completion.LIFE_TABLE_FILE, float), multiple=True,
-              metavar="TABLE WEIGHT",
+@click.option("--table", "tables", type=completion.LIFE_TABLE_FILE, multiple=True,
+              metavar="TABLE[=WEIGHT]",
               help="A table to blend, as `sim lifespan tables` names it or a CSV file, "
-                   "and its weight; repeat for each.")
-@click.option("--replace", is_flag=True, help="Replace the scenario's table of that name.")
+                   "and its weight (default 1); repeat for each.")
+@click.option("--replace", is_flag=True,
+              help="Replace a table of that name the scenario has, or reads from elsewhere.")
 @_scenario_options
 def lifespan_blend_command(
-    name: str | None, tables: tuple[tuple[str, float], ...], replace: bool,
+    name: str | None, tables: tuple[str, ...], replace: bool,
     scenario: str | None, data_dir: Path | None,
 ) -> None:
     """Blend life tables into a new one, life_table__NAME.csv, for a person
     between populations (someone who has lived in two countries).
 
-    `--table default 0.5 --table jp 0.5` gives a table whose yearly death
-    rate at each age, for each sex, sits halfway between the two. Weights
-    are scaled to add to 1. Each table's latest vintage is used, and the
-    blend is dated the latest of them. Past a table's last age its death
-    rate is 1, so the blend ends where the shortest does.
+    `--table default --table jp` (or `--table default=0.5 --table jp=0.5`)
+    gives a table whose yearly death rate at each age, for each sex, sits
+    halfway between the two. Weights are scaled to add to 1. Each table's
+    latest vintage is used, and the blend is dated the latest of them. Past
+    a table's last age its death rate is 1, so the blend ends where the
+    shortest does.
 
     It is written to the scenario's aux/, where the scenario and those built
     on it (a mix-in's, wherever it is mixed in) find it, and is used by a
     lifespan whose lifespan.csv life_table is NAME (`sim person lifespan set
-    PERSON AGE --vary life_table --life-table NAME`). Whatever is left out is asked for: the
-    name, then each table and weight until a blank table.
+    PERSON AGE --vary life_table --life-table NAME`). A table of that name
+    the scenario already has or reads (a template's, the data repo's, a
+    parent's) is replaced only with --replace. Whatever is left out is asked
+    for: the name, then tables and weights until a blank table; at a
+    terminal, a table that isn't one is asked for again.
     """
     from analysis.sim import lifespan_tables
 
     data = _resolve_data_dir(data_dir)
+    ref = _resolve_scenario(data, scenario)
     if name is None:
         name = _ask_new_name("name of the new life table")
     name = name.strip()
@@ -17902,33 +17908,75 @@ def lifespan_blend_command(
         raise click.ClickException(problem)
     if name == lifespan_tables.DEFAULT_NAME:
         raise click.ClickException(f"{name!r} is the unnamed life_table.csv; give the blend a name")
-    pairs = list(tables)
-    if not pairs:
-        choices = [t.label for t in lifespan_tables.find_tables(data)]
+    folder = ref.path / "aux"
+    path = folder / table_file(name)
+    if not replace:
+        if path.exists():
+            raise click.ClickException(f"{_shown(path)} exists; --replace replaces it")
+        if name in names.series_names(data, ref.name, "life_table"):
+            raise click.ClickException(
+                f"{ref.name} already reads a life table {name!r}; --replace puts the blend "
+                "in its place for this scenario and those built on it, or choose another name")
+    found = lifespan_tables.find_tables(data)
+    labels = [t.label for t in found]
+
+    def ask_table(prompt: str) -> str:
+        return _ask_name("life table", labels, prompt=prompt,
+                         other=lambda answer: Path(answer).is_file())
+
+    pairs: list[tuple[Path, float]] = []
+    for given in tables:
+        table, _, weight = given.rpartition("=") if "=" in given else (given, "", "1")
+        file = lifespan_tables.find_table(found, table)
+        if file is None and _interactive():
+            click.echo(f"no life table {table!r}")
+            file = lifespan_tables.find_table(found, ask_table(f"table in place of {table}"))
+        if file is None:
+            raise click.ClickException(
+                f"no life table {table!r}: give one of {', '.join(labels)}, or a CSV file")
+        pairs.append((file, _blend_weight(weight)))
+    if len(pairs) < 2:  # asked for, the rest of them
+        click.echo(f"life tables: {', '.join(labels)}")
         while table := _prompt_with_completion(
-                "table to blend (blank when done)", choices, default="").strip():
-            pairs.append((table, click.prompt("  weight", type=float)))
+                f"table to blend ({'blank when done' if len(pairs) >= 2 else 'two or more'})",
+                labels, default="").strip():
+            if (file := lifespan_tables.find_table(found, table)) is None:
+                click.echo(f"  one of: {', '.join(labels)}, or a CSV file")
+                continue
+            while True:
+                try:
+                    weight = _blend_weight(_prompt_with_completion("  weight", default="1"))
+                    break
+                except click.ClickException as exc:
+                    click.echo(f"  {exc.message}")
+            pairs.append((file, weight))
     if len(pairs) < 2:
         raise click.ClickException("a blend needs two tables or more")
     dates, inputs = [], []
     try:
-        for table, weight in pairs:
-            effective, by_sex = lifespan_tables.read_table(lifespan_tables.find_table(data, table))
+        for file, weight in pairs:
+            effective, by_sex = lifespan_tables.read_table(file)
             dates.append(effective)
             inputs.append((by_sex, weight))
         blended = lifespan_tables.blend(inputs)
     except ValueError as exc:
         raise click.ClickException(str(exc)) from None
-    ref = _resolve_scenario(data, scenario)
-    folder = ref.path / "aux"
-    path = folder / table_file(name)
-    if path.exists() and not replace:
-        raise click.ClickException(f"{_shown(path)} exists; --replace replaces it")
     with _scenario_edit(data, ref.name) as edit:
         edit.path(folder).mkdir(parents=True, exist_ok=True)
         lifespan_tables.write_table(edit.path(path), max(dates), blended)
     ages = max(len(t.q) for t in blended.values())
     click.echo(f"wrote life table {name!r}, ages 0-{ages - 1}, to {_shown(path)}")
+
+
+def _blend_weight(text: str) -> float:
+    """A blend's weight: a finite number, zero or more."""
+    try:
+        weight = float(text)
+    except ValueError:
+        weight = math.nan
+    if not math.isfinite(weight) or weight < 0:
+        raise click.ClickException(f"a weight is a number, zero or more, not {text!r}")
+    return weight
 
 
 @sim_group_command.group(name="person")

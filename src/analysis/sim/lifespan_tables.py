@@ -85,8 +85,11 @@ def find_tables(data_dir: Path) -> list[TableFile]:
 
 def read_table(path: Path) -> tuple[str, dict[str, LifeTable]]:
     """A life table file's latest vintage: its effective date and each sex's
-    (``f``/``m``) table."""
+    (``f``/``m``) table. Raises ``ValueError`` for a file that isn't one."""
     frame = pd.read_csv(path, dtype={"effective_date": str})
+    needed = ["effective_date", "age", *registries.LIFE_TABLE_Q_COLUMNS.values()]
+    if missing := [c for c in needed if c not in frame.columns]:
+        raise ValueError(f"{path} isn't a life table: it has no {', '.join(missing)} column")
     latest = frame["effective_date"].max()
     rows = frame[frame["effective_date"] == latest]
     return latest, {
@@ -151,16 +154,13 @@ def at_age_frame(data_dir: Path, age: float) -> pd.DataFrame:
     return frame
 
 
-def find_table(data_dir: Path, table: str) -> Path:
-    """The file a table names: a label :func:`find_tables` gives, or a path
-    to a life table CSV. Raises ``ValueError`` when it is neither."""
-    for each in find_tables(data_dir):
+def find_table(tables: list[TableFile], table: str) -> Path | None:
+    """The file a table names: one of ``tables``' labels (from
+    :func:`find_tables`), or a path to a CSV. None when it is neither."""
+    for each in tables:
         if each.label == table:
             return each.path
-    if (path := Path(table)).is_file():
-        return path
-    known = ", ".join(t.label for t in find_tables(data_dir))
-    raise ValueError(f"no life table {table!r}: give one of {known}, or a CSV file")
+    return path if (path := Path(table)).is_file() else None
 
 
 def blend(tables: list[tuple[dict[str, LifeTable], float]]) -> dict[str, LifeTable]:
@@ -172,11 +172,12 @@ def blend(tables: list[tuple[dict[str, LifeTable], float]]) -> dict[str, LifeTab
     would instead describe a mixed group, part of whom follow each table.)
     Weights are scaled to add to 1, and a weight of 0 leaves its table out.
     Past an input's last age its ``q`` is 1, so the blend ends where the
-    shortest weighted input does. Raises ``ValueError`` for a negative
-    weight or none above 0."""
+    shortest weighted input does, and runs on with ``q`` 1 to the longest.
+    Raises ``ValueError`` for a weight that is negative or not a finite
+    number, or none above 0."""
     total = sum(weight for _, weight in tables)
-    if total <= 0 or any(weight < 0 for _, weight in tables):
-        raise ValueError("weights must be zero or more, and not all zero")
+    if not all(math.isfinite(weight) and weight >= 0 for _, weight in tables) or total <= 0:
+        raise ValueError("weights must be numbers, zero or more, and not all zero")
     weighted = [(by_sex, weight / total) for by_sex, weight in tables if weight]
     blended = {}
     for sex in registries.LIFE_TABLE_Q_COLUMNS:
@@ -185,7 +186,7 @@ def blend(tables: list[tuple[dict[str, LifeTable], float]]) -> dict[str, LifeTab
             -math.expm1(sum(share * math.log1p(-by_sex[sex].q[age]) for by_sex, share in weighted))
             if all(by_sex[sex].q[age] < 1 for by_sex, _ in weighted) else 1.0
             for age in range(last)
-        ) + (1.0,) * (max(len(by_sex[sex].q) for by_sex, _ in tables) - last))
+        ) + (1.0,) * (max(len(by_sex[sex].q) for by_sex, _ in weighted) - last))
     return blended
 
 
