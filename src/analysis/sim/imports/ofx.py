@@ -21,16 +21,16 @@ from __future__ import annotations
 
 import codecs
 import datetime as dt
+import html
 import io
 import re
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from pathlib import Path
 from xml.etree.ElementTree import Element
-from xml.sax.saxutils import unescape
 
 import pandas as pd
 
-from analysis.sim.imports.forms import FLOW_COLUMNS, REFERENCE, Flows, Holding, Snapshot
+from analysis.sim.imports.forms import CORRECTS, FLOW_COLUMNS, REFERENCE, REMOVES, Flows, Holding, Snapshot
 
 __all__ = ["NAME", "is_ofx", "read_holdings", "read_transactions"]
 
@@ -42,9 +42,8 @@ _SIGNS = (b"OFXHEADER", b"<?OFX", b"<OFX>")
 # Statements that have transactions of spending: a bank account's, a card's.
 _SPENDING = ("STMTRS", "CCSTMTRS")
 _INVESTMENT = "INVSTMTRS"
-# What the library leaves in a value's text: its typed models, not used
-# here, are where it turns these back into the characters.
-_ENTITIES = {"&nbsp;": " ", "&apos;": "'", "&quot;": '"'}
+# The currency every amount is taken to be in: nothing is converted.
+_DOLLARS = "USD"
 
 
 def is_ofx(path: Path) -> bool:
@@ -92,44 +91,79 @@ def _tree(path: Path) -> Element:
             root = builder.close()
         except Exception:  # noqa: BLE001  as above; the first refusal says more
             raise refused from None
-    if root is None or not any(True for _ in _statements(root, *_SPENDING, _INVESTMENT)):
+    if root is None or not _statements(root, *_SPENDING, _INVESTMENT):
         raise ValueError(f"{path}: not an OFX file that can be read: it has no account's statement")
     return root
 
 
+def _find(element: Element | None, tag: str) -> Element | None:
+    """``element``'s first ``tag`` below it, but not one inside another
+    element of ``element``'s own kind.
+
+    Not its child only, and not any descendant: the library reads a value
+    left empty (``<MEMO>`` with nothing after it, or ``<MEMO/>``) as the
+    start of a group, so what follows it lands a level down, the next
+    transaction inside this one. Looking at any depth would then read the
+    next transaction's payee or correction as this one's."""
+    if element is None:
+        return None
+    waiting = list(reversed(element))
+    while waiting:
+        each = waiting.pop()
+        if each.tag == tag:
+            return each
+        if each.tag != element.tag:
+            waiting.extend(reversed(each))
+    return None
+
+
 def _text(element: Element | None, tag: str) -> str:
-    """The text of ``element``'s first ``tag`` at any depth; blank without.
-    ``&amp;`` and the like are the characters they stand for, so a payee
-    is the same text whichever institution's file names it."""
-    found = None if element is None else element.find(f".//{tag}")
-    return unescape((found.text or "").strip(), _ENTITIES).strip() if found is not None else ""
+    """The text of ``element``'s ``tag`` (as ``_find`` finds it); blank
+    without. A character reference, named or numbered (``&amp;``,
+    ``&#38;``), is the character it stands for, which the library leaves
+    to its typed models: a payee is then one text whichever institution's
+    file names it, and however it escapes it."""
+    found = _find(element, tag)
+    if found is None:
+        return ""
+    return html.unescape(found.text or "").replace("\N{NO-BREAK SPACE}", " ").strip()
+
+
+# A whole number in groups of three, and what may follow its last group.
+_GROUPED = r"[1-9]\d{{0,2}}(?:{0}\d{{3}})+"
+_COMMAS = re.compile(rf"({_GROUPED.format(',')})(?:\.(\d*))?")
+_POINTS = re.compile(rf"({_GROUPED.format(r'\.')})(?:,(\d*))?")
+_PLAIN = re.compile(r"(\d*)(?:[.,](\d*))?")
 
 
 def _number(text: str, *, money: bool) -> Decimal:
     """An OFX number. The specification allows a decimal comma and no
-    thousands separators, and files have both, so of two kinds of separator
-    the last is the decimal point and the other is dropped, and one that
-    repeats separates thousands.
+    thousands separators, and files have both. A separator is read as
+    separating thousands only where every group after the first has three
+    digits and the first has no leading zero (``1,234,567``, ``1.234,56``);
+    a lone separator is otherwise the decimal point; anything else
+    (``1,000,00``) is refused.
 
-    A lone comma before exactly three digits could be either: ``5,000`` is
-    five thousand or five. For ``money`` it separates thousands, as the
-    other sources read it, since money has two decimals and not three. A
-    count of shares often has three, so there it is refused and not
-    guessed: the two readings differ a thousand times."""
+    One group after a lone comma could be either: ``5,000`` is five
+    thousand or five. For ``money`` it separates thousands, as the other
+    sources read it, since money has two decimals and not three. A count
+    of shares often has three, so there it is refused and not guessed: the
+    two readings differ a thousand times. A lone point is the decimal
+    point (``1.234``), as everywhere."""
     plain = text.strip().replace(" ", "")
-    comma, point = plain.rfind(","), plain.rfind(".")
-    decimal = "," if comma > point else "."
-    if plain.count(decimal) > 1:
-        decimal = ""
-    elif decimal == "," and point < 0 and len(plain) - comma == 4:
-        if not money:
+    sign = -1 if plain.startswith("-") else 1
+    digits = plain[1:] if plain[:1] in "+-" else plain
+    if found := _COMMAS.fullmatch(digits):
+        whole, fraction = found.group(1).replace(",", ""), found.group(2)
+        if fraction is None and found.group(1).count(",") == 1 and not money:
             raise _Ambiguous(text)
-        decimal = ""
-    whole = "".join(c for c in plain if c not in ",." or c == decimal)
-    number = Decimal(whole.replace(",", "."))
-    if not number.is_finite():
+    elif (found := _POINTS.fullmatch(digits)) and (found.group(2) is not None or found.group(1).count(".") > 1):
+        whole, fraction = found.group(1).replace(".", ""), found.group(2)
+    elif (found := _PLAIN.fullmatch(digits)) and (found.group(1) or found.group(2)):
+        whole, fraction = found.group(1), found.group(2)
+    else:
         raise InvalidOperation(text)
-    return number
+    return sign * Decimal(f"{whole or '0'}.{fraction or '0'}")
 
 
 class _Ambiguous(InvalidOperation):
@@ -161,12 +195,20 @@ def _day(path: Path, text: str, what: str) -> dt.date:
         raise ValueError(f"{path}: {what} {text!r} is not a date") from None
 
 
+def _own(statement: Element) -> Element | None:
+    """The group naming the statement's own account."""
+    for tag in ("BANKACCTFROM", "CCACCTFROM", "INVACCTFROM"):
+        if (found := _find(statement, tag)) is not None:
+            return found
+    return None
+
+
 def _kind(statement: Element) -> str:
     """The account's type as the file says it (``CHECKING``, ``SAVINGS``),
     ``CREDITCARD`` for a card's statement, blank for an investment's. Only
     the statement's own account is asked: a transfer's other side
     (``BANKACCTTO``) has a type too."""
-    return _text(statement.find(".//BANKACCTFROM"), "ACCTTYPE").upper() \
+    return _text(_find(statement, "BANKACCTFROM"), "ACCTTYPE").upper() \
         or ("CREDITCARD" if statement.tag == "CCSTMTRS" else "")
 
 
@@ -175,39 +217,60 @@ def _account(root: Element, statement: Element) -> str:
     account's type, and the last four digits of the account's number. The
     whole number stays out of the mapping files.
 
-    The name has to be the same in every download of the account, since
-    the mappings and the dropping of duplicates go by it, so it is made
-    from the statement alone. A file that doesn't name its institution
-    (many banks') gives its id or the bank's routing number instead, so two
-    banks' accounts ending alike stay two."""
-    own = statement.find(".//BANKACCTFROM")
-    number = _number_of(statement)
+    The mappings and the dropping of duplicates go by the name, so it
+    should be the same in every download of the account. It is made from
+    the file alone, which can't promise that: the institution is the
+    file's sign-on block's name or id, and only without one the
+    statement's routing number or broker, so a bank whose two kinds of
+    download differ there, or a card reissued with a new number, is two
+    names. ``sources.read_flows`` notes transactions that two names share."""
+    own = _own(statement)
+    number = _text(own, "ACCTID")
     signed_on = root.find(".//SONRS/FI")
     institution = _text(signed_on, "ORG") or _text(signed_on, "FID") or _text(own, "BANKID") \
-        or _text(statement.find(".//INVACCTFROM"), "BROKERID")
-    kind = _text(own, "ACCTTYPE").lower()
+        or _text(own, "BROKERID")
+    kind = "" if statement.tag == "CCSTMTRS" else _kind(statement).lower()
     return " ".join(part for part in (institution, kind, f"...{number[-4:] if number else '?'}") if part)
 
 
-def _number_of(statement: Element) -> str:
-    return _text(statement.find(".//BANKACCTFROM"), "ACCTID") \
-        or _text(statement.find(".//CCACCTFROM"), "ACCTID") \
-        or _text(statement.find(".//INVACCTFROM"), "ACCTID")
-
-
 def _accounts(path: Path, root: Element, statements: list[Element]) -> list[str]:
-    """Each statement's account name. Two accounts of one file that would
-    get one name (one institution, one type, the same last four digits)
-    are refused: read as one, each would take the other's mapping and
-    lose transactions as the other's duplicates."""
+    """Each statement's account name. Refused: two accounts of one file
+    that would get one name (one institution, one type, the same last four
+    digits), since read as one each would take the other's mapping and
+    lose transactions as the other's duplicates; and one account with two
+    statements in the file, which would be counted twice."""
     names = [_account(root, each) for each in statements]
     numbers: dict[str, str] = {}
     for name, statement in zip(names, statements, strict=True):
-        if numbers.setdefault(name, _number_of(statement)) != _number_of(statement):
+        number = _text(_own(statement), "ACCTID")
+        if name not in numbers:
+            numbers[name] = number
+        elif numbers[name] == number:
+            raise ValueError(
+                f"{path}: it has more than one statement of {name!r}, which would be counted twice")
+        else:
             raise ValueError(
                 f"{path}: two of its accounts would both be {name!r}, which can't be told apart "
                 "by the institution, the type and the last four digits; they can't be read from one file")
     return names
+
+
+def _money(cents: int) -> str:
+    return f"${Decimal(cents) / 100:,.2f}"
+
+
+def _foreign(account: str, statement: Element, items: str) -> list[str]:
+    """Notes of what in ``statement`` is not in dollars: nothing is
+    converted, and an amount in another currency is read as it is."""
+    notes = []
+    stated = _text(statement, "CURDEF").upper()
+    if stated and stated != _DOLLARS:
+        notes.append(f"{account} is in {stated}; its amounts are read as they are, not converted")
+    symbols = {_text(_find(each, "CURRENCY"), "CURSYM").upper() for each in statement.iter(items)}
+    others = sorted(symbols - {"", stated or _DOLLARS})
+    if others:
+        notes.append(f"{account} has amounts in {', '.join(others)}, read as they are and not converted")
+    return notes
 
 
 def _statements(root: Element, *tags: str) -> list[Element]:
@@ -220,32 +283,23 @@ def read_transactions(path: Path) -> Flows:
     no categories (a payee map gives them), and each has its ``reference``,
     the institution's id for it.
 
-    A correction (``CORRECTFITID``) takes the place of the transaction it
-    names, or with ``CORRECTACTION`` of ``DELETE`` only removes it, where
-    that transaction is in this file; a deletion is never a transaction
-    itself."""
+    A correction is a row too, with the reference it corrects in
+    ``CORRECTS`` and, where it only removes that transaction, ``REMOVES``
+    set: what it corrects may be in an earlier download, so
+    ``sources.read_flows`` applies corrections, over every file of a run."""
     root = _tree(path)
     rows: list[dict[str, object]] = []
-    # The transactions corrections name, and each correction's own place:
-    # one that names itself is not its own original.
-    corrected: set[tuple[str, str]] = set()
-    corrections: set[int] = set()
+    notes: list[str] = []
     statements = _statements(root, *_SPENDING)
-    # The file has no lines to count by: a transaction's place in it.
-    place = 0
     for statement, account in zip(statements, _accounts(path, root, statements), strict=True):
+        notes += _foreign(account, statement, "STMTTRN")
         for each in statement.iter("STMTTRN"):
-            place += 1
-            if corrects := _text(each, "CORRECTFITID"):
-                corrected.add((account, corrects))
-                corrections.add(place)
-                if _text(each, "CORRECTACTION").upper() == "DELETE":
-                    continue
             # A payee is NAME, or a PAYEE aggregate with its own NAME.
             payee = _text(each, "NAME")
             check = _text(each, "CHECKNUM")
             rows.append({
-                "source_row": place,
+                # The file has no lines to count by: the transaction's place in it.
+                "source_row": len(rows) + 1,
                 "account": account,
                 "date": pd.Timestamp(_day(path, _text(each, "DTPOSTED"), "a transaction's DTPOSTED")),
                 "payee": payee or (f"CHECK {check}" if check else ""),
@@ -254,22 +308,23 @@ def read_transactions(path: Path) -> Flows:
                 "memo": _text(each, "MEMO"),
                 "amount_cents": _cents(path, _text(each, "TRNAMT"), "a transaction's TRNAMT"),
                 REFERENCE: _text(each, "FITID"),
+                CORRECTS: _text(each, "CORRECTFITID"),
+                REMOVES: _text(each, "CORRECTACTION").upper() == "DELETE",
             })
-    rows = [row for row in rows
-            if row["source_row"] in corrections or (row["account"], row[REFERENCE]) not in corrected]
-    frame = pd.DataFrame(rows, columns=[*FLOW_COLUMNS, REFERENCE])
+    frame = pd.DataFrame(rows, columns=[*FLOW_COLUMNS, REFERENCE, CORRECTS, REMOVES])
     # As Quicken's reader: an empty frame's columns must still have their types.
     frame["date"] = pd.to_datetime(frame["date"])
     frame["amount_cents"] = frame["amount_cents"].astype("int64")
     frame["source_row"] = frame["source_row"].astype("int64")
-    return Flows(source=NAME, transactions=frame)
+    frame[REMOVES] = frame[REMOVES].astype("bool")
+    return Flows(source=NAME, transactions=frame, notes=tuple(notes))
 
 
 def _tickers(root: Element) -> dict[str, tuple[str, str]]:
     """Each security's symbol and name, by the id positions name it by."""
     found: dict[str, tuple[str, str]] = {}
     for info in root.iter("SECINFO"):
-        if unique := _text(info, "UNIQUEID"):
+        if unique := _text(info, "UNIQUEID"):  # in the security's SECID
             found[unique] = (_text(info, "TICKER"), _text(info, "SECNAME"))
     return found
 
@@ -282,12 +337,14 @@ def read_holdings(path: Path) -> Snapshot:
     account, by symbol, with its cash that no position holds."""
     root = _tree(path)
     holdings: list[Holding] = []
+    notes: list[str] = []
     days: set[dt.date] = set()
     spending = _statements(root, *_SPENDING)
     investing = _statements(root, _INVESTMENT)
     names = _accounts(path, root, [*spending, *investing])
     for statement, account in zip(spending, names[:len(spending)], strict=True):
-        ledger = statement.find(".//LEDGERBAL")
+        notes += _foreign(account, statement, "STMTTRN")
+        ledger = _find(statement, "LEDGERBAL")
         if ledger is None:
             continue
         if stamp := _text(ledger, "DTASOF"):
@@ -302,6 +359,7 @@ def read_holdings(path: Path) -> Snapshot:
         # money market fund's. Not those whose value equals their units: a
         # bond's or a CD's units are its face value, priced in percent.
         swept = 0
+        notes += _foreign(account, statement, "INVPOS")
         if stamp := _text(statement, "DTASOF"):
             days.add(_day(path, stamp, "an investment statement's DTASOF"))
         for position in statement.iter("INVPOS"):
@@ -333,11 +391,22 @@ def read_holdings(path: Path) -> Snapshot:
         # position, and left out would understate the account. The cash
         # beyond what such positions hold is a holding with no symbol. It
         # may be a product of shares and a price, as a position's value is.
-        balances = statement.find(".//INVBAL")
+        balances = _find(statement, "INVBAL")
         available = _text(balances, "AVAILCASH")
         cash = _cents(path, available, "an investment statement's AVAILCASH", exact=False) if available else 0
         if cash > swept:
             holdings.append(Holding(account, cash - swept, hints={"name": "cash", "type": "investment"}))
+        # Which positions are the cash is a guess, so it is said wherever
+        # it decided something: a money market fund bought as an investment
+        # is priced at a dollar too, and is no part of AVAILCASH.
+        if swept and cash > swept:
+            notes.append(
+                f"{account}: {_money(cash - swept)} of its cash of {_money(cash)} is added, taking the rest to "
+                f"be its position(s) priced at a dollar a share ({_money(swept)}); check the account's total")
+        elif 0 < cash < swept:
+            notes.append(
+                f"{account}: its cash of {_money(cash)} is not added, taken to be in its position(s) priced "
+                f"at a dollar a share ({_money(swept)}); if it is apart from them, the account's total is short by it")
         # Money borrowed on margin is less than no cash, or a margin
         # balance below zero where the cash doesn't show it. Left out, the
         # account would be worth what was bought with the loan as well.
@@ -349,4 +418,4 @@ def read_holdings(path: Path) -> Snapshot:
         raise ValueError(
             f"{path}: its balances are as of different days ({', '.join(sorted(map(str, days)))}); "
             "download each account by itself")
-    return Snapshot(source=NAME, holdings=tuple(holdings), as_of=next(iter(days), None))
+    return Snapshot(source=NAME, holdings=tuple(holdings), as_of=next(iter(days), None), notes=tuple(notes))

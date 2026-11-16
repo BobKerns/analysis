@@ -214,7 +214,11 @@ that it could.
 
 A download that is a plain table, one row for each holding or account, needs
 no code. Describe it in `imports/<source>/profile.yaml`, with whatever name
-you like for the source:
+you like for the source, other than `quicken` and `ofx`: those are sources
+already, and a profile in a folder of either name stops every import until
+the folder is renamed.
+
+For example:
 
 ```yaml
 description: Credit union balances
@@ -516,12 +520,23 @@ The balance is what a bank's CSV download never has, so an OFX file is the
 easy way to set a checking or savings account's opening balance: download
 it as of the scenario's first day.
 
-The outside account's name has to be the same in every download, so it is
-made from what the file says and nothing else. A file that doesn't name
-its institution (many banks' don't) gives the bank's routing number in its
-place. Two accounts at one institution, of one type, ending in the same
-four digits can't be told apart; a file with both is refused, and from
-separate files they would be read as one account.
+The outside account's name is made from what the file says and nothing
+else. A file that doesn't name its institution (many banks' don't) gives
+its id, or the bank's routing number, in its place. Two accounts at one
+institution, of one type, ending in the same four digits can't be told
+apart; a file with both is refused, and from separate files they would be
+read as one account.
+
+The mappings, and the counting of a transaction once, go by that name, so
+it matters that one account keeps one name. It may not: a bank's `.qfx`
+and `.ofx` downloads can name the bank differently, and a reissued card
+has a new number. Overlapping downloads under two names are counted
+twice. The import prints a note when two outside accounts have
+transactions with the same id, day and amount; if you see it, import
+downloads that don't overlap.
+
+Nothing is converted from another currency. An account or a transaction
+that is not in US dollars is read as it is, with a note.
 
 A card's balance is what is owed, and is stored as a debt whichever sign
 the issuer writes it with: most write it negative, some positive. A
@@ -532,7 +547,8 @@ A brokerage's cash is read best effort. The file gives one figure for all
 of the account's cash, which includes a sweep or money market fund where
 that is also listed as a position. Positions priced at a dollar a share
 are taken to be that fund, and only the cash beyond them is added. Money
-borrowed on margin is taken off. Check the account's total against the
+borrowed on margin is taken off. Where that guess decided anything, a note
+says what was added or left out; check the account's total against the
 statement.
 
 Amounts are read as institutions write them, with a thousands separator or
@@ -546,9 +562,9 @@ header, one that starts with a byte-order mark, one with an accented payee
 in the bank's own encoding. A payee written `A &amp; B` is read as
 `A & B`, so the same pattern in `payees.csv` matches it from any bank.
 
-A bank's correction of a transaction replaces or removes the one it names
-when both are in one file. If the original is in an earlier download, both
-are counted; that is rare, and worth knowing if a total looks doubled.
+A bank's correction of a transaction replaces or removes the one it
+names, whether that is in the same file or in an earlier download given in
+the same run.
 
 Not read: a brokerage's transactions (buys, sales, dividends,
 reinvestments), which are investment activity and not spending.

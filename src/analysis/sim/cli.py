@@ -9461,6 +9461,8 @@ def import_transactions(
     if flows.duplicates:
         click.echo(f"note: {flows.duplicates} transaction(s) that an earlier file had too, by "
                    "their reference, were left out")
+    for note in flows.notes:
+        click.echo(f"note: {note}")
     payee_maps: dict[str, import_mapping.PayeeMap] = {}
     try:
         described = import_sources_.table(import_mapping.imports_dir(data_dir_p)).found
@@ -13307,6 +13309,8 @@ def import_holdings(
                     import_mapping.source_dir(data_dir_p, source.name) / import_mapping.ACCOUNTS))
             asked_account = True
         snapshot = import_sources_.read_holdings(files, source, imports, account=outside_account)
+        for note in snapshot.notes:
+            click.echo(f"note: {note}")
         if not snapshot.holdings:
             raise click.ClickException(
                 "no account balances in " + ", ".join(map(str, files))

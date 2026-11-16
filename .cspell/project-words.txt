@@ -103,6 +103,8 @@ creds
 CRSP
 Crunchbase
 CURDEF
+CURRATE
+CURSYM
 CUSIP
 Damodaran
 darkgreen
