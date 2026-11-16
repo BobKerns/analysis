@@ -9034,8 +9034,9 @@ def _ask_holding_lot(
     click.echo(
         f"{target.account} has no lot of {_outside_label([holding], whole=False)}, "
         f"{format_dollars(holding.value_cents)}.")
-    clean = _clean_symbol(holding.asset)
-    suggested = holding.asset.lower() if clean else "skip"
+    # An account's cash can have a lot of its own.
+    clean = _clean_symbol(holding.asset) or holding.asset in import_forms.UNLISTED
+    suggested = holding.asset.strip("()").lower() if clean else "skip"
     click.echo("  " + ("A new name adds a lot for it. " if clean else "")
                + (f"A lot the account has ({', '.join(its_lots)}) takes it in. " if its_lots else "")
                + "'skip' leaves it out, now and in later imports.")
@@ -9461,6 +9462,8 @@ def import_transactions(
     if flows.duplicates:
         click.echo(f"note: {flows.duplicates} transaction(s) that an earlier file had too, by "
                    "their reference, were left out")
+    for note in flows.notes:
+        click.echo(f"note: {note}")
     payee_maps: dict[str, import_mapping.PayeeMap] = {}
     try:
         described = import_sources_.table(import_mapping.imports_dir(data_dir_p)).found
@@ -9476,12 +9479,13 @@ def import_transactions(
                 raise click.ClickException(
                     f"category map not found: {category_map_path} "
                     f"(columns {', '.join(import_mapping.CATEGORIES_HEADER)})")
-            # A source described by a profile is read by payee wherever a
-            # row has no category, which may be one file of two (a card's
-            # short download beside its detailed one); a coded source's
-            # uncategorized rows are warned about, unless it has a payee map.
+            # A source read by payee (a profile's, or a coded one that says
+            # so) is read that way wherever a row has no category, which may
+            # be one file of two (a card's short download beside its
+            # detailed one); any other source's uncategorized rows are
+            # warned about, unless it has a payee map.
             payees_path = maps_dir / import_mapping.PAYEES
-            if payees_path.is_file() or (source in described and described[source].profile is not None):
+            if payees_path.is_file() or (source in described and described[source].payees):
                 payee_maps[source] = import_mapping.load_payee_map(payees_path)
             if category_map_path.exists():
                 each.merges, each.exclusions = import_mapping.load_category_map(category_map_path)
@@ -13306,6 +13310,8 @@ def import_holdings(
                     import_mapping.source_dir(data_dir_p, source.name) / import_mapping.ACCOUNTS))
             asked_account = True
         snapshot = import_sources_.read_holdings(files, source, imports, account=outside_account)
+        for note in snapshot.notes:
+            click.echo(f"note: {note}")
         if not snapshot.holdings:
             raise click.ClickException(
                 "no account balances in " + ", ".join(map(str, files))
@@ -13412,17 +13418,22 @@ def import_holdings(
                 progress = True
             for holding, target in result.new:
                 its_lots = [_lot.lot for _lot in lots if _lot.account == target.account]
+                # The account's cash or borrowing: a cash lot's, by the
+                # symbol such lots have, so the plan knows what it holds.
+                unlisted = holding.asset in import_forms.UNLISTED
+                symbol = registries.CASH_SYMBOL if unlisted else holding.asset
                 if any(row.get("account_name") == target.account
-                       and row.get("symbol", "").upper() == holding.asset.upper() for row in rows):
+                       and row.get("symbol", "").upper() == symbol.upper() for row in rows):
                     # An earlier holding of the symbol (another row of the
                     # file, or another outside account) got the lot just now.
                     continue
                 # --new-lots can't name a lot for 'Pending activity'.
-                if _interactive() and not (new_lots and _clean_symbol(holding.asset)):
+                nameable = unlisted or _clean_symbol(holding.asset)
+                if _interactive() and not (new_lots and nameable):
                     answer = _ask_holding_lot(holding, target, its_lots)
-                elif new_lots and _clean_symbol(holding.asset):
+                elif new_lots and nameable:
                     # A lot of another symbol may have the name already.
-                    base = holding.asset.lower()
+                    base = holding.asset.strip("()").lower()
                     answer = next(
                         name for name in itertools.chain([base], (f"{base}-{n}" for n in itertools.count(2)))
                         if name not in its_lots)
@@ -13435,7 +13446,7 @@ def import_holdings(
                     saved_map.set(holding.account, holding.asset, chosen)
                     to_save = True
                 else:
-                    add_lot(target.account, answer, holding.asset)
+                    add_lot(target.account, answer, symbol)
                 progress = True
             if not progress:
                 break
@@ -13532,7 +13543,8 @@ def import_holdings(
     # A symbol with no rate series, allocation or name grows as its account
     # does, which may not be what the fund does.
     if fresh:
-        known = {*context().securities, *context().growing}
+        # A cash lot's symbol needs no telling about.
+        known = {*context().securities, *context().growing, *registries.SYMBOL_ASSET_CLASS, ""}
         if strangers := sorted({rows[i]["symbol"] for i in fresh} - known):
             click.echo(
                 f"note: the plan doesn't know {', '.join(strangers)} yet, so each lot grows "

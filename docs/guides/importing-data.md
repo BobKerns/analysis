@@ -19,7 +19,7 @@ Alice and Bill and a Quicken export:
 | Another brokerage or bank whose website downloads a table of balances | Describe its columns in a [profile](#a-source-of-your-own), then import as above |
 | A bank's or a card's transactions download | [Bank and card files](#bank-and-card-files) below; a layout not built in needs a [profile](#a-source-of-your-own) |
 | An HSA custodian with no usable download | Type the balances when `sim scenario roll` asks ([user guide](../user-guide.md), §4.21) |
-| An OFX or QFX download | Not read yet ([#618](https://github.com/BobKerns/analysis/issues/618)) |
+| An OFX or QFX download (what a bank, a card or a brokerage offers for "Quicken" or "Money") | [OFX and QFX files](#ofx-and-qfx-files) below: no profile needed, whatever the institution |
 | Nothing a program exports, or only a few accounts | Type them: `sim scenario roll` asks for each lot's balance, and `sim scheduled add` takes an estimate of spending |
 
 `sim import sources` lists what this version reads. Given files, it says
@@ -214,7 +214,11 @@ that it could.
 
 A download that is a plain table, one row for each holding or account, needs
 no code. Describe it in `imports/<source>/profile.yaml`, with whatever name
-you like for the source:
+you like for the source, other than `quicken` and `ofx`: those are sources
+already, and a profile in a folder of either name stops every import until
+the folder is renamed.
+
+For example:
 
 ```yaml
 description: Credit union balances
@@ -480,8 +484,126 @@ for any other source. Where the card's category isn't yours, a row of
 `imports/<source>/payees.csv` for that payee wins over it. If the file has a
 reference for each transaction, name that column too (`reference`):
 downloads that all have it may then overlap, and a transaction in two of
-them is counted once. A download without references can't be matched that
+them is counted once, by its reference alone. The import prints a note if a
+reference comes back with another day or amount, or a day and amount come
+back under another reference, since then the references may not mean what
+they should. A download without references can't be matched that
 way, so it mustn't cover the same days as another.
+
+### OFX and QFX files
+
+Most banks, cards and brokerages offer a download "for Quicken" (`.qfx`) or
+"for Money" (`.ofx`). They are one format, and it is read whatever the
+institution: no profile is needed. A file is recognized by what is in it,
+not by its name.
+
+```sh
+sim import transactions ~/Downloads/Checking.qfx ~/Downloads/card.ofx --from-account Asset_Checking --dry-run
+sim import holdings ~/Downloads/Checking.qfx --dry-run
+```
+
+One download feeds both commands:
+
+| In the file | Becomes |
+| --- | --- |
+| A bank account's or a card's transactions, and a brokerage account's checks, card purchases and bill payments | spending, for `sim import transactions` |
+| Each transaction's own id | what lets two downloads overlap: a transaction in both is counted once |
+| The institution's name, the account's type and the account's number | the outside account, as `First Example Bank checking ...4321` (`card` or `investment` where it is one): the last four digits only |
+| The statement's balance and its date | the account's balance, for `sim import holdings` (what a card owes is a debt) |
+| A brokerage account's positions | holdings by symbol, as for [brokerage files](#brokerage-files) |
+| A brokerage account's cash that no position holds | a holding named `(cash)`, for the account's cash lot (`(margin)` for what it has borrowed) |
+
+The transactions have no categories, so they are categorized
+[by payee](#bank-and-card-files), with one map for every institution's
+file: `imports/ofx/payees.csv`. The same payee text means the same thing
+whichever bank reports it. A card paid from the bank is `transfer` there,
+as for any other bank file.
+
+The balance is what a bank's CSV download never has, so an OFX file is the
+easy way to set a checking or savings account's opening balance: download
+it as of the scenario's first day.
+
+The outside account's name is made from what the file says and nothing
+else. A file that doesn't name its institution (many banks' don't) gives
+its id, or the bank's routing number, in its place. Two accounts at one
+institution, of one type, ending in the same four digits can't be told
+apart; a file with both is refused, and from separate files they would be
+read as one account.
+
+The mappings, and the counting of a transaction once, go by that name, so
+it matters that one account keeps one name. It may not: a bank's `.qfx`
+and `.ofx` downloads can name the bank differently, and a reissued card
+has a new number. Overlapping downloads under two names are counted
+twice. The import prints a note when two outside accounts have
+transactions with the same id, day and amount; if you see it, import
+downloads that don't overlap.
+
+An id is taken at its word: a transaction with an id an earlier download
+had is that transaction, and is left out. Some institutions break that
+promise. One that numbers each download from the start again loses
+transactions this way, and one that gives a transaction a new id every
+time has them counted twice. The import can't tell which it is looking at,
+so it prints a note when an id comes back with another day or amount, or a
+day and amount come back under another id. If you see either, import
+downloads that don't overlap from that institution.
+
+The payee is the file's name for it. Some banks write only the kind of
+payment there (`POS PURCHASE`) and put the merchant in the memo, so one
+`payees.csv` row would cover every purchase. The import prints a note when
+one payee has many different memos.
+
+Nothing is converted from another currency. An account or a transaction
+that is not in US dollars is read as it is, with a note.
+
+A card's balance is what is owed, and is stored as a debt whichever sign
+the issuer writes it with: most write it negative, some positive. A
+positive one is reported as an unusual credit balance, since the file
+can't say which it is; check it against the statement.
+
+A brokerage's cash is read best effort. The file gives one figure for all
+of the account's cash, which includes a sweep or money market fund where
+that is also listed as a position. Positions priced at a dollar a share
+are taken to be that fund, and only the cash beyond them is added. Money
+borrowed on margin is taken off: the margin balance where the file gives
+one. Where that guess decided anything, a note says what was added or left
+out; check the account's total against the statement. A download that
+leaves the positions out can't tell the cash from a fund a lot already
+holds, so download the account with its positions.
+
+The cash goes to the account's cash lot (one with the symbol `CASH`), or
+to its lot with no symbol. If the account has neither, `--new-lots` adds a
+cash lot named `cash`, and at a terminal you are asked. To put it
+somewhere else, give it a row of its own in `imports/ofx/accounts.csv`,
+with `(cash)` as its `asset`; the positions keep the account's row.
+
+An OFX file has no cost basis. In a taxable brokerage account the cash
+lot's basis is its balance, and a note names the new lots that have none:
+set each with `sim account lot edit ACCOUNT LOT --opening-cost-basis
+AMOUNT` before a run draws on it. When one lot is split into a lot for
+each fund, the old lot is emptied and keeps the account's basis, for you
+to share among the new ones.
+
+Amounts are read as institutions write them, with a thousands separator or
+a decimal comma (`5,000` is five thousand dollars). An amount with a
+fraction of a cent is refused, except a position's value and a brokerage
+account's cash and margin balances, which are rounded
+to the cent. A number of shares or a position's value written like `2,500`,
+which could be 2500 or 2.5, is refused and not guessed.
+
+Files that stray from the format are read where they can be: one with no
+header, one that starts with a byte-order mark, one with an accented payee
+in the bank's own encoding, one that leaves a value empty. A payee written
+`A &amp; B` is read as `A & B`, so the same pattern in `payees.csv` matches
+it from any bank. A file that can't be read is refused without quoting it,
+since it has whole account numbers in it. So is a download that was cut
+off before its end: download it again.
+
+A bank's correction of a transaction replaces or removes the one it
+names, whether that is in the same file or in an earlier download given in
+the same run.
+
+Not read: a brokerage's investment transactions (buys, sales, dividends,
+reinvestments), which are investment activity and not spending.
 
 ## A budget: `sim import budget`
 
