@@ -15,6 +15,7 @@ AMOLED
 anullsrc
 anywidget
 apad
+apos
 arcsinh
 arctanh
 aresample
@@ -91,6 +92,8 @@ configfile
 conftest
 corpdev
 corrcoef
+CORRECTACTION
+CORRECTFITID
 counterclock
 cpus
 CREAT

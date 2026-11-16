@@ -2529,22 +2529,31 @@ _OFX_BANK_ROWS = [
 ]
 
 
-def _ofx_bank(rows: list[tuple[str, str, str, str]]) -> str:
-    """An OFX 1 (SGML) bank statement of ``rows``: no closing tags on its
-    values, and a tag of the institution's own that the specification
-    doesn't have."""
+def _ofx_bank_statement(rows: list[tuple[str, str, str, str]], number: str, kind: str) -> str:
+    """One account's statement of an OFX 1 bank file, with its ledger balance."""
+    return (
+        "<STMTTRNRS>\n<TRNUID>0\n<STATUS>\n<CODE>0\n<SEVERITY>INFO\n</STATUS>\n"
+        f"<STMTRS>\n<CURDEF>USD\n<BANKACCTFROM>\n<BANKID>121000000\n<ACCTID>{number}\n"
+        f"<ACCTTYPE>{kind}\n</BANKACCTFROM>\n<BANKTRANLIST>\n<DTSTART>20260101\n<DTEND>20260228\n"
+        + _ofx_transactions(rows, close=False)
+        + "\n</BANKTRANLIST>\n<LEDGERBAL>\n<BALAMT>4321.09\n<DTASOF>20260228210000.000[-8:PST]\n</LEDGERBAL>\n"
+        "</STMTRS>\n</STMTTRNRS>\n")
+
+
+def _ofx_bank(rows: list[tuple[str, str, str, str]],
+              accounts: tuple[tuple[str, str], ...] = (("000987654321", "CHECKING"),)) -> str:
+    """An OFX 1 (SGML) bank file with a statement of ``rows`` for each of
+    ``accounts`` (number, type): no closing tags on its values, and a tag
+    of the institution's own that the specification doesn't have."""
     return (
         "OFXHEADER:100\nDATA:OFXSGML\nVERSION:102\nSECURITY:NONE\nENCODING:USASCII\nCHARSET:1252\n"
         "COMPRESSION:NONE\nOLDFILEUID:NONE\nNEWFILEUID:NONE\n\n"
         "<OFX>\n<SIGNONMSGSRSV1>\n<SONRS>\n<STATUS>\n<CODE>0\n<SEVERITY>INFO\n</STATUS>\n"
         "<DTSERVER>20260228120000.000[-8:PST]\n<LANGUAGE>ENG\n<FI>\n<ORG>First Example Bank\n<FID>1234\n</FI>\n"
         "<INTU.BID>1234\n</SONRS>\n</SIGNONMSGSRSV1>\n"
-        "<BANKMSGSRSV1>\n<STMTTRNRS>\n<TRNUID>0\n<STATUS>\n<CODE>0\n<SEVERITY>INFO\n</STATUS>\n"
-        "<STMTRS>\n<CURDEF>USD\n<BANKACCTFROM>\n<BANKID>121000000\n<ACCTID>000987654321\n"
-        "<ACCTTYPE>CHECKING\n</BANKACCTFROM>\n<BANKTRANLIST>\n<DTSTART>20260101\n<DTEND>20260228\n"
-        + _ofx_transactions(rows, close=False)
-        + "\n</BANKTRANLIST>\n<LEDGERBAL>\n<BALAMT>4321.09\n<DTASOF>20260228210000.000[-8:PST]\n</LEDGERBAL>\n"
-        "</STMTRS>\n</STMTTRNRS>\n</BANKMSGSRSV1>\n</OFX>\n")
+        "<BANKMSGSRSV1>\n"
+        + "".join(_ofx_bank_statement(rows, number, kind) for number, kind in accounts)
+        + "</BANKMSGSRSV1>\n</OFX>\n")
 
 
 @pytest.fixture
@@ -2570,6 +2579,48 @@ def ofx_bank_later_download(tmp_path: Path) -> Path:
 
 
 @pytest.fixture
+def ofx_bank_like_accounts_download(tmp_path: Path) -> Path:
+    """``ofx_bank_download``'s checking account with a savings account of
+    the same bank whose number ends in the same four digits, with the same
+    transactions and so the same short ids."""
+    path = tmp_path / "Accounts.qfx"
+    path.write_text(_ofx_bank(_OFX_BANK_ROWS, (("000987654321", "CHECKING"), ("000555554321", "SAVINGS"))),
+                    encoding="cp1252")
+    return path
+
+
+@pytest.fixture
+def ofx_bank_twin_accounts_download(tmp_path: Path) -> Path:
+    """Two checking accounts of one bank whose numbers end in the same
+    four digits: nothing a file shows of them tells them apart."""
+    path = tmp_path / "Twins.qfx"
+    path.write_text(_ofx_bank(_OFX_BANK_ROWS, (("000987654321", "CHECKING"), ("000555554321", "CHECKING"))),
+                    encoding="cp1252")
+    return path
+
+
+@pytest.fixture
+def rewrite_download(tmp_path: Path) -> Callable[..., Path]:
+    """A copy of a download with its bytes changed, for what one
+    institution or another writes differently:
+    ``rewrite_download(source, change, name="odd.qfx")``, where ``change``
+    takes the file's bytes and returns the copy's. Each copy is a new
+    file; ``name`` is for a test that reads the name back."""
+    made = 0
+
+    def rewrite(source: Path, change: Callable[[bytes], bytes], name: str | None = None) -> Path:
+        nonlocal made
+        made += 1
+        folder = tmp_path / f"rewritten-{made}"
+        folder.mkdir()
+        path = folder / (name or source.name)
+        path.write_bytes(change(source.read_bytes()))
+        return path
+
+    return rewrite
+
+
+@pytest.fixture
 def ofx_card_download(tmp_path: Path) -> Path:
     """A card's OFX download (OFX 2, XML), February 2026: one purchase and
     the payment from the bank, with what is owed as of February 28."""
@@ -2588,6 +2639,20 @@ def ofx_card_download(tmp_path: Path) -> Path:
                              ("20260225", "80.00", "C0002", "ONLINE PAYMENT - THANK YOU")], close=True)
         + "\n</BANKTRANLIST><LEDGERBAL><BALAMT>-250.00</BALAMT><DTASOF>20260228</DTASOF></LEDGERBAL>"
         "</CCSTMTRS></CCSTMTTRNRS></CREDITCARDMSGSRSV1></OFX>\n",
+        encoding="utf-8")
+    return path
+
+
+@pytest.fixture
+def ofx_card_then_bank_download(tmp_path: Path, ofx_card_download: Path) -> Path:
+    """One file with ``ofx_card_download``'s card statement and, after it,
+    a checking account's (``ofx_bank_download``'s transactions)."""
+    card = ofx_card_download.read_text(encoding="utf-8")
+    end = "</CREDITCARDMSGSRSV1>"
+    path = tmp_path / "card-then-bank.ofx"
+    path.write_text(
+        card.replace(end, end + "<BANKMSGSRSV1>\n"
+                     + _ofx_bank_statement(_OFX_BANK_ROWS, "000987654321", "CHECKING") + "</BANKMSGSRSV1>"),
         encoding="utf-8")
     return path
 

@@ -19,11 +19,14 @@ are investment income and not spending.
 
 from __future__ import annotations
 
+import codecs
 import datetime as dt
+import io
 import re
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from pathlib import Path
 from xml.etree.ElementTree import Element
+from xml.sax.saxutils import unescape
 
 import pandas as pd
 
@@ -39,6 +42,9 @@ _SIGNS = (b"OFXHEADER", b"<?OFX", b"<OFX>")
 # Statements that have transactions of spending: a bank account's, a card's.
 _SPENDING = ("STMTRS", "CCSTMTRS")
 _INVESTMENT = "INVSTMTRS"
+# What the library leaves in a value's text: its typed models, not used
+# here, are where it turns these back into the characters.
+_ENTITIES = {"&nbsp;": " ", "&apos;": "'", "&quot;": '"'}
 
 
 def is_ofx(path: Path) -> bool:
@@ -53,23 +59,50 @@ def is_ofx(path: Path) -> bool:
 
 
 def _tree(path: Path) -> Element:
-    from ofxtools.Parser import OFXTree
+    """``path`` as an element tree. The library reads a file as its header
+    says to; one it refuses is read again from its ``<OFX>`` tag on, for
+    what institutions get wrong about the wrapping: no header at all, or a
+    payee in the bank's own code page under a header that says UTF-8 or
+    ASCII."""
+    from ofxtools.Parser import OFXTree, TreeBuilder
 
-    parser = OFXTree()
     try:
-        parser.parse(str(path))
-    except Exception as error:  # noqa: BLE001  the library raises several kinds of its own
+        # A byte-order mark is no part of the header's first line.
+        raw = Path(path).read_bytes().removeprefix(codecs.BOM_UTF8)
+    except OSError as error:
         raise ValueError(f"{path}: not an OFX file that can be read: {error}") from None
-    root = parser.getroot()
-    if root is None:
-        raise ValueError(f"{path}: not an OFX file that can be read")
+    root: Element | None
+    try:
+        parser = OFXTree()
+        parser.parse(io.BytesIO(raw))
+        root = parser.getroot()
+    except Exception as error:  # noqa: BLE001  the library raises several kinds of its own
+        start = raw.upper().find(b"<OFX>")
+        refused = ValueError(f"{path}: not an OFX file that can be read: {error}")
+        if start < 0:
+            raise refused from None
+        try:
+            body = raw[start:].decode("utf-8")
+        except UnicodeDecodeError:
+            # Every byte is some character in Latin-1, which cp1252 is but for a few.
+            body = raw[start:].decode("cp1252", errors="replace")
+        try:
+            builder = TreeBuilder()
+            builder.feed(body)
+            root = builder.close()
+        except Exception:  # noqa: BLE001  as above; the first refusal says more
+            raise refused from None
+    if root is None or not any(True for _ in _statements(root, *_SPENDING, _INVESTMENT)):
+        raise ValueError(f"{path}: not an OFX file that can be read: it has no account's statement")
     return root
 
 
 def _text(element: Element | None, tag: str) -> str:
-    """The text of ``element``'s first ``tag`` at any depth; blank without."""
+    """The text of ``element``'s first ``tag`` at any depth; blank without.
+    ``&amp;`` and the like are the characters they stand for, so a payee
+    is the same text whichever institution's file names it."""
     found = None if element is None else element.find(f".//{tag}")
-    return (found.text or "").strip() if found is not None else ""
+    return unescape((found.text or "").strip(), _ENTITIES).strip() if found is not None else ""
 
 
 def _number(text: str, *, money: bool) -> Decimal:
@@ -178,24 +211,41 @@ def _accounts(path: Path, root: Element, statements: list[Element]) -> list[str]
 
 
 def _statements(root: Element, *tags: str) -> list[Element]:
-    return [each for tag in tags for each in root.iter(tag)]
+    """The statements of ``tags``, in the file's order."""
+    return [each for each in root.iter() if each.tag in tags]
 
 
 def read_transactions(path: Path) -> Flows:
     """The transactions of ``path``'s bank and card statements. They have
     no categories (a payee map gives them), and each has its ``reference``,
-    the institution's id for it."""
+    the institution's id for it.
+
+    A correction (``CORRECTFITID``) takes the place of the transaction it
+    names, or with ``CORRECTACTION`` of ``DELETE`` only removes it, where
+    that transaction is in this file; a deletion is never a transaction
+    itself."""
     root = _tree(path)
     rows: list[dict[str, object]] = []
+    # The transactions corrections name, and each correction's own place:
+    # one that names itself is not its own original.
+    corrected: set[tuple[str, str]] = set()
+    corrections: set[int] = set()
     statements = _statements(root, *_SPENDING)
+    # The file has no lines to count by: a transaction's place in it.
+    place = 0
     for statement, account in zip(statements, _accounts(path, root, statements), strict=True):
         for each in statement.iter("STMTTRN"):
+            place += 1
+            if corrects := _text(each, "CORRECTFITID"):
+                corrected.add((account, corrects))
+                corrections.add(place)
+                if _text(each, "CORRECTACTION").upper() == "DELETE":
+                    continue
             # A payee is NAME, or a PAYEE aggregate with its own NAME.
             payee = _text(each, "NAME")
             check = _text(each, "CHECKNUM")
             rows.append({
-                # The file has no lines to count by: the transaction's place in it.
-                "source_row": len(rows) + 1,
+                "source_row": place,
                 "account": account,
                 "date": pd.Timestamp(_day(path, _text(each, "DTPOSTED"), "a transaction's DTPOSTED")),
                 "payee": payee or (f"CHECK {check}" if check else ""),
@@ -205,6 +255,8 @@ def read_transactions(path: Path) -> Flows:
                 "amount_cents": _cents(path, _text(each, "TRNAMT"), "a transaction's TRNAMT"),
                 REFERENCE: _text(each, "FITID"),
             })
+    rows = [row for row in rows
+            if row["source_row"] in corrections or (row["account"], row[REFERENCE]) not in corrected]
     frame = pd.DataFrame(rows, columns=[*FLOW_COLUMNS, REFERENCE])
     # As Quicken's reader: an empty frame's columns must still have their types.
     frame["date"] = pd.to_datetime(frame["date"])
@@ -234,7 +286,7 @@ def read_holdings(path: Path) -> Snapshot:
     spending = _statements(root, *_SPENDING)
     investing = _statements(root, _INVESTMENT)
     names = _accounts(path, root, [*spending, *investing])
-    for statement, account in zip(spending, names, strict=False):
+    for statement, account in zip(spending, names[:len(spending)], strict=True):
         ledger = statement.find(".//LEDGERBAL")
         if ledger is None:
             continue
@@ -246,7 +298,9 @@ def read_holdings(path: Path) -> Snapshot:
             hints={"type": kind.lower()} if kind else {}))
     tickers = _tickers(root)
     for statement, account in zip(investing, names[len(spending):], strict=True):
-        # What the positions hold at a dollar a share: a sweep or money market fund.
+        # What the positions priced at a dollar a share hold: a sweep or
+        # money market fund's. Not those whose value equals their units: a
+        # bond's or a CD's units are its face value, priced in percent.
         swept = 0
         if stamp := _text(statement, "DTASOF"):
             days.add(_day(path, stamp, "an investment statement's DTASOF"))
@@ -263,21 +317,34 @@ def read_holdings(path: Path) -> Snapshot:
             except InvalidOperation:
                 raise ValueError(f"{path}: a position's UNITS {units!r} is not a number") from None
             value = _cents(path, _text(position, "MKTVAL"), "a position's MKTVAL", exact=False)
-            if quantity is not None and quantity * 100 == value:
+            try:
+                dollar = _number(_text(position, "UNITPRICE"), money=False) == 1
+            except InvalidOperation:
+                dollar = False
+            if dollar:
                 swept += value
             holdings.append(Holding(
                 account, value,
                 # A security the file gives no symbol is named by its id (a CUSIP).
                 asset=symbol or unique, quantity=quantity,
-                hints={key: value for key, value in (("name", name), ("type", "investment")) if value}))
+                hints={hint: said for hint, said in (("name", name), ("type", "investment")) if said}))
         # AVAILCASH is all the account's cash, a sweep fund's included where
         # the brokerage lists one as a position; a core cash balance has no
         # position, and left out would understate the account. The cash
-        # beyond what such positions hold is a holding with no symbol.
-        if available := _text(statement.find(".//INVBAL"), "AVAILCASH"):
-            cash = _cents(path, available, "an investment statement's AVAILCASH") - swept
-            if cash > 0:
-                holdings.append(Holding(account, cash, hints={"name": "cash", "type": "investment"}))
+        # beyond what such positions hold is a holding with no symbol. It
+        # may be a product of shares and a price, as a position's value is.
+        balances = statement.find(".//INVBAL")
+        available = _text(balances, "AVAILCASH")
+        cash = _cents(path, available, "an investment statement's AVAILCASH", exact=False) if available else 0
+        if cash > swept:
+            holdings.append(Holding(account, cash - swept, hints={"name": "cash", "type": "investment"}))
+        # Money borrowed on margin is less than no cash, or a margin
+        # balance below zero where the cash doesn't show it. Left out, the
+        # account would be worth what was bought with the loan as well.
+        borrowed = _text(balances, "MARGINBALANCE")
+        margin = _cents(path, borrowed, "an investment statement's MARGINBALANCE", exact=False) if borrowed else 0
+        if min(cash, margin) < 0:
+            holdings.append(Holding(account, min(cash, margin), hints={"name": "margin", "type": "investment"}))
     if len(days) > 1:
         raise ValueError(
             f"{path}: its balances are as of different days ({', '.join(sorted(map(str, days)))}); "

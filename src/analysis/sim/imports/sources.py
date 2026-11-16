@@ -53,14 +53,10 @@ class Source:
     profile: profiles.Profile | None = None
     """What describes it, when that is a profile and not code."""
     payees: bool = False
-    """A coded source whose transactions never come with categories, so a
-    payee map gives them, as it does for a profile's."""
-
-    @property
-    def by_payee(self) -> bool:
-        """Whether rows with no category are read by the source's
-        ``payees.csv``, and asked about, even before it has one."""
-        return self.payees or self.profile is not None
+    """Whether rows with no category are read by the source's
+    ``payees.csv``, and asked about, even before it has one: every
+    profile's, and a coded source whose transactions never come with
+    categories."""
 
     def reader(self, form: Form) -> Reader[Snapshot] | Reader[Flows] | Reader[Budget] | None:
         return {"holdings": self.holdings, "transactions": self.transactions, "budget": self.budget}[form]
@@ -99,7 +95,7 @@ _CODED: dict[str, Source] = {
 def _from_profile(profile: profiles.Profile) -> Source:
     held, moved = profile.holdings, profile.transactions
     return Source(
-        name=profile.name, description=profile.description, profile=profile,
+        name=profile.name, description=profile.description, profile=profile, payees=True,
         holdings=None if held is None else Reader(held.matches, held.read, held.layout),
         transactions=None if moved is None else Reader(moved.matches, moved.read, moved.layout),
     )

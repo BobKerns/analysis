@@ -530,15 +530,25 @@ can't say which it is; check it against the statement.
 
 A brokerage's cash is read best effort. The file gives one figure for all
 of the account's cash, which includes a sweep or money market fund where
-that is also listed as a position. Positions worth a dollar a share are
-taken to be that fund, and only the cash beyond them is added. Check the
-account's total against the statement.
+that is also listed as a position. Positions priced at a dollar a share
+are taken to be that fund, and only the cash beyond them is added. Money
+borrowed on margin is taken off. Check the account's total against the
+statement.
 
 Amounts are read as institutions write them, with a thousands separator or
 a decimal comma (`5,000` is five thousand dollars). An amount with a
 fraction of a cent is refused, except a position's value, which is rounded
 to the cent. A number of shares written like `2,500`, which could be 2500
 or 2.5, is refused and not guessed.
+
+Files that stray from the format are read where they can be: one with no
+header, one that starts with a byte-order mark, one with an accented payee
+in the bank's own encoding. A payee written `A &amp; B` is read as
+`A & B`, so the same pattern in `payees.csv` matches it from any bank.
+
+A bank's correction of a transaction replaces or removes the one it names
+when both are in one file. If the original is in an earlier download, both
+are counted; that is rare, and worth knowing if a total looks doubled.
 
 Not read: a brokerage's transactions (buys, sales, dividends,
 reinvestments), which are investment activity and not spending.

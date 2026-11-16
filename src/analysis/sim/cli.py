@@ -9476,12 +9476,13 @@ def import_transactions(
                 raise click.ClickException(
                     f"category map not found: {category_map_path} "
                     f"(columns {', '.join(import_mapping.CATEGORIES_HEADER)})")
-            # A source described by a profile is read by payee wherever a
-            # row has no category, which may be one file of two (a card's
-            # short download beside its detailed one); a coded source's
-            # uncategorized rows are warned about, unless it has a payee map.
+            # A source read by payee (a profile's, or a coded one that says
+            # so) is read that way wherever a row has no category, which may
+            # be one file of two (a card's short download beside its
+            # detailed one); any other source's uncategorized rows are
+            # warned about, unless it has a payee map.
             payees_path = maps_dir / import_mapping.PAYEES
-            if payees_path.is_file() or (source in described and described[source].by_payee):
+            if payees_path.is_file() or (source in described and described[source].payees):
                 payee_maps[source] = import_mapping.load_payee_map(payees_path)
             if category_map_path.exists():
                 each.merges, each.exclusions = import_mapping.load_category_map(category_map_path)
