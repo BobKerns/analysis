@@ -2596,7 +2596,8 @@ def ofx_card_download(tmp_path: Path) -> Path:
 def ofx_brokerage_download(tmp_path: Path) -> Path:
     """A brokerage's OFX download (OFX 2) of one account as of 2026-01-05:
     a stock fund and a money market fund, named by ids that its list of
-    securities gives symbols to, and one purchase, which is not read."""
+    securities gives symbols to, one purchase, which is not read, and its
+    cash, all of it in the money market fund."""
     def position(kind: str, unique: str, units: str, price: str, value: str) -> str:
         return (f"<{kind}><INVPOS><SECID><UNIQUEID>{unique}</UNIQUEID><UNIQUEIDTYPE>CUSIP</UNIQUEIDTYPE></SECID>"
                 f"<HELDINACCT>CASH</HELDINACCT><POSTYPE>LONG</POSTYPE><UNITS>{units}</UNITS>"
@@ -2626,7 +2627,8 @@ def ofx_brokerage_download(tmp_path: Path) -> Path:
         "</INVTRANLIST><INVPOSLIST>"
         + position("POSMF", "111111111", "2500", "160.00", "400000.00")
         + position("POSMF", "222222222", "20000", "1.00", "20000.00")
-        + "</INVPOSLIST></INVSTMTRS></INVSTMTTRNRS></INVSTMTMSGSRSV1>"
+        + "</INVPOSLIST><INVBAL><AVAILCASH>20000.00</AVAILCASH><MARGINBALANCE>0</MARGINBALANCE>"
+        "<SHORTBALANCE>0</SHORTBALANCE></INVBAL></INVSTMTRS></INVSTMTTRNRS></INVSTMTMSGSRSV1>"
         "<SECLISTMSGSRSV1><SECLIST>"
         + security("111111111", "Total Stock Market Index", "VTSAX")
         + security("222222222", "Federal Money Market", "VMFXX")

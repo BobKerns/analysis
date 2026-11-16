@@ -14,16 +14,14 @@ of the specification, and institutions' files have such fields. Nothing
 else here knows the library, so it can be replaced.
 
 Not read: investment transactions (buys, dividends, reinvestments), which
-are investment income and not spending, and an investment account's cash
-balance, which a brokerage usually also lists as a position in its sweep
-fund.
+are investment income and not spending.
 """
 
 from __future__ import annotations
 
 import datetime as dt
 import re
-from decimal import Decimal, InvalidOperation
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from pathlib import Path
 from xml.etree.ElementTree import Element
 
@@ -74,12 +72,36 @@ def _text(element: Element | None, tag: str) -> str:
     return (found.text or "").strip() if found is not None else ""
 
 
-def _cents(path: Path, text: str, what: str) -> int:
-    # Some institutions write a decimal comma, which the specification allows.
+def _number(text: str) -> Decimal:
+    """An OFX number. The specification allows a decimal comma and no
+    thousands separators, and files have both, so of two kinds of separator
+    the last is the decimal point and the other is dropped, and one that
+    repeats separates thousands. A lone comma is a decimal point, as the
+    specification has it: ``1,234`` is 1.234, which an amount of money
+    then refuses, and is not guessed to be 1234."""
+    plain = text.strip().replace(" ", "")
+    comma, point = plain.rfind(","), plain.rfind(".")
+    decimal = "," if comma > point else "."
+    if plain.count(decimal) > 1:
+        decimal = ""
+    whole = "".join(c for c in plain if c not in ",." or c == decimal)
+    number = Decimal(whole.replace(",", "."))
+    if not number.is_finite():
+        raise InvalidOperation(text)
+    return number
+
+
+def _cents(path: Path, text: str, what: str, *, exact: bool = True) -> int:
+    """``text`` as cents. A fraction of a cent is refused, as Quicken's
+    reader refuses one, except where ``exact`` is off: a position's value
+    is shares times a price, which some brokerages don't round."""
     try:
-        return int((Decimal(text.replace(",", ".")) * 100).to_integral_value())
+        cents = _number(text) * 100
     except InvalidOperation:
         raise ValueError(f"{path}: {what} {text!r} is not an amount") from None
+    if exact and cents != cents.to_integral_value():
+        raise ValueError(f"{path}: {what} {text!r} has a fraction of a cent")
+    return int(cents.to_integral_value(ROUND_HALF_UP))
 
 
 def _day(path: Path, text: str, what: str) -> dt.date:
@@ -94,16 +116,53 @@ def _day(path: Path, text: str, what: str) -> dt.date:
         raise ValueError(f"{path}: {what} {text!r} is not a date") from None
 
 
+def _kind(statement: Element) -> str:
+    """The account's type as the file says it (``CHECKING``, ``SAVINGS``),
+    ``CREDITCARD`` for a card's statement, blank for an investment's. Only
+    the statement's own account is asked: a transfer's other side
+    (``BANKACCTTO``) has a type too."""
+    return _text(statement.find(".//BANKACCTFROM"), "ACCTTYPE").upper() \
+        or ("CREDITCARD" if statement.tag == "CCSTMTRS" else "")
+
+
 def _account(root: Element, statement: Element) -> str:
-    """How a statement's account is named: the institution, where the file
-    says, and the last four digits of the account's number. The whole
-    number stays out of the mapping files."""
-    number = _text(statement.find(".//BANKACCTFROM"), "ACCTID") \
+    """How a statement's account is named: the institution, a bank
+    account's type, and the last four digits of the account's number. The
+    whole number stays out of the mapping files.
+
+    The name has to be the same in every download of the account, since
+    the mappings and the dropping of duplicates go by it, so it is made
+    from the statement alone. A file that doesn't name its institution
+    (many banks') gives its id or the bank's routing number instead, so two
+    banks' accounts ending alike stay two."""
+    own = statement.find(".//BANKACCTFROM")
+    number = _number_of(statement)
+    signed_on = root.find(".//SONRS/FI")
+    institution = _text(signed_on, "ORG") or _text(signed_on, "FID") or _text(own, "BANKID") \
+        or _text(statement.find(".//INVACCTFROM"), "BROKERID")
+    kind = _text(own, "ACCTTYPE").lower()
+    return " ".join(part for part in (institution, kind, f"...{number[-4:] if number else '?'}") if part)
+
+
+def _number_of(statement: Element) -> str:
+    return _text(statement.find(".//BANKACCTFROM"), "ACCTID") \
         or _text(statement.find(".//CCACCTFROM"), "ACCTID") \
         or _text(statement.find(".//INVACCTFROM"), "ACCTID")
-    institution = _text(root.find(".//SONRS/FI"), "ORG") or _text(statement.find(".//INVACCTFROM"), "BROKERID")
-    last = number[-4:] if number else "?"
-    return f"{institution} ...{last}" if institution else f"...{last}"
+
+
+def _accounts(path: Path, root: Element, statements: list[Element]) -> list[str]:
+    """Each statement's account name. Two accounts of one file that would
+    get one name (one institution, one type, the same last four digits)
+    are refused: read as one, each would take the other's mapping and
+    lose transactions as the other's duplicates."""
+    names = [_account(root, each) for each in statements]
+    numbers: dict[str, str] = {}
+    for name, statement in zip(names, statements, strict=True):
+        if numbers.setdefault(name, _number_of(statement)) != _number_of(statement):
+            raise ValueError(
+                f"{path}: two of its accounts would both be {name!r}, which can't be told apart "
+                "by the institution, the type and the last four digits; they can't be read from one file")
+    return names
 
 
 def _statements(root: Element, *tags: str) -> list[Element]:
@@ -116,14 +175,15 @@ def read_transactions(path: Path) -> Flows:
     the institution's id for it."""
     root = _tree(path)
     rows: list[dict[str, object]] = []
-    for statement in _statements(root, *_SPENDING):
-        account = _account(root, statement)
-        for number, each in enumerate(statement.iter("STMTTRN"), start=1):
+    statements = _statements(root, *_SPENDING)
+    for statement, account in zip(statements, _accounts(path, root, statements), strict=True):
+        for each in statement.iter("STMTTRN"):
             # A payee is NAME, or a PAYEE aggregate with its own NAME.
             payee = _text(each, "NAME")
             check = _text(each, "CHECKNUM")
             rows.append({
-                "source_row": number,
+                # The file has no lines to count by: the transaction's place in it.
+                "source_row": len(rows) + 1,
                 "account": account,
                 "date": pd.Timestamp(_day(path, _text(each, "DTPOSTED"), "a transaction's DTPOSTED")),
                 "payee": payee or (f"CHECK {check}" if check else ""),
@@ -137,6 +197,7 @@ def read_transactions(path: Path) -> Flows:
     # As Quicken's reader: an empty frame's columns must still have their types.
     frame["date"] = pd.to_datetime(frame["date"])
     frame["amount_cents"] = frame["amount_cents"].astype("int64")
+    frame["source_row"] = frame["source_row"].astype("int64")
     return Flows(source=NAME, transactions=frame)
 
 
@@ -151,24 +212,30 @@ def _tickers(root: Element) -> dict[str, tuple[str, str]]:
 
 def read_holdings(path: Path) -> Snapshot:
     """What ``path``'s statements say each account holds: a bank account's
-    or a card's ledger balance (a card's is negative, a debt), and each
-    position of an investment account, by symbol."""
+    or a card's ledger balance (what a card owes is negative, though some
+    issuers write it positive; the import stores a liability's size either
+    way and says so of a positive one), and each position of an investment
+    account, by symbol, with its cash that no position holds."""
     root = _tree(path)
     holdings: list[Holding] = []
     days: set[dt.date] = set()
-    for statement in _statements(root, *_SPENDING):
+    spending = _statements(root, *_SPENDING)
+    investing = _statements(root, _INVESTMENT)
+    names = _accounts(path, root, [*spending, *investing])
+    for statement, account in zip(spending, names, strict=False):
         ledger = statement.find(".//LEDGERBAL")
         if ledger is None:
             continue
         if stamp := _text(ledger, "DTASOF"):
             days.add(_day(path, stamp, "a balance's DTASOF"))
-        kind = _text(statement, "ACCTTYPE") or ("CREDITCARD" if statement.tag == "CCSTMTRS" else "")
+        kind = _kind(statement)
         holdings.append(Holding(
-            _account(root, statement), _cents(path, _text(ledger, "BALAMT"), "a balance's BALAMT"),
+            account, _cents(path, _text(ledger, "BALAMT"), "a balance's BALAMT"),
             hints={"type": kind.lower()} if kind else {}))
     tickers = _tickers(root)
-    for statement in _statements(root, _INVESTMENT):
-        account = _account(root, statement)
+    for statement, account in zip(investing, names[len(spending):], strict=True):
+        # What the positions hold at a dollar a share: a sweep or money market fund.
+        swept = 0
         if stamp := _text(statement, "DTASOF"):
             days.add(_day(path, stamp, "an investment statement's DTASOF"))
         for position in statement.iter("INVPOS"):
@@ -176,14 +243,25 @@ def read_holdings(path: Path) -> Snapshot:
             symbol, name = tickers.get(unique, ("", ""))
             units = _text(position, "UNITS")
             try:
-                quantity = Decimal(units.replace(",", ".")) if units else None
+                quantity = _number(units) if units else None
             except InvalidOperation:
                 raise ValueError(f"{path}: a position's UNITS {units!r} is not a number") from None
+            value = _cents(path, _text(position, "MKTVAL"), "a position's MKTVAL", exact=False)
+            if quantity is not None and quantity * 100 == value:
+                swept += value
             holdings.append(Holding(
-                account, _cents(path, _text(position, "MKTVAL"), "a position's MKTVAL"),
+                account, value,
                 # A security the file gives no symbol is named by its id (a CUSIP).
                 asset=symbol or unique, quantity=quantity,
                 hints={key: value for key, value in (("name", name), ("type", "investment")) if value}))
+        # AVAILCASH is all the account's cash, a sweep fund's included where
+        # the brokerage lists one as a position; a core cash balance has no
+        # position, and left out would understate the account. The cash
+        # beyond what such positions hold is a holding with no symbol.
+        if available := _text(statement.find(".//INVBAL"), "AVAILCASH"):
+            cash = _cents(path, available, "an investment statement's AVAILCASH") - swept
+            if cash > 0:
+                holdings.append(Holding(account, cash, hints={"name": "cash", "type": "investment"}))
     if len(days) > 1:
         raise ValueError(
             f"{path}: its balances are as of different days ({', '.join(sorted(map(str, days)))}); "

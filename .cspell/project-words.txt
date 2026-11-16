@@ -28,6 +28,7 @@ autofmt
 autopct
 autoreload
 autouse
+AVAILCASH
 axhline
 axhspan
 axisbelow
@@ -38,6 +39,7 @@ backfillable
 backticked
 BALAMT
 BANKACCTFROM
+BANKACCTTO
 BANKID
 BANKMSGSRSV
 BANKTRANLIST
@@ -242,6 +244,7 @@ lotb
 lstsq
 ltcg
 Macrotrends
+MARGINBALANCE
 markerfacecolor
 markersize
 mcolors
@@ -392,6 +395,7 @@ sharey
 SHASUMS
 shellcheck
 Shiller
+SHORTBALANCE
 sidefx
 SIGNONMSGSRSV
 signum

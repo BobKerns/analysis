@@ -501,9 +501,10 @@ One download feeds both commands:
 | --- | --- |
 | A bank account's or a card's transactions | spending, for `sim import transactions` |
 | Each transaction's own id | what lets two downloads overlap: a transaction in both is counted once |
-| The institution's name and the account's number | the outside account, as `First Example Bank ...4321`: the last four digits only |
+| The institution's name, a bank account's type and the account's number | the outside account, as `First Example Bank checking ...4321`: the last four digits only |
 | The statement's balance and its date | the account's balance, for `sim import holdings` (what a card owes is a debt) |
 | A brokerage account's positions | holdings by symbol, as for [brokerage files](#brokerage-files) |
+| A brokerage account's cash that no position holds | a holding with no symbol, for the account's lot with none |
 
 The transactions have no categories, so they are categorized
 [by payee](#bank-and-card-files), with one map for every institution's
@@ -515,9 +516,30 @@ The balance is what a bank's CSV download never has, so an OFX file is the
 easy way to set a checking or savings account's opening balance: download
 it as of the scenario's first day.
 
+The outside account's name has to be the same in every download, so it is
+made from what the file says and nothing else. A file that doesn't name
+its institution (many banks' don't) gives the bank's routing number in its
+place. Two accounts at one institution, of one type, ending in the same
+four digits can't be told apart; a file with both is refused, and from
+separate files they would be read as one account.
+
+A card's balance is what is owed, and is stored as a debt whichever sign
+the issuer writes it with: most write it negative, some positive. A
+positive one is reported as an unusual credit balance, since the file
+can't say which it is; check it against the statement.
+
+A brokerage's cash is read best effort. The file gives one figure for all
+of the account's cash, which includes a sweep or money market fund where
+that is also listed as a position. Positions worth a dollar a share are
+taken to be that fund, and only the cash beyond them is added. Check the
+account's total against the statement.
+
+Amounts are read as institutions write them, with a thousands separator or
+a decimal comma. An amount with a fraction of a cent is refused, except a
+position's value, which is rounded to the cent.
+
 Not read: a brokerage's transactions (buys, sales, dividends,
-reinvestments), which are investment activity and not spending, and its
-cash balance where that isn't also a position in a money market fund.
+reinvestments), which are investment activity and not spending.
 
 ## A budget: `sim import budget`
 

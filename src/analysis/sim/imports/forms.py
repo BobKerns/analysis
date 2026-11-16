@@ -58,7 +58,8 @@ FLOW_COLUMNS = (
 """What every source's transactions frame has: ``date`` a timestamp,
 ``amount_cents`` signed with money out negative, ``transfer`` non-blank for
 a move between the household's own accounts, ``source_row`` the 1-based line
-of the file. A source may add columns of its own."""
+of the file (the row's place among them, where a file has no lines to
+count by). A source may add columns of its own."""
 
 
 ORIGIN = "origin"
