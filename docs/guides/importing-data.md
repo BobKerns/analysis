@@ -109,6 +109,13 @@ sim import holdings net-worth.csv
 Sets each mapped lot's `opening_balance` from a snapshot of what the outside
 accounts hold. Export the snapshot as of the scenario's first day.
 
+- **Several accounts at one bank are best kept as lots of one account**:
+  the checking and savings accounts you have there, say, as lots `checking`
+  and `savings` of one `Asset_Bank` account. Keep one account for each
+  owner and each kind of account (cash and retirement money stay apart), and
+  one lot for each outside account. The account list stays
+  short, every report shows the bank's total, and each lot still has its own
+  balance, rate and refill rules. Map each outside account to its lot.
 - An account with several lots needs the lot named: the question asks for
   it. One outside number can't fill two lots, so an outside account that
   the scenario keeps as several lots is best answered `skip`, and its lots
@@ -258,13 +265,15 @@ download and a detailed one with more columns.
 ## Spending: `sim import transactions`
 
 ```sh
-sim import transactions transactions.csv --from-account Asset_Checking --dry-run
-sim import transactions transactions.csv --from-account Asset_Checking
+sim import transactions transactions.csv --from Asset_Checking --dry-run
+sim import transactions transactions.csv --from Asset_Checking
 ```
 
 Turns a period's transactions into one monthly expense rule per category,
 at that category's average month, rising with inflation (`--series`).
-`--from-account` is where the money comes from.
+`--from` is where the money comes from: an account, or a chain that
+divides it between several. What a credit card paid is charged to the card
+instead; see [A card in the plan](#a-card-in-the-plan).
 
 One file is written by hand first, `imports/<source>/categories.csv`: it
 gathers the outside program's many categories into the few a plan wants.
@@ -303,7 +312,7 @@ covered, each category's total and what it comes to a month (over the
 months that had any spending, as the rules are worked out), what was left
 out and why (money in, moves between your own accounts, what the scenario
 models itself), and the outside categories that fell to `Other`. It needs
-no `--from-account` and no expense accounts yet, so it is a good first
+no `--from` and no expense accounts yet, so it is a good first
 command with a new file. It asks nothing: a payee with no category yet is
 counted in `Other`, with a note of the most paid, and a file that doesn't
 name its account is taken as its own name's.
@@ -333,7 +342,7 @@ amount), and its payee left out of the generated rules. Have both written
 for you as a script:
 
 ```sh
-sim import transactions transactions.csv --yearly-script yearly-rules.sh --from-account Asset_Checking
+sim import transactions transactions.csv --yearly-script yearly-rules.sh --from Asset_Checking
 ```
 
 `--yearly-script` implies `--summary`: it shows the same summary, writes
@@ -372,7 +381,7 @@ Then:
   amount is as it was paid, and grows with inflation from the month it was
   paid in. Where a bill was seen over several years, the latest year's
   payments are used.
-- Fill in each `EDIT_ME`: the account that pays, when `--from-account` was
+- Fill in each `EDIT_ME`: the account that pays, when `--from` was
   left out, and the expense account of a category that has none in this
   scenario (neither a row in `imports/expense_accounts.csv` that names one
   of its accounts, nor an account of its own name).
@@ -415,7 +424,7 @@ delimited) is built in (`wells_fargo`); another bank's needs a
 [profile](#a-source-of-your-own).
 
 ```sh
-sim import transactions ~/Downloads/Checking1.csv --from-account Asset_Checking --dry-run
+sim import transactions ~/Downloads/Checking1.csv --from Asset_Checking --dry-run
 ```
 
 At a terminal it asks about each payee it has no category for, the most paid
@@ -458,7 +467,7 @@ download, each card's, a Quicken export. Each file's layout is recognized by
 itself, and the rules are averaged over all of them together:
 
 ```sh
-sim import transactions Checking1.csv Card.csv --from-account Asset_Checking
+sim import transactions Checking1.csv Card.csv --from Asset_Checking
 ```
 
 A card's purchases come from the card's own file, so mark its payment
@@ -483,11 +492,56 @@ downloads that all have it may then overlap, and a transaction in two of
 them is counted once. A download without references can't be matched that
 way, so it mustn't cover the same days as another.
 
+### A card in the plan
+
+If the scenario has the card as an account (a liability of subkind
+`credit_card`), the import charges the card's spending to it, so the plan
+shows the card's balance rise with its use and fall with its payment:
+
+```sh
+sim account add Liability_Card liability credit_card --owner joint --opening-balance 1200
+sim import transactions Checking1.csv Card.csv --from Asset_Checking
+```
+
+The import needs to know which file's account is the card. At a terminal it
+asks, once for each account it doesn't know, until every card has its
+account; the answer is saved in `imports/<source>/accounts.csv`, where
+`sim import map` shows and changes it. Then:
+
+- Each category the card paid for gets a rule from the card, named for it
+  (`baseline_expense_food__liability_card`), beside the category's rule
+  from `--from` for what the bank account paid directly.
+- The card gets one rule that pays it, `card_payment_liability_card`: each
+  month, from `--from`, **in full**. Its amount is blank, which means what
+  the card was owed when the month opened: last month's charges are paid
+  this month, as a statement is.
+- That payment rule is written once. Later imports leave it alone, and add
+  none if you already have a rule that pays the card. It is yours to change.
+
+A card that carries a balance wants two changes. Give the payment an amount
+(`sim scheduled edit card_payment_liability_card`), and add the card's
+interest:
+
+```sh
+sim scheduled add 2027-01 Liability_Card Expense_Interest_Card --kind card_interest --rate 24%
+```
+
+Each month this charges the card a month's interest on whatever the
+payments left unpaid of the balance it opened the month with. A card paid in
+full is charged nothing. It is a month's approximation: a real card works
+day by day.
+
+A file whose account isn't a card of the scenario is paid from `--from`, as
+before. So is Amazon's summary, which doesn't say what paid. With `--budget`,
+a category made from the budget is paid by whatever paid most of it in the
+transactions; in the yearly script, a bill that was always charged to one
+card is paid from that card.
+
 ## A budget: `sim import budget`
 
 ```sh
-sim import budget budget-full.csv --from-account Asset_Checking --dry-run
-sim import budget budget-full.csv --from-account Asset_Checking
+sim import budget budget-full.csv --from Asset_Checking --dry-run
+sim import budget budget-full.csv --from Asset_Checking
 ```
 
 Writes the same expense rules from what you plan to spend instead of what
@@ -536,7 +590,7 @@ income, and export the copy. Away from a terminal income is left out unless
 A budget's paycheck is usually take-home pay, with its tax already
 withheld, so income rules are written untaxed. If your budget has pay
 before tax, say so when asked, or with `--gross-income`, and the scenario
-taxes it. Income goes into `--from-account` unless `--income-to` names
+taxes it. Income goes into `--from` unless `--income-to` names
 another account, which it must when the spending comes from a chain.
 
 Treat a budget's income as a convenient start, not the finished model. It
@@ -562,7 +616,7 @@ scenario's start is warned about, since its dollars are old ones.
 ### Budget or actual, for each category
 
 ```sh
-sim import transactions transactions.csv --budget budget-full.csv --from-account Asset_Checking
+sim import transactions transactions.csv --budget budget-full.csv --from Asset_Checking
 ```
 
 Reads both, gathers each into the same categories, and shows a month of

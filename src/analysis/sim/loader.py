@@ -1409,6 +1409,7 @@ def load_scenario(
         and (m.get("account_name", ""), m.get("lot") or registries.DEFAULT_LOT) in leaves.leaf_of
     )
     _validate_rmd_rules(scheduled_rows, leaves, chains, issues, roth_leaves=roth_leaves)
+    _validate_card_rules(scheduled_rows, accounts, leaves, issues)
     _validate_fill_bracket(
         scheduled_rows, chains, tax_rows, issues, roth_leaves=roth_leaves,
         traditional_leaves=frozenset(
@@ -3626,6 +3627,62 @@ def _tax_rule_bracket_tables(
     return [(f" in {states.label(state)}",
              (kind, states.tax_series(state, has_tables=("state_brackets", state) in rates)))
             for state in states_lived]
+
+
+def _validate_card_rules(
+    rows: list[dict[str, str]], accounts: Sequence[Mapping[str, str]],
+    leaves: _LeafIndex, issues: list[str],
+) -> None:
+    """What #641 added for a revolving debt. A ``fixed_amount`` into a
+    liability may leave its amount blank, to pay what was owed when the month
+    opened; nothing else about it can then scale an amount. A
+    ``card_interest`` rule charges a liability's unpaid balance to an expense
+    account at its ``rate``; like ``fill_bracket`` it has no priority, since
+    it follows the month's payments wherever they sit. Run after the rows'
+    references have been resolved."""
+    account = {a.get("name", ""): a for a in accounts}
+
+    def of(ref: str) -> Mapping[str, str]:
+        return account.get(leaves.account_of.get(ref, ""), {})
+
+    for where, row in _located(rows, "scheduled.csv"):
+        kind = row.get("amount_rule_kind")
+        where = f"{where} ({row.get('name', '')})"
+        if kind == "fixed_amount" and not row.get("amount"):
+            if of(row.get("to_account", "")).get("kind") != "liability":
+                continue  # the engine refuses it when it fires, as it always has
+            for column, why in (
+                ("series", "no amount to index"), ("ytd_preroll", "no amount to replay"),
+            ):
+                if row.get(column) not in ("", "0", "fixed", None):
+                    issues.append(
+                        f"{where}: a blank amount pays what is owed, so it takes no "
+                        f"{column} ({why})")
+            if row.get("cadence") == "biweekly":
+                issues.append(
+                    f"{where}: a blank amount pays what was owed when the month opened, "
+                    "once; give it a monthly or annual cadence")
+        if kind != "card_interest":
+            continue
+        card = of(row.get("from_account", ""))
+        if card.get("kind") != "liability" or card.get("subkind") == "mortgage":
+            issues.append(
+                f"{where}: card_interest charges a credit card or a loan that isn't "
+                "amortized (from_account); a mortgage's interest is its mortgage_payment's")
+        if of(row.get("to_account", "")).get("kind") != "expense":
+            issues.append(f"{where}: card_interest is charged to an expense account (to_account)")
+        if not row.get("rate_micros"):
+            issues.append(f"{where}: card_interest needs a rate (the card's annual rate, e.g. 24%)")
+        if row.get("amount"):
+            issues.append(f"{where}: card_interest takes no amount; it is figured from the rate")
+        if row.get("priority"):
+            issues.append(
+                f"{where}: card_interest takes no priority; it is charged on what the "
+                "month's payments left unpaid, so it follows them")
+        if row.get("cadence") != "monthly":
+            issues.append(f"{where}: card_interest needs cadence monthly")
+        if row.get("ytd_preroll") not in ("", "0", None):
+            issues.append(f"{where}: card_interest takes no ytd_preroll; give a ytd_amount")
 
 
 def _validate_fill_bracket(

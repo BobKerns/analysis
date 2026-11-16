@@ -213,5 +213,5 @@ Health,Expense_Healthcare
 Home,Expense_Living
 Travel,Expense_Living
 CSV
-sim import transactions ~/Downloads/transactions-2025.csv --from-account Asset_Checking
+sim import transactions ~/Downloads/transactions-2025.csv --from Asset_Checking
 stage done

@@ -312,7 +312,7 @@ flowchart TB
 
 ## 3a. One month in the engine
 
-The order things happen in a month. This is where tax and strategies attach, so the two detail diagrams below hang off steps 3 to 8. Purple steps are where household or built-in strategy code is asked.
+The order things happen in a month. This is where tax and strategies attach, so the two detail diagrams below hang off steps 3 to 9. Purple steps are where household or built-in strategy code is asked.
 
 Guides: [Calendar for more complex changes](../user-guide.md#48-calendar-for-more-complex-changes), [the glossary](../user-guide.md#2-glossary).
 
@@ -323,15 +323,16 @@ flowchart TB
   c2["<b>2 · Inflation indexes</b> advance"]
   c3["<b>3 · Strategy hooks</b><br/>on_breach (January) · year_start (January) · month_start"]
   p1["<b>4 · Phase 'rules'</b>: scheduled rules, by priority<br/>100 growth and interest<br/>200 income: salary · Social Security · RMD · IRMAA<br/>300 expenses · mortgage<br/>500 conversions and one-offs<br/>900 on_death<br/><i>a strategy that owns a rule answers <b>scale</b> before it posts;<br/>every debit goes through a source chain (next diagram)</i>"]
-  p2["<b>5 · Phase 'tax_settlement'</b> (April only)<br/>last year's return: federal, then state, then local"]
-  p3["<b>6 · Phase 'fill_bracket'</b><br/>Roth conversion up to a bracket top<br/><i>5 and 6 have no priority number. They follow the rules for a stated<br/>reason: an RMD cannot be converted, and the conversion<br/>needs the year's whole income</i>"]
-  ye["<b>7 · Strategy hook: year_end</b> (December)<br/>harvest gains or losses · gift · sell to rebalance"]
-  me["<b>8 · Month end</b><br/>overflow sweep through destination chains<br/><i>a strategy that owns the chain answers <b>place</b></i><br/>basis step-up after a death"]
+  pc["<b>5 · Phase 'card_interest'</b><br/>interest on what the month's payments left unpaid on a card"]
+  p2["<b>6 · Phase 'tax_settlement'</b> (April only)<br/>last year's return: federal, then state, then local"]
+  p3["<b>7 · Phase 'fill_bracket'</b><br/>Roth conversion up to a bracket top<br/><i>5 to 7 have no priority number. They follow the rules for a stated<br/>reason: interest is on what the payments left, an RMD cannot be<br/>converted, and the conversion needs the year's whole income</i>"]
+  ye["<b>8 · Strategy hook: year_end</b> (December)<br/>harvest gains or losses · gift · sell to rebalance"]
+  me["<b>9 · Month end</b><br/>overflow sweep through destination chains<br/><i>a strategy that owns the chain answers <b>place</b></i><br/>basis step-up after a death"]
   s1(["this month's lot_state, one row per lot"])
 
-  s0 --> c1 --> c2 --> c3 --> p1 --> p2 --> p3 --> ye --> me --> s1
+  s0 --> c1 --> c2 --> c3 --> p1 --> pc --> p2 --> p3 --> ye --> me --> s1
 
-  class c1,c2,p1,p2,p3,me proc
+  class c1,c2,p1,pc,p2,p3,me proc
   class c3,ye code
   class s0,s1 store
   classDef input fill:#FFF4D6,stroke:#B8860B,color:#3b2f00

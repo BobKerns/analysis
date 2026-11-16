@@ -39,6 +39,7 @@ KIND_COLUMNS: dict[str, dict[str, bool]] = {
         "inflation_cadence": False,
     },
     "irmaa": {"person": True},  # the enrollee; params_json "parts" narrows it
+    "card_interest": {"rate": True},
 }
 assert set(KIND_COLUMNS) == registries.AMOUNT_RULE_KINDS
 assert {kind for kind, columns in KIND_COLUMNS.items()
@@ -63,6 +64,7 @@ KIND_TAX_CHARACTER: dict[str, str] = {
     "fill_bracket": "tax_deferred_out",
     # Billed (from checking); withheld is ss_benefit, see tax_character_for.
     "irmaa": "none",
+    "card_interest": "none",
 }
 
 
@@ -124,8 +126,23 @@ def needs(column: str) -> Callable[[Answers], bool]:
     return required
 
 
+def pays_liability(ctx: GuideContext, answers: Mapping[str, object]) -> bool:
+    """Whether the rule is a ``fixed_amount`` into a liability, which may
+    leave its amount blank to pay what is owed (#641)."""
+    return (answers.get("amount_rule_kind") == "fixed_amount"
+            and ctx.subkinds.get(str(answers.get("to_account")))
+            in registries.ACCOUNT_SUBKINDS["liability"])
+
+
+def _amount_needed(answers: Answers) -> bool:
+    """A blank ``fixed_amount`` is let past the question, since a payment
+    into a liability may be one; the row's check refuses any other."""
+    return answers.get("amount_rule_kind") != "fixed_amount" and needs("amount")(answers)
+
+
 def _prioritized(ctx: GuideContext, answers: Answers) -> bool:  # noqa: ARG001
-    """A fill_bracket has no priority: it runs last in its month (#252)."""
+    """A fill_bracket has no priority: it runs last in its month (#252), and
+    a card_interest after the month's payments (#641)."""
     return answers.get("amount_rule_kind", "") in registries.DEFAULT_PRIORITIES
 
 
@@ -180,7 +197,8 @@ RULE = KindSpec(
         ),
         Field(
             "amount", "amount in dollars", type="dollars", option="--amount",
-            required=needs("amount"), applies=reads("amount"),
+            required=_amount_needed, applies=reads("amount"),
+            help="Blank on a payment into a liability (a credit card) pays what is owed.",
         ),
         Field(
             "cadence", "cadence", option="--cadence", default="monthly", strict=True,
@@ -226,7 +244,7 @@ RULE = KindSpec(
         Field(
             "rate", "rate in percent", type="percent", option="--rate",
             required=needs("rate"), applies=reads("rate"),
-            help="mortgage_payment: the annual interest rate (e.g. 6%). fill_bracket: "
+            help="mortgage_payment, card_interest: the annual interest rate (e.g. 6%). fill_bracket: "
                  "the bracket to fill to its top (e.g. 22%), instead of an amount.",
         ),
         Field(

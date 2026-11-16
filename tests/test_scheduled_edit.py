@@ -551,3 +551,47 @@ def test_an_rmd_drawing_from_a_chain_needs_its_subject_account(test_data_dir: Pa
     assert "an rmd drawing from chain 'asset_checking_liquidity' needs --params-json" in (
         result.output
     )
+
+
+# ---------- a card's rules (issue #641) ----------
+
+
+def test_add_takes_a_blank_amount_only_for_a_payment_into_a_liability(
+    test_data_dir: Path, scheduled: Callable[[], pd.DataFrame], credit_card: str,
+) -> None:
+    owed = _sim(test_data_dir, "retire_alice", "add", "2027-01", "Asset_Checking", credit_card, "",
+                "--name", "pay_card")
+    spent = _sim(test_data_dir, "retire_alice", "add", "2027-01", "Asset_Checking", "Expense_Living", "",
+                 "--name", "spend")
+
+    assert owed.exit_code == 0, owed.output
+    row = _rule(scheduled(), "pay_card")
+    assert (row["amount_rule_kind"], row["amount"], row["to_account"]) == ("fixed_amount", "", credit_card)
+    assert spent.exit_code != 0 and "rule kind fixed_amount needs an AMOUNT" in spent.output
+
+
+def test_add_asks_for_a_payment_s_amount_and_takes_a_blank_answer_as_what_is_owed(
+    test_data_dir: Path, scheduled: Callable[[], pd.DataFrame], credit_card: str,
+) -> None:
+    result = _sim(test_data_dir, "retire_alice", "add", "2027-01", "Asset_Checking", credit_card,
+                  "--name", "pay_card", answers=[""])
+
+    assert result.exit_code == 0, result.output
+    assert "blank to pay what is owed" in result.output
+    assert _rule(scheduled(), "pay_card")["amount"] == ""
+
+
+def test_add_writes_a_card_interest_rule_and_refuses_it_a_priority(
+    test_data_dir: Path, scheduled: Callable[[], pd.DataFrame], credit_card: str,
+) -> None:
+    args = ("add", "2027-01", credit_card, "Expense_Interest_Card", "--kind", "card_interest",
+            "--rate", "24%", "--name", "card_interest")
+    refused = _sim(test_data_dir, "retire_alice", *args, "--priority", "150")
+    result = _sim(test_data_dir, "retire_alice", *args)
+
+    assert refused.exit_code != 0
+    assert "a card_interest rule takes no --priority: it follows the month's payments" in refused.output
+    assert result.exit_code == 0, result.output
+    row = _rule(scheduled(), "card_interest")
+    assert (row["amount_rule_kind"], row["rate"], row["amount"], row["priority"], row["cadence"],
+            row["tax_character"]) == ("card_interest", "24%", "", "", "monthly", "none")

@@ -18,7 +18,7 @@ from typing import Literal
 
 import pandas as pd
 
-from analysis.sim.imports.forms import Flows
+from analysis.sim.imports.forms import ORIGIN, Flows
 from analysis.sim.registries import SCHEDULED_CSV_HEADER
 
 # Excluded for every household: Amazon rows are replaced by the Amazon
@@ -27,6 +27,9 @@ from analysis.sim.registries import SCHEDULED_CSV_HEADER
 _ALWAYS_EXCLUDED_PAYEE_PATTERNS = ("amazon", "mortgage")
 _EXCLUDED_CATEGORY_RE = re.compile(r"mortgage", re.IGNORECASE)
 BASELINE_GENERATED_TAG = "generated:expense_baseline"
+CARD_PAYMENT_TAG = "generated:card_payment"
+"""On the rule an import writes to pay a card it charged spending to (#641).
+It is written once and then the household's: no rerun replaces it."""
 INCOME_GENERATED_TAG = "generated:income_baseline"
 """On the income rules a budget's import writes: a rerun that uses the
 budget's income replaces them, and nothing else does."""
@@ -38,6 +41,11 @@ type ExpenseAccountName = str
 type AccountName = str
 type CategoryCanonicalization = Mapping[SourceCategory, CanonicalCategory]
 type OutsideAccount = str
+type Payer = tuple[AccountName, str]
+"""A scenario account that pays generated rules, and its lot (blank for its only one)."""
+type Cards = Mapping[tuple[str, OutsideAccount], Payer]
+"""The outside accounts that are credit cards of the scenario (#641), each
+by its source and its name there: what they paid is charged to the card."""
 type CategoryAccountMap = Mapping[CanonicalCategory, ExpenseAccountName]
 # Per canonical category: outside account -> replacement category. The ``""``
 # account is the category's default, for rows no named account claims.
@@ -238,6 +246,8 @@ class Occasional:
 
     sources: tuple[str, ...] = ()
     """The sources its transactions were read from, where they say."""
+    accounts: tuple[tuple[str, OutsideAccount], ...] = ()
+    """The outside accounts that paid it, each with its source."""
     elsewhere: bool = False
     """Whether the payee is paid in other categories too: leaving the
     payee out would then drop more than these payments."""
@@ -286,7 +296,8 @@ def occasional_payments(
         "at": (months.dt.year - first.year) * 12 + months.dt.month - first.month,
         "cents": -used["amount_cents"],
         # Rows read by `sim import` say which source each came from.
-        "origin": used["origin"] if "origin" in used.columns else "",
+        "origin": used[ORIGIN] if ORIGIN in used.columns else "",
+        "account": used["account"] if "account" in used.columns else "",
     })
     keyed = keyed[keyed["key"].ne("")]
     in_categories = keyed.groupby("key")["category"].nunique()
@@ -295,6 +306,9 @@ def occasional_payments(
     large = by_month.groupby(["category", "key"])["cents"].transform("sum") * 365 >= least_cents * days
     origins = keyed.groupby(["category", "key"])["origin"].agg(
         lambda each: tuple(sorted({str(origin) for origin in each if origin})))
+    paid_by = keyed.groupby(["category", "key"])[["origin", "account"]].apply(
+        lambda each: tuple(sorted(set(zip(each["origin"].astype(str), each["account"].astype(str),
+                                          strict=True)))))
     found: list[Occasional] = []
     for (category, key), rows in by_month[large].groupby(["category", "key"], sort=True):
         at = [int(each) for each in rows["at"]]
@@ -311,8 +325,30 @@ def occasional_payments(
             tuple((date(first.year + (first.month - 1 + each) // 12, (first.month - 1 + each) % 12 + 1, 1),
                    int(cents)) for each, cents in zip(at, rows["cents"], strict=True)),
             repeats,
-            sources=origins[(category, key)], elsewhere=int(in_categories[key]) > 1))
+            sources=origins[(category, key)], accounts=paid_by[(category, key)],
+            elsewhere=int(in_categories[key]) > 1))
     return sorted(found, key=lambda each: (-each.total_cents, each.category, each.payee))
+
+
+def card_spending(baseline: BaselineResult, cards: Cards) -> dict[CanonicalCategory, dict[Payer, int]]:
+    """The cents of each category that each card of ``cards`` paid (#641).
+    What no card paid, Amazon's summaries among it, is not here: it is the
+    rest of the category's total."""
+    used = baseline.transactions
+    found: dict[CanonicalCategory, dict[Payer, int]] = {}
+    if not cards or used.empty or ORIGIN not in used.columns:
+        return found
+    for origin, account, category, cents in zip(
+            used[ORIGIN], used["account"], used["category"], used["amount_cents"], strict=True):
+        if (card := cards.get((str(origin), str(account)))) is not None:
+            by_card = found.setdefault(str(category), {})
+            by_card[card] = by_card.get(card, 0) - int(cents)
+    return found
+
+
+def payer_slug(payer: Payer) -> str:
+    """``payer`` as part of a rule's name."""
+    return category_slug("_".join(filter(None, payer)))
 
 
 def build_scheduled_baseline_rows(
@@ -326,9 +362,13 @@ def build_scheduled_baseline_rows(
     series: str = "cpi",
     priority: int = 200,
     provenance: Mapping[str, str] | None = None,
+    cards: Cards | None = None,
 ) -> list[dict[str, str]]:
     """Create monthly fixed-amount scheduled rows from baseline category totals.
 
+    What a card of ``cards`` paid of a category is a rule of its own, from
+    the card and named for it after ``__``; the rest of the category is paid
+    from ``from_account``, and has no rule when the cards paid it all.
     ``provenance`` (the source, a hash of its files) is recorded in each
     row's ``meta_json``."""
     if baseline.monthly.empty:
@@ -336,6 +376,7 @@ def build_scheduled_baseline_rows(
     observed_months = baseline.observed_months
     rows: list[dict[str, str]] = []
     ignored = set(ignored_categories)
+    charged = card_spending(baseline, cards or {})
     for record in baseline.category_totals.to_dict("records"):
         category = str(record["category"])
         if category in ignored:
@@ -343,12 +384,33 @@ def build_scheduled_baseline_rows(
         to_account = account_map.get(category)
         if to_account is None:
             raise ValueError(f"no scheduled account mapping for category {category!r}")
-        amount = round(float(record["amount_total"]) / observed_months, 2)
-        rows.append(generated_row(
-            f"baseline_expense_{category_slug(category)}", category, f"{amount:.2f}",
-            from_account=from_account, from_lot=from_lot, to_account=to_account, start=start,
-            series=series, priority=priority, provenance=provenance))
+        by_card = charged.get(category, {})
+        name = f"baseline_expense_{category_slug(category)}"
+        rest = round(float(record["amount_total"]) * 100) - sum(by_card.values())
+        parts = [(name, (from_account, from_lot), rest)] if rest > 0 or not by_card else []
+        parts += [(f"{name}__{payer_slug(card)}", card, cents) for card, cents in sorted(by_card.items())]
+        for rule, (payer, lot), cents in parts:
+            rows.append(generated_row(
+                rule, category, f"{round(cents / observed_months) / 100:.2f}",
+                from_account=payer, from_lot=lot, to_account=to_account, start=start,
+                series=series, priority=priority, provenance=provenance))
     return rows
+
+
+def card_payment_row(
+    card: Payer, *, from_account: AccountName, from_lot: str = "", start: str,
+) -> dict[str, str]:
+    """The rule that pays ``card`` each month what it was owed when the
+    month opened (a blank amount, ADR-003 §2.1): in full, so the card carries
+    no balance until the household says otherwise."""
+    row = generated_row(
+        f"card_payment_{payer_slug(card)}", "", "", from_account=from_account, from_lot=from_lot,
+        to_account=card[0], to_lot=card[1], start=start, series="")
+    return {
+        **row, "base_date": "", "description": f"Generated card payment: {card[0]} in full",
+        "meta_json": json.dumps({"generated_by": "card_payment"}, separators=(",", ":")),
+        "tags": CARD_PAYMENT_TAG,
+    }
 
 
 def category_slug(category: str) -> str:

@@ -333,8 +333,8 @@ The baseline importer combines canonicalized Quicken expenses with Amazon
 monthly summaries and replaces only rows it previously generated:
 
 ```sh
-sim import transactions --from-account Asset_Checking --dry-run
-sim import transactions --from-account Asset_Checking
+sim import transactions --from Asset_Checking --dry-run
+sim import transactions --from Asset_Checking
 ```
 
 The dry run lists each generated rule's amount before and after, and whether
@@ -363,7 +363,7 @@ none of them live in the code:
   already matches a scenario expense account, no row is needed. At a terminal
   a category with no account is asked for and the answer saved; otherwise it
   is warned about and skipped. Supply the funding account explicitly with
-  `--from-account`.
+  `--from`.
 - `imports/quicken/splits.csv`, columns
   `category,outside_account,target_category` (optional): splits one category
   by the Quicken account that paid. A row with a blank `outside_account` is

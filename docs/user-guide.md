@@ -598,6 +598,16 @@ Every account is really a set of **lots**. Lots can differ in symbol, purchase
 date, and cost basis. An account you have not split has one lot, named
 `default`.
 
+**Several accounts at one institution are best kept as lots of one
+account.** Two checking accounts and a savings account at one bank, with the
+same owner, can be one `Asset_Bank` account with three lots. The account
+list stays short, reports and charts show the institution's total, and a lot
+drill-down still shows each one. Keep separate accounts where the owner or
+the kind of account differs: cash and retirement money at the same
+institution are two accounts, since an account has one owner and one
+subkind. The imports map each outside account to its lot
+([Importing data](guides/importing-data.md)).
+
 ```mermaid
 flowchart LR
     subgraph acct["Asset_Brokerage_Joint"]
