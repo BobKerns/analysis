@@ -512,7 +512,7 @@ def breakeven_month(series: pd.Series) -> datetime | None:
         return series.index[0]
     if not ahead.any():
         return None
-    after_last_deficit = series.index[series.index > series[~ahead].index.max()]
+    after_last_deficit = series.loc[series.index > series[~ahead].index.max()].index
     return after_last_deficit.min() if len(after_last_deficit) else None
 
 

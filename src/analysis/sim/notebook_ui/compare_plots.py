@@ -170,11 +170,11 @@ def _show_strategy_differences(
         display(StyledMarkdown("_All scenarios run the same strategies._"))
     else:
         display(StyledMarkdown("**Strategies** (— where a scenario doesn't run it)"))
-        display(strategies.fillna("—"))
+        display(strategies.astype(object).fillna("—"))
     targets = compare.target_differences(connections, scenarios, baseline)
     if not targets.empty:
         display(StyledMarkdown("**Target weights** (percent)"))
-        display(targets.fillna("—"))
+        display(targets.astype(object).fillna("—"))
 
 
 def strategy_compare_widget(

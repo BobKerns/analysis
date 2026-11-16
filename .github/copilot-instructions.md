@@ -155,10 +155,11 @@ Run a single test with `.venv/bin/python -m pytest tests/test_engine.py::test_na
 
 `ty check` is clean on `main` too. Fix a type error rather than silencing it.
 Where a library hides types from ty, use the existing helper: `named_rows()`
-for `DataFrame.itertuples()` and `index_years()`/`index_months()` for a
-`DatetimeIndex`'s date fields (both in `src/analysis/frames.py`), or
-`_trait()` for a traitlets class attribute (`notebook_ui/pickers.py`). A
-narrow `# ty: ignore[<rule>]` with a reason is the last resort.
+for `DataFrame.itertuples()` (`src/analysis/frames.py`), or `_trait()` for a
+traitlets class attribute (`notebook_ui/pickers.py`). A narrow
+`# ty: ignore[<rule>]` with a reason is the last resort. To read a frame's
+years or months from its `DatetimeIndex`, use `index_years()`/`index_months()`
+(also in `frames.py`).
 
 ## Conventions
 
