@@ -11,9 +11,9 @@ from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
 
-from analysis.sim.imports.forms import Holding, Snapshot
+from analysis.sim.imports.forms import UNLISTED, Holding, Snapshot
 from analysis.sim.imports.mapping import AccountMap, AccountTarget
-from analysis.sim.registries import DEFAULT_LOT, RETIREMENT_LOT_SUBKINDS
+from analysis.sim.registries import CASH_SYMBOL, DEFAULT_LOT, RETIREMENT_LOT_SUBKINDS
 from analysis.sim.types import INVESTMENT_ASSET_SUBKINDS, InvestmentAssetSubkind
 from analysis.sim.units import dollars_to_cents
 
@@ -145,6 +145,11 @@ def plan(
     ``undecided``, since the holdings may be meant to add up into that lot;
     ``split`` names the accounts where that was decided against, so theirs
     are ``new``. A holding with no symbol goes to the account's only lot.
+    An account's cash or borrowing beside its symbols (``forms.UNLISTED``)
+    goes to the account's cash lot (the symbol ``CASH``), else to its lot
+    with no symbol, and never into a fund's: with neither it is ``new``,
+    or passed over when it is nothing. The one lot of a ``split`` account
+    is not such a lot: it is being emptied into the new ones.
 
     **What is set.** A lot kept in shares (a quantity and a symbol, and no
     balance) has its ``quantity`` set; any other lot its balance, and its
@@ -173,11 +178,15 @@ def plan(
     holds, so a lot of that account it doesn't mention may have been sold.
     Such a lot keeps what it holds, with a warning, unless ``prune``: then
     its balance, shares and basis are set to zero. The one lot of a ``split``
-    account is emptied either way, since the lots made from it hold its total. Its prior-year balance
+    account is emptied either way, since the lots made from it hold its total;
+    its basis stays where the file has none for them, since the account's
+    is still that, and is noted to be shared out. Its prior-year balance
     stays, since it held that on December 31 whatever became of it since, and
     the lots made from it start theirs at zero, so the account's isn't counted
     twice. An account that an outside account the file doesn't have is mapped
-    to as well is left out of this: the file doesn't say all it holds.
+    to as well is left out of this: the file doesn't say all it holds. A
+    source may say which accounts it lists in full (``Snapshot.complete``):
+    those are taken so though the file has only their cash, or nothing.
 
     A Roth lot's basis is what was contributed to the account, not what a
     fund cost, so when such a lot is emptied its basis moves to the account's
@@ -193,9 +202,15 @@ def plan(
     landed: dict[int, _Landed] = {}
     # The lots a holding was matched to by symbol, landed or not: the file has them.
     in_file: set[int] = set()
+    # The accounts the source says it lists in full.
+    full: set[str] = set()
     # Roth lots: those filled while they have no basis, and those emptied.
     no_basis: list[int] = []
     emptied: list[int] = []
+    # Each taxable account's new lots that the file gives no cost basis.
+    untracked: dict[str, list[str]] = {}
+    # The accounts the file has a basis for, of something that isn't cash.
+    based: set[str] = set()
     for holding in snapshot.holdings:
         target = account_map.lookup(holding.account, holding.asset)
         if target is None:
@@ -212,6 +227,14 @@ def plan(
             result.ineligible.append(target.account)
             continue
         of_account = [i for i, row in enumerate(result.rows) if row.get("account_name") == target.account]
+        if holding.account in snapshot.complete:
+            full.add(target.account)
+        if holding.cost_basis_cents is not None and holding.asset not in UNLISTED:
+            based.add(target.account)
+        if holding.asset and holding.asset not in UNLISTED:
+            # The file has the symbol's lot, wherever the mapping sends the holding.
+            in_file.update(i for i in of_account
+                           if result.rows[i].get("symbol", "").strip().upper() == holding.asset.upper())
         by_symbol = False
         if target.lot:
             # The default lot is a blank cell, whichever way the map spells it.
@@ -220,11 +243,23 @@ def plan(
             if not indexes:
                 result.no_lot.append((holding, target))
                 continue
+        elif holding.asset in UNLISTED:
+            symbols = [result.rows[i].get("symbol", "").strip().upper() for i in of_account]
+            # The bare lot of a split account is being emptied: cash landed
+            # there would keep the account's basis and prior-year balance on
+            # it, beside the new lots'.
+            indexes = [i for i, symbol in zip(of_account, symbols, strict=True) if symbol == CASH_SYMBOL] \
+                or [i for i, symbol in zip(of_account, symbols, strict=True)
+                    if not symbol and target.account not in split]
+            if not indexes:
+                # Nothing, with nowhere to put it, needs no lot.
+                if holding.value_cents:
+                    result.new.append((holding, target))
+                continue
         elif holding.asset:
             indexes = [i for i in of_account
                        if result.rows[i].get("symbol", "").strip().upper() == holding.asset.upper()]
             by_symbol = True
-            in_file.update(indexes)
             if not indexes:
                 alone = len(of_account) == 1 and not result.rows[of_account[0]].get("symbol", "").strip()
                 undecided = alone and target.account not in split
@@ -330,12 +365,16 @@ def plan(
                                same=_cents(row.get("opening_balance", "")) == cents,
                                note="new lot" if index in fresh else "")
             # The one subkind whose lots keep a cost basis an import can set.
-            if into.basis_cents is not None and subkind == InvestmentAssetSubkind.BROKERAGE_TAXABLE:
+            if into.basis_cents is not None and into.basis_cents >= 0 \
+                    and subkind == InvestmentAssetSubkind.BROKERAGE_TAXABLE:
                 changed |= put("opening_cost_basis", format_dollars(into.basis_cents),
                                same=_cents(row.get("opening_cost_basis", "")) == into.basis_cents)
             if RETIREMENT_LOT_SUBKINDS.get(row.get("subkind", "")) == "tax_free" \
                     and not row.get("opening_cost_basis", "").strip():
                 no_basis.append(index)
+            if index in fresh and subkind == InvestmentAssetSubkind.BROKERAGE_TAXABLE \
+                    and not (row | cells).get("opening_cost_basis", "").strip():
+                untracked.setdefault(name, []).append(lot or DEFAULT_LOT)
         result.lots_changed += changed
         result.lots_unchanged += not changed
         if not year_end and is_investment_asset(kind, subkind) and whole \
@@ -353,7 +392,7 @@ def plan(
     # A file that lists an account's holdings one by one says what the
     # account holds: a lot it doesn't mention may have been sold.
     listed = {result.rows[index]["account_name"] for index, into in landed.items() if into.by_symbol}
-    listed |= {target.account for _, target in result.new}
+    listed |= {target.account for _, target in result.new} | full
     # An account that another outside account fills too, one this file
     # doesn't have: the file then doesn't say all that the account holds.
     present = {holding.account for holding in snapshot.holdings}
@@ -377,8 +416,12 @@ def plan(
             # A basis only where an import sets one: a Roth lot's is what was
             # contributed, which selling a fund inside the account doesn't undo.
             taxable = accounts[row["account_name"]][1] == InvestmentAssetSubkind.BROKERAGE_TAXABLE
+            # Not the basis of a lot split into ones the file gives none: it
+            # is the account's still, and zeroed would be lost.
+            carried = split_out and row["account_name"] not in based
             cells |= {column: zero for column, zero in (("quantity", "0"), ("opening_cost_basis", "0.00"))
-                      if row.get(column, "").strip() and (taxable or column == "quantity")}
+                      if row.get(column, "").strip()
+                      and (column == "quantity" or (taxable and not carried))}
             cells = {column: zero for column, zero in cells.items()
                      if _number(row.get(column, "")) != 0}
             result.changes.extend(
@@ -439,6 +482,17 @@ def plan(
     result.notes.extend(
         roth_basis_note(result.rows[index]["account_name"], result.rows[index].get("lot", ""))
         for index in no_basis if not result.rows[index].get("opening_cost_basis", "").strip())
+    for account, without in untracked.items():
+        held = next((f", and lot {_lot_name(row)!r}, now empty, keeps the account's basis of "
+                     f"{row['opening_cost_basis']} to share among them"
+                     for row in result.rows
+                     if row.get("account_name") == account and account in split and account not in based
+                     and not row.get("symbol", "").strip() and (_cents(row.get("opening_cost_basis", "")) or 0) > 0),
+                    "")
+        result.notes.append(
+            f"the {snapshot.source} file has no cost basis for {account}'s new lot(s) {', '.join(without)}{held}. "
+            "A run stops at the first withdrawal from a taxable lot with none: set each with "
+            f"'sim account lot edit {account} LOT --opening-cost-basis AMOUNT'")
     if prune:
         result.warnings.extend(
             f"{account} also takes {snapshot.source} account(s) "

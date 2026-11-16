@@ -11,19 +11,24 @@ import re
 import sys
 from collections.abc import Callable, Collection, Mapping
 from datetime import date
+from decimal import Decimal
 from pathlib import Path
 
+import pandas as pd
 import pytest
 from click.testing import CliRunner, Result
 
 from analysis.cli import main
 from analysis.expenses.baseline import Occasional
 from analysis.sim import cli
+from analysis.sim.imports import ofx as import_ofx
+from analysis.sim.imports import sources as import_sources
 from analysis.sim.imports import mapping as import_mapping
 from analysis.sim.imports import yearly as import_yearly
 
 
 MapWriter = Callable[[str, str], Path]
+Rewrite = Callable[..., Path]
 
 
 def _import(data: Path, *args: str, input: str | None = None,  # noqa: A002
@@ -2554,3 +2559,776 @@ def test_yearly_script_pays_a_payee_from_the_card_all_of_it_was_charged_to() -> 
         start="2028-01", from_account="Asset_Checking", expense_accounts={}, accounts=["Insurance"],
         source="bank", cards=cards)
     assert waiting.rstrip().endswith("\n# pay_card card_payment_liability_card Liability_Card")
+
+
+# ---------- OFX and QFX (#618) ----------
+
+_OFX_PAYEES = ("corner market,Food\ncity power,Utilities\ntransfer to savings,transfer\n"
+               "online payment,transfer\n")
+
+
+def test_sim_import_sources_recognizes_an_ofx_file_by_its_content(
+    test_data_dir: Path, ofx_bank_download: Path, ofx_card_download: Path, rewrite_download: Rewrite,
+) -> None:
+    renamed = rewrite_download(ofx_card_download, lambda raw: raw, name="download.txt")
+
+    result = CliRunner().invoke(main, ["sim", "import", "sources", str(ofx_bank_download), str(renamed),
+                                       "--data-dir", str(test_data_dir)])
+
+    assert result.exit_code == 0, result.output
+    assert result.output.count("ofx holdings, ofx transactions") == 2
+
+
+def test_ofx_reads_both_versions_and_keeps_the_institution_s_own_day(
+    ofx_bank_download: Path, ofx_card_download: Path,
+) -> None:
+    bank = import_ofx.read_transactions(ofx_bank_download).transactions
+    card = import_ofx.read_transactions(ofx_card_download).transactions
+
+    # The account's whole number stays out: the institution, a bank account's type and the
+    # last four digits.
+    assert set(bank["account"]) == {"First Example Bank checking ...4321"}
+    assert set(card["account"]) == {"Example Card card ...1007"}
+    # 9 p.m. Pacific on the 2nd is the 3rd in UTC; the bank's day is kept.
+    assert [f"{day:%Y-%m-%d}" for day in bank["date"]][:2] == ["2026-01-02", "2026-01-15"]
+    assert list(bank["amount_cents"]) == [-15000, 500000, -40000, -15000, -100000, -20000]
+    assert list(bank["reference"])[0] == "B0001" and not bank["category"].any()
+    assert list(card["payee"]) == ["CORNER MARKET #204 OAKLAND CA", "ONLINE PAYMENT - THANK YOU"]
+
+
+def test_ofx_refuses_a_file_it_cannot_read(ofx_bank_download: Path, rewrite_download: Rewrite) -> None:
+    bad = rewrite_download(ofx_bank_download, lambda raw: raw.replace(b"20260102210000.000[-8:PST]", b"soon"))
+    with pytest.raises(ValueError, match="DTPOSTED 'soon' is not a date"):
+        import_ofx.read_transactions(bad)
+
+    # A header and no account's statement: refused, with the file named.
+    bad = rewrite_download(ofx_bank_download, lambda _: b"OFXHEADER:100\nDATA:OFXSGML\n\n<OFX>\n</OFX>\n",
+                           name="bad.qfx")
+    assert import_ofx.is_ofx(bad)
+    with pytest.raises(ValueError, match=r"bad\.qfx: not an OFX file that can be read"):
+        import_ofx.read_holdings(bad)
+    # And one whose markup the library refuses, with its header or without.
+    bad = rewrite_download(ofx_bank_download, lambda raw: raw.replace(b"</STMTRS>", b"</STMTRS>stray"))
+    with pytest.raises(ValueError, match="not an OFX file that can be read: text follows a closing tag, at"):
+        import_ofx.read_transactions(bad)
+    # A statement whose own group is left unclosed gives no account number: every such
+    # account would have one name.
+    bad = rewrite_download(ofx_bank_download, lambda raw: raw.replace(b"</BANKACCTFROM>\n", b""))
+    for read in (import_ofx.read_transactions, import_ofx.read_holdings):
+        with pytest.raises(ValueError, match="a statement doesn't say which account it is"):
+            read(bad)
+    # A download cut off, in a transaction or after the last one, with its header or without.
+    for cut in (b"<FITID>B0004", b"</BANKTRANLIST>"):
+        for start in (b"OFXHEADER", b"<OFX>"):
+            short = rewrite_download(ofx_bank_download, lambda raw, cut=cut, start=start:
+                                     raw[raw.index(start):raw.index(cut)])
+            for read in (import_ofx.read_transactions, import_ofx.read_holdings):
+                with pytest.raises(ValueError, match="it stops before its end"):
+                    read(short)
+
+
+def test_ofx_keeps_a_refused_file_s_text_out_of_its_message(
+    ofx_card_download: Path, rewrite_download: Rewrite,
+) -> None:
+    """The library's own message for text after a closing tag has the whole file in it."""
+    bad = rewrite_download(ofx_card_download, lambda raw: raw.replace(
+        b"<NAME>CORNER MARKET #204 OAKLAND CA</NAME>", b"<NAME>CORNER MARKET</NAME>#204 OAKLAND CA"))
+
+    with pytest.raises(ValueError, match="text follows a closing tag") as refused:
+        import_ofx.read_transactions(bad)
+
+    assert "370000000001007" not in str(refused.value) and "OAKLAND" not in str(refused.value)
+    assert len(str(refused.value)) < len(str(bad)) + 100
+
+
+def test_ofx_reads_files_whose_wrapping_is_not_as_the_specification_has_it(
+    ofx_bank_download: Path, ofx_card_download: Path, rewrite_download: Rewrite,
+) -> None:
+    expected = list(import_ofx.read_transactions(ofx_bank_download).transactions["amount_cents"])
+
+    # No header at all: recognized by its <OFX> tag, and read from it.
+    bare = rewrite_download(ofx_bank_download, lambda raw: raw[raw.index(b"<OFX>"):])
+    assert import_ofx.is_ofx(bare)
+    assert list(import_ofx.read_transactions(bare).transactions["amount_cents"]) == expected
+
+    # An OFX 2 file that starts with a byte-order mark.
+    marked = rewrite_download(ofx_card_download, lambda raw: b"\xef\xbb\xbf" + raw)
+    assert import_ofx.is_ofx(marked)
+    assert len(import_ofx.read_transactions(marked).transactions) == 2
+
+    # A payee in the bank's own code page under a header that doesn't say so.
+    accented = rewrite_download(ofx_bank_download, lambda raw: raw.replace(b"CHARSET:1252", b"CHARSET:NONE")
+                                .replace(b"CORNER MARKET", b"CAF\xc9 MARKET"))
+    assert list(import_ofx.read_transactions(accented).transactions["payee"])[2] == "CAFÉ MARKET #204 OAKLAND CA"
+
+    # The other way round: UTF-8 under a header that names a code page, in a payee and in
+    # the institution's name, which names the account.
+    utf8 = rewrite_download(ofx_bank_download, lambda raw: raw.replace(b"CORNER MARKET", "CAFÉ MARKET".encode())
+                            .replace(b"First Example Bank", "Café Bank".encode()))
+    frame = import_ofx.read_transactions(utf8).transactions
+    assert list(frame["payee"])[2] == "CAFÉ MARKET #204 OAKLAND CA"
+    assert set(frame["account"]) == {"Café Bank checking ...4321"}
+
+    # The institution's group left unclosed: its name is beside it, and still the account's.
+    unclosed = rewrite_download(ofx_bank_download, lambda raw: raw.replace(b"</FI>\n", b""))
+    assert set(import_ofx.read_transactions(unclosed).transactions["account"]) == {
+        "First Example Bank checking ...4321"}
+
+    # An OFX 2 body on one line with its payees as CDATA: each value ends at its own end.
+    def one_line(raw: bytes) -> bytes:
+        raw = raw.replace(b"<NAME>", b"<NAME><![CDATA[").replace(b"</NAME>", b"]]></NAME>")
+        return raw[:raw.index(b"<OFX>")] + raw[raw.index(b"<OFX>"):].replace(b"\n", b"")
+    lined = import_ofx.read_transactions(rewrite_download(ofx_card_download, one_line)).transactions
+    assert list(lined["payee"]) == ["CORNER MARKET #204 OAKLAND CA", "ONLINE PAYMENT - THANK YOU"]
+
+    # A space inside a tag, as XML allows: the same tag, which its closing tag closes.
+    spaced = rewrite_download(ofx_card_download, lambda raw: raw.replace(b"<STMTTRN>", b"<STMTTRN >")
+                              .replace(b"</OFX>", b"</OFX >"))
+    assert len(import_ofx.read_transactions(spaced).transactions) == 2
+
+    # An empty NAME before the payee's own group: the name that says something.
+    grouped = rewrite_download(ofx_card_download, lambda raw: raw.replace(
+        b"<NAME>CORNER MARKET #204 OAKLAND CA</NAME>",
+        b"<NAME></NAME><PAYEE><NAME>CORNER MARKET</NAME><CITY>OAKLAND</CITY></PAYEE>"))
+    assert list(import_ofx.read_transactions(grouped).transactions["payee"])[0] == "CORNER MARKET"
+
+    # &amp; is the character it stands for, in a payee and in the institution's name.
+    escaped = rewrite_download(ofx_bank_download, lambda raw: raw.replace(b"CORNER MARKET", b"A &amp; B MARKET")
+                               .replace(b"First Example Bank", b"Alice &amp; Bill&apos;s Bank"))
+    frame = import_ofx.read_transactions(escaped).transactions
+    assert list(frame["payee"])[2] == "A & B MARKET #204 OAKLAND CA"
+    assert set(frame["account"]) == {"Alice & Bill's Bank checking ...4321"}
+    # However it is escaped: by number too, so one payees.csv row matches every bank's.
+    numbered = rewrite_download(ofx_bank_download,
+                                lambda raw: raw.replace(b"CORNER MARKET", b"A &#38; B&#x26;C MARKET"))
+    assert list(import_ofx.read_transactions(numbered).transactions["payee"])[2] == "A & B&C MARKET #204 OAKLAND CA"
+    # A bare & is itself, though HTML's old references need no ';' (&COPY, &LT, &REG).
+    bare = rewrite_download(ofx_bank_download, lambda raw: raw.replace(b"CORNER MARKET", b"QUICK&COPY S&LT B&REGAL"))
+    assert list(import_ofx.read_transactions(bare).transactions["payee"])[2] == (
+        "QUICK&COPY S&LT B&REGAL #204 OAKLAND CA")
+
+
+def test_ofx_reads_each_transaction_s_own_fields_after_a_value_left_empty(
+    ofx_bank_download: Path, ofx_card_download: Path, ofx_bank_like_accounts_download: Path,
+    ofx_card_then_bank_download: Path, rewrite_download: Rewrite,
+) -> None:
+    """The library reads an empty value as the start of a group, so the next transaction,
+    and after enough of them the next statement, lands inside the one before it."""
+    # Two accounts' statements, each transaction ending with an empty value: each account
+    # has its own six and no more, and its own balance.
+    both = rewrite_download(ofx_bank_like_accounts_download,
+                            lambda raw: raw.replace(b"\n</STMTTRN>", b"\n<MEMO>\n</STMTTRN>"))
+    counted = import_ofx.read_transactions(both).transactions["account"].value_counts().to_dict()
+    assert counted == {"First Example Bank checking ...4321": 6, "First Example Bank savings ...4321": 6}
+    assert len(import_ofx.read_holdings(both).holdings) == 2
+    # A card's statement before a bank's keeps its own number and transactions.
+    mixed = rewrite_download(ofx_card_then_bank_download, lambda raw: raw.replace(
+        b"</NAME>\n</STMTTRN>", b"</NAME><MEMO/><SIC/></STMTTRN>"))
+    counted = import_ofx.read_transactions(mixed).transactions["account"].value_counts().to_dict()
+    assert counted == {"Example Card card ...1007": 2, "Example Card checking ...4321": 6}
+    assert [(each.account, each.hints) for each in import_ofx.read_holdings(mixed).holdings] == [
+        ("Example Card card ...1007", {"type": "creditcard"}), ("Example Card checking ...4321", {"type": "checking"})]
+
+    bank = import_ofx.read_transactions(ofx_bank_download).transactions
+    # OFX 1: an empty <MEMO> ends every transaction, and one is a check with no payee.
+    empty = rewrite_download(
+        ofx_bank_download, lambda raw: raw.replace(b"\n</STMTTRN>", b"\n<MEMO>\n</STMTTRN>")
+        .replace(b"<NAME>CORNER MARKET #204 OAKLAND CA", b"<CHECKNUM>1001", 1))
+    frame = import_ofx.read_transactions(empty).transactions
+    assert list(frame["payee"]) == [*bank["payee"][:2], "CHECK 1001", *bank["payee"][3:]]
+    assert list(frame["amount_cents"]) == list(bank["amount_cents"])
+    assert list(frame["reference"]) == list(bank["reference"])
+
+    # OFX 2: a self-closing tag, before a deletion that names an earlier download's transaction.
+    closed = rewrite_download(
+        ofx_card_download, lambda raw: raw.replace(b"</NAME>\n</STMTTRN>", b"</NAME><MEMO/></STMTTRN>")
+        .replace(b"<FITID>C0002</FITID>",
+                 b"<FITID>C0002</FITID><CORRECTFITID>OLD</CORRECTFITID><CORRECTACTION>DELETE</CORRECTACTION>"))
+    flows = import_sources.read_flows([closed]).transactions
+    assert list(zip(flows["payee"], flows["amount_cents"], strict=True)) == [
+        ("CORNER MARKET #204 OAKLAND CA", -8000)]
+
+
+def test_ofx_applies_a_correction_to_the_transaction_it_names(
+    ofx_bank_download: Path, ofx_bank_later_download: Path, rewrite_download: Rewrite,
+) -> None:
+    def left(*paths: Path) -> list[tuple[str, int]]:
+        frame = import_sources.read_flows(list(paths)).transactions
+        assert "corrects" not in frame.columns and "removes" not in frame.columns
+        return list(zip(frame["reference"], frame["amount_cents"], strict=True))
+
+    def correcting(source: Path, *pairs: tuple[str, str, str]) -> Path:
+        def change(raw: bytes) -> bytes:
+            for by, named, action in pairs:
+                raw = raw.replace(f"<FITID>{by}".encode(),
+                                  f"<FITID>{by}\n<CORRECTFITID>{named}\n<CORRECTACTION>{action}".encode())
+            return raw
+        return rewrite_download(source, change)
+
+    # The last purchase is a correction that replaces January's, and the move to savings
+    # is one that deletes the first utility payment: a deletion is no transaction itself.
+    assert left(correcting(ofx_bank_download, ("B0006", "B0003", "REPLACE"), ("B0005", "B0001", "DELETE"))) == [
+        ("B0002", 500000), ("B0004", -15000), ("B0006", -20000)]
+
+    # A correction that a later one corrects goes too: only the last word is counted.
+    assert left(correcting(ofx_bank_download, ("B0002", "B0001", "REPLACE"), ("B0003", "B0002", "REPLACE")))[:2] == [
+        ("B0003", -40000), ("B0004", -15000)]
+    assert left(correcting(ofx_bank_download, ("B0002", "B0001", "REPLACE"), ("B0003", "B0002", "DELETE")))[0] == (
+        "B0004", -15000)
+    # One that names its own reference (the id reused) is not its own original.
+    assert left(correcting(ofx_bank_download, ("B0001", "B0001", "REPLACE")))[0] == ("B0001", -15000)
+
+    # What it corrects may be in an earlier download: March's purchase replaces January's.
+    assert left(ofx_bank_download, correcting(ofx_bank_later_download, ("B0007", "B0003", "REPLACE"))) == [
+        ("B0001", -15000), ("B0002", 500000), ("B0004", -15000), ("B0005", -100000), ("B0006", -20000),
+        ("B0007", -9000)]
+
+    # A correction that reuses its original's reference, in a later download: it is not
+    # that download's copy of the original.
+    alone = rewrite_download(ofx_bank_later_download, lambda raw: raw.replace(b"B0007", b"B0003"))
+    assert ("B0003", -40000) not in left(ofx_bank_download, correcting(alone, ("B0003", "B0003", "DELETE")))
+    replaced = left(ofx_bank_download, correcting(alone, ("B0003", "B0003", "REPLACE")))
+    assert [amount for reference, amount in replaced if reference == "B0003"] == [-9000]
+    # And the same correction in two downloads is counted once.
+    twice = correcting(alone, ("B0003", "B0003", "REPLACE"))
+    assert left(ofx_bank_download, twice, rewrite_download(twice, lambda raw: raw)) == replaced
+
+
+def test_ofx_tells_apart_accounts_that_end_alike(
+    ofx_bank_download: Path, ofx_bank_like_accounts_download: Path, ofx_bank_twin_accounts_download: Path,
+    ofx_card_then_bank_download: Path, rewrite_download: Rewrite,
+) -> None:
+    # A savings account ending as the checking account does, with the bank's same short ids.
+    frame = import_ofx.read_transactions(ofx_bank_like_accounts_download).transactions
+    assert list(dict.fromkeys(frame["account"])) == [
+        "First Example Bank checking ...4321", "First Example Bank savings ...4321"]
+    # Numbered through the whole file, not from 1 again for each account.
+    assert list(frame["source_row"]) == list(range(1, 13))
+    assert [each.account for each in import_ofx.read_holdings(ofx_bank_like_accounts_download).holdings] == [
+        "First Example Bank checking ...4321", "First Example Bank savings ...4321"]
+
+    # In the file's order, whichever kind of statement comes first.
+    mixed = import_ofx.read_transactions(ofx_card_then_bank_download).transactions
+    assert list(dict.fromkeys(mixed["account"])) == ["Example Card card ...1007", "Example Card checking ...4321"]
+    assert list(mixed["source_row"]) == list(range(1, 9))
+
+    # Many banks' files don't name the bank: its routing number keeps two banks' apart.
+    unnamed = rewrite_download(
+        ofx_bank_download, lambda raw: raw.replace(b"<FI>\n<ORG>First Example Bank\n<FID>1234\n</FI>\n", b""))
+    assert set(import_ofx.read_transactions(unnamed).transactions["account"]) == {"121000000 checking ...4321"}
+
+    # Two that nothing but the hidden digits tells apart are not read as one account,
+    # and one account's two statements are not counted twice.
+    twice = rewrite_download(ofx_bank_like_accounts_download,
+                             lambda raw: raw.replace(b"000555554321", b"000987654321").replace(b"SAVINGS", b"CHECKING"))
+    for read in (import_ofx.read_transactions, import_ofx.read_holdings):
+        with pytest.raises(ValueError, match="two of its accounts would both be 'First Example Bank checking"):
+            read(ofx_bank_twin_accounts_download)
+        with pytest.raises(ValueError, match="more than one statement of 'First Example Bank checking"):
+            read(twice)
+
+
+def test_sim_import_transactions_notes_one_ofx_account_under_two_names(
+    test_data_dir: Path, ofx_bank_download: Path, ofx_bank_later_download: Path, rewrite_download: Rewrite,
+    write_import_map: MapWriter,
+) -> None:
+    """A bank's other kind of download doesn't name the bank, so the account gets another
+    name, and February, in both, is neither refused nor counted once."""
+    write_import_map("expense_accounts.csv", "Food,Expense_Living\nUtilities,Expense_Housing\n")
+    write_import_map("ofx/payees.csv", _OFX_PAYEES)
+    unnamed = rewrite_download(
+        ofx_bank_later_download,
+        lambda raw: raw.replace(b"<FI>\n<ORG>First Example Bank\n<FID>1234\n</FI>\n", b""))
+
+    result = _transactions(test_data_dir, ofx_bank_download, str(unnamed))
+
+    assert result.exit_code == 0, result.output
+    assert ("note: 3 transaction(s) of '121000000 checking ...4321' and of 'First Example Bank checking ...4321' "
+            "(ofx) have the same reference, day and amount") in result.output
+    # The same account under one name has nothing to note.
+    assert not import_sources.read_flows([ofx_bank_download, ofx_bank_later_download]).notes
+
+
+def test_ofx_does_not_note_two_accounts_of_one_file_as_one(
+    ofx_bank_like_accounts_download: Path, rewrite_download: Rewrite,
+) -> None:
+    """One file's accounts are known to differ, though this bank numbers each account's
+    transactions alike; a third name is compared with both."""
+    assert not import_sources.read_flows([ofx_bank_like_accounts_download]).notes
+
+    other = rewrite_download(ofx_bank_like_accounts_download, lambda raw: raw.replace(
+        b"<FI>\n<ORG>First Example Bank\n<FID>1234\n</FI>\n", b"").replace(b"SAVINGS", b"MONEYMRKT"))
+    notes = import_sources.read_flows([ofx_bank_like_accounts_download, other]).notes
+    # Each of the first file's two names with each of the second's, and neither file's own pair.
+    assert len(notes) == 4 and all("121000000" in note and "First Example Bank" in note for note in notes)
+
+
+def test_ofx_references_that_do_not_tell_duplicates_are_noted(
+    ofx_bank_download: Path, ofx_bank_later_download: Path, rewrite_download: Rewrite,
+) -> None:
+    # A bank that numbers each download's transactions from the start again: the later
+    # download's B0004 to B0006 are other transactions than the earlier one's.
+    def renumber(raw: bytes) -> bytes:
+        for old, new in ((b"B0004", b"B0001"), (b"B0005", b"B0002"), (b"B0006", b"B0003"), (b"B0007", b"B0004")):
+            raw = raw.replace(old, new)
+        return raw
+    afresh = rewrite_download(ofx_bank_later_download, renumber)
+    flows = import_sources.read_flows([ofx_bank_download, afresh])
+    # A reference is taken at its word, so they are left out, and it is said.
+    assert (flows.duplicates, len(flows.transactions)) == (4, 6)
+    assert flows.notes == (
+        f"4 transaction(s) of 'First Example Bank checking ...4321' in {afresh} have a reference that an earlier "
+        "file gave a transaction of another day or amount; they are left out as that transaction, at the "
+        "earlier file's day and amount. If this institution numbers each download's transactions afresh, they "
+        "are other transactions and are missing: import one download that has the whole period",)
+
+    # A bank that gives a transaction a new id in each download: February is counted twice.
+    renamed = rewrite_download(ofx_bank_later_download, lambda raw: raw.replace(b"<FITID>B", b"<FITID>N"))
+    flows = import_sources.read_flows([ofx_bank_download, renamed])
+    assert (flows.duplicates, len(flows.transactions)) == (0, 10)
+    assert flows.notes == (
+        f"3 transaction(s) of 'First Example Bank checking ...4321' in {renamed} have the day and amount of ones "
+        "in an earlier file, under other references; if this institution gives a transaction a new reference "
+        "in each download, they are counted twice: import downloads that don't overlap",)
+
+
+def test_ofx_keeps_the_copies_of_a_reference_that_an_earlier_download_did_not_have(
+    ofx_bank_download: Path, rewrite_download: Rewrite,
+) -> None:
+    """Some institutions make a reference from the day, amount and payee, so two like
+    purchases of one day share it."""
+    twice = rewrite_download(
+        ofx_bank_download, lambda raw: raw.replace(b"B0006", b"B0003").replace(b"20260220", b"20260120")
+        .replace(b"-200.00", b"-400.00"), name="twice.qfx")
+    plain = import_sources.read_flows([ofx_bank_download, twice])
+    # The first download had one B0003 and the second has two: one is the same, one is new.
+    assert (plain.duplicates, list(plain.transactions["reference"]).count("B0003")) == (5, 2)
+    # Both had two: nothing is new, in either order.
+    both = import_sources.read_flows([twice, rewrite_download(twice, lambda raw: raw)])
+    assert (both.duplicates, len(both.transactions)) == (6, 6)
+
+
+def test_sim_import_holdings_keeps_an_ofx_brokerage_s_cash_in_its_cash_lot(
+    test_data_dir: Path, ofx_brokerage_download: Path, rewrite_download: Rewrite, write_import_map: MapWriter,
+) -> None:
+    write_import_map("ofx/accounts.csv", "Example Brokerage investment ...5678,,map,Asset_Brokerage_Joint,,\n")
+
+    def cash_of(amount: str, *args: str, positions: bool = True) -> dict[tuple[str, str], dict[str, str]]:
+        def change(raw: bytes) -> bytes:
+            raw = raw.replace(b"<AVAILCASH>20000.00", f"<AVAILCASH>{amount}".encode())
+            if not positions:
+                raw = raw[:raw.index(b"<INVPOSLIST>") + 12] + raw[raw.index(b"</INVPOSLIST>"):]
+            return raw
+        result = _import(test_data_dir, "holdings", str(rewrite_download(ofx_brokerage_download, change)), *args)
+        assert result.exit_code == 0, result.output
+        return _all_lots(test_data_dir)
+
+    # The account's one lot is split into a lot for each fund, and one for the cash: the
+    # cash doesn't land in the lot being emptied, which would keep the account's whole
+    # prior-year balance and basis on a lot of 750.
+    lots = cash_of("20750.00", "--new-lots")
+    cash = lots["Asset_Brokerage_Joint", "cash"]
+    assert (cash["symbol"], cash["opening_balance"], cash["opening_cost_basis"]) == ("CASH", "750.00", "750.00")
+    # The file has no basis for the funds, so the account's stays where it was to be shared out.
+    old = lots["Asset_Brokerage_Joint", "default"]
+    assert (old["opening_balance"], old["opening_cost_basis"]) == ("0.00", "200000.00")
+    assert lots["Asset_Brokerage_Joint", "vtsax"]["opening_cost_basis"] == ""
+
+    # The next download's cash goes to the cash lot, by its symbol, and not to a new one.
+    lots = cash_of("20500.00")
+    assert lots["Asset_Brokerage_Joint", "cash"]["opening_balance"] == "500.00"
+    assert ("Asset_Brokerage_Joint", "cash-2") not in lots
+    # Spent: the lot is set to nothing, and not left with what it had.
+    assert cash_of("20000.00")["Asset_Brokerage_Joint", "cash"]["opening_balance"] == "0.00"
+
+    # The funds sold, and all of it cash: the file lists the account in full though it
+    # has no position, so with --prune their lots are emptied.
+    lots = cash_of("420750.00", "--prune", positions=False)
+    assert [lots["Asset_Brokerage_Joint", lot]["opening_balance"] for lot in ("vtsax", "vmfxx", "cash")] == [
+        "0.00", "0.00", "420750.00"]
+
+
+def test_references_leave_out_the_copies_an_earlier_file_had_wherever_they_are() -> None:
+    def rows(*each: tuple[str, str, int] | tuple[str, str, int, str]) -> pd.DataFrame:
+        return pd.DataFrame({
+            "account": "Card", "reference": [row[0] for row in each],
+            "date": pd.to_datetime([row[1] for row in each]), "amount_cents": [row[2] for row in each],
+            "corrects": [row[3] if len(row) > 3 else "" for row in each]})
+
+    # An institution whose reference is the day: the later download lists another
+    # purchase of the day first. The one the earlier file had is left out, and not the first.
+    references = import_sources._References()
+    assert references.sift("bank", Path("d1"), rows(("0115", "2026-01-15", -1000))) == ([True], [])
+    assert references.sift("bank", Path("d2"), rows(("0115", "2026-01-15", -5000), ("0115", "2026-01-15", -1000))) == (
+        [True, False], [])
+
+    # A replacement that a later download lists as the transaction now is, with nothing
+    # to say it was a correction: counted once.
+    references = import_sources._References()
+    assert references.sift("bank", Path("feb1"), rows(("A1", "2026-02-01", -40000)))[0] == [True]
+    assert references.sift("bank", Path("feb2"), rows(
+        ("A1", "2026-02-01", -40000), ("B1", "2026-02-01", -4000, "A1")))[0] == [False, True]
+    assert references.sift("bank", Path("feb3"), rows(("B1", "2026-02-01", -4000))) == ([False], [])
+
+    # A reference whose day moved, and a new purchase on the old day: the purchase is not
+    # taken for the earlier file's row, which this file has (under its new day).
+    references = import_sources._References()
+    assert references.sift("bank", Path("jan"), rows(("B3", "2026-01-20", -40000)))[0] == [True]
+    fresh, notes = references.sift(
+        "bank", Path("feb"), rows(("B3", "2026-01-21", -40000), ("B99", "2026-01-20", -40000)))
+    assert fresh == [False, True]
+    assert len(notes) == 1 and "another day or amount" in notes[0]
+
+
+def test_references_leave_out_only_what_an_earlier_file_kept() -> None:
+    def rows(*each: tuple[str, str, int]) -> pd.DataFrame:
+        return pd.DataFrame({
+            "account": "Checking", "reference": [reference for reference, _, _ in each],
+            "date": pd.to_datetime([day for _, day, _ in each]), "amount_cents": [cents for _, _, cents in each]})
+
+    references = import_sources._References()
+    first = Path("first.csv")
+    assert references.sift("bank", first, rows(("A", "2026-01-10", -500), ("", "2026-01-11", -700))) == (
+        [True, True], [])
+    # Two of A where the first file had one, a row with no reference, and B on A's day
+    # and amount: the extra A is kept, and B is not taken for the first file's A.
+    assert references.sift("bank", first, rows(
+        ("A", "2026-01-10", -500), ("A", "2026-01-10", -500), ("", "2026-01-11", -700),
+        ("B", "2026-01-10", -500))) == ([False, True, True, True], [])
+    # Now both of A are known, in another source they are not, and a moved day is said.
+    assert references.sift("bank", first, rows(("A", "2026-01-10", -500), ("A", "2026-01-12", -500)))[0] == [
+        False, False]
+    assert references.sift("card", first, rows(("A", "2026-01-10", -500)))[0] == [True]
+    fresh, notes = references.sift("bank", Path("later.csv"), rows(("B", "2026-01-13", -500), ("C", "2026-01-11", -1)))
+    assert fresh == [False, True] and len(notes) == 1 and "1 transaction(s) of 'Checking' in later.csv" in notes[0]
+
+
+def test_ofx_notes_a_payee_that_may_name_no_one(ofx_bank_download: Path, rewrite_download: Rewrite) -> None:
+    """Some banks write the kind of payment as the payee and the merchant in the memo."""
+    def generic(raw: bytes) -> bytes:
+        for name in (b"CITY POWER AND WATER BILL PAY 260102", b"ALICE EMPLOYER PAYROLL 260115",
+                     b"CITY POWER AND WATER BILL PAY 260201", b"ONLINE TRANSFER TO SAVINGS REF #IB0XYZ12"):
+            raw = raw.replace(b"<NAME>" + name, b"<NAME>POS PURCHASE\n<MEMO>" + name)
+        return raw.replace(b"<NAME>CORNER MARKET #204 OAKLAND CA", b"<NAME>POS PURCHASE\n<MEMO>CORNER MARKET", 1) \
+            .replace(b"<NAME>CORNER MARKET #204 OAKLAND CA", b"<NAME>POS PURCHASE\n<MEMO>HARDWARE STORE #7")
+
+    assert not import_ofx.read_transactions(ofx_bank_download).notes
+    assert import_ofx.read_transactions(rewrite_download(ofx_bank_download, generic)).notes == (
+        "First Example Bank checking ...4321: 6 transactions have the payee 'pos purchase', with 5 different "
+        "memos; if the memo is where this institution names who was paid, a payee rule gives them all one "
+        "category",)
+
+
+def test_ofx_notes_what_is_not_in_dollars(
+    ofx_bank_download: Path, ofx_brokerage_download: Path, rewrite_download: Rewrite,
+) -> None:
+    assert not import_ofx.read_transactions(ofx_bank_download).notes
+    assert not import_ofx.read_holdings(ofx_bank_download).notes
+
+    elsewhere = rewrite_download(ofx_bank_download, lambda raw: raw.replace(b"<CURDEF>USD", b"<CURDEF>CAD"))
+    said = ("First Example Bank checking ...4321 is in CAD; its amounts are read as they are, not converted",)
+    assert import_ofx.read_transactions(elsewhere).notes == said
+    assert import_ofx.read_holdings(elsewhere).notes == said
+
+    abroad = rewrite_download(ofx_bank_download, lambda raw: raw.replace(
+        b"<FITID>B0003", b"<CURRENCY>\n<CURRATE>1.1\n<CURSYM>EUR\n</CURRENCY>\n<FITID>B0003"))
+    assert import_sources.read_flows([abroad]).notes == (
+        "First Example Bank checking ...4321 has amounts in EUR, read as they are and not converted",)
+    euros = rewrite_download(ofx_brokerage_download, lambda raw: raw.replace(
+        b"<UNITS>2500<", b"<CURRENCY><CURRATE>1.1</CURRATE><CURSYM>EUR</CURSYM></CURRENCY><UNITS>2500<"))
+    assert import_ofx.read_holdings(euros).notes == (
+        "Example Brokerage investment ...5678 has amounts in EUR, read as they are and not converted",)
+
+
+def test_ofx_reads_amounts_as_institutions_write_them(
+    ofx_bank_download: Path, ofx_brokerage_download: Path, rewrite_download: Rewrite,
+) -> None:
+    def amounts(*pairs: tuple[bytes, bytes]) -> list[int]:
+        def change(raw: bytes) -> bytes:
+            for old, new in pairs:
+                raw = raw.replace(old, new)
+            return raw
+        return list(import_ofx.read_transactions(rewrite_download(ofx_bank_download, change))
+                    .transactions["amount_cents"])
+
+    # A thousands separator (which the specification forbids), a decimal comma (which it
+    # allows), both the other way round, and no cents at all.
+    assert amounts((b"5000.00", b"5,000.00"), (b"-400.00", b"-400,00"), (b"-1000.00", b"-1.000,00"),
+                   (b"-200.00", b"-200")) == [-15000, 500000, -40000, -15000, -100000, -20000]
+    # Whole dollars with a thousands separator are thousands, not dollars and a thousandth.
+    assert amounts((b"5000.00", b"5,000"), (b"-1000.00", b"-1,500"), (b"-400.00", b"-4,5"),
+                   (b"-200.00", b"-1,234,567")) == [-15000, 500000, -450, -15000, -150000, -123456700]
+    # No digit before the separator, a sign, and points for thousands.
+    assert amounts((b"5000.00", b"+5.000.000"), (b"-1000.00", b"-,50"), (b"-400.00", b"-.5"),
+                   (b"-200.00", b"-200.")) == [-15000, 500000000, -50, -15000, -50, -20000]
+
+    # A fraction of a cent is not rounded away.
+    for amount, why in (("-200.005", "has a fraction of a cent"), ("-1,2345", "has a fraction of a cent"),
+                        # A lone point is a decimal point, and so is a comma after a leading zero.
+                        ("-1.234", "has a fraction of a cent"), ("-0,125", "has a fraction of a cent"),
+                        # Separators that are not groups of three are no number.
+                        ("-1,000,00", "is not an amount"), ("-12,34,567", "is not an amount"),
+                        ("-1.000.00", "is not an amount"), ("-", "is not an amount"), (".", "is not an amount"),
+                        ("two hundred", "is not an amount"), ("NaN", "is not an amount"),
+                        # Full-width digits are no digits of a number here.
+                        ("-１,２３４", "is not an amount")):
+        with pytest.raises(ValueError, match=f"TRNAMT '{amount}' {why}"):
+            amounts((b"-200.00", amount.encode()))
+
+    def brokerage(old: bytes, new: bytes) -> Path:
+        return rewrite_download(ofx_brokerage_download, lambda raw: raw.replace(old, new))
+
+    # A position's value is shares times a price, which a brokerage may not round.
+    assert import_ofx.read_holdings(brokerage(b"400000.00", b"400000.005")).holdings[0].value_cents == 40000001
+    # A value with thousands separators is thousands. One that reads two ways is refused,
+    # as shares are: an unrounded value may have three decimals.
+    assert import_ofx.read_holdings(brokerage(b"<MKTVAL>400000.00", b"<MKTVAL>400,000.00")
+                                    ).holdings[0].value_cents == 40000000
+    for tag in ("MKTVAL", "AVAILCASH"):
+        with pytest.raises(ValueError, match=f"{tag} '234,567' could be thousands or a decimal"):
+            import_ofx.read_holdings(brokerage(f"<{tag}>".encode(), f"<{tag}>234,567</{tag}><{tag}>".encode()))
+    with pytest.raises(ValueError, match="UNITS '2,500' could be thousands or a decimal"):
+        import_ofx.read_holdings(brokerage(b"<UNITS>2500<", b"<UNITS>2,500<"))
+    assert import_ofx.read_holdings(brokerage(b"<UNITS>2500<", b"<UNITS>2.500,25<")
+                                    ).holdings[0].quantity == Decimal("2500.25")
+    # No transactions, and the columns still have their types.
+    empty = import_ofx.read_transactions(ofx_brokerage_download).transactions
+    assert (empty["source_row"].dtype, empty["amount_cents"].dtype) == ("int64", "int64")
+
+
+def test_ofx_reads_a_brokerage_s_cash_that_no_position_holds(
+    ofx_brokerage_download: Path, rewrite_download: Rewrite,
+) -> None:
+    def beside_the_funds(*pairs: tuple[bytes, bytes]) -> tuple[list[tuple[str, int]], tuple[str, ...]]:
+        def change(raw: bytes) -> bytes:
+            for old, new in pairs:
+                raw = raw.replace(old, new)
+            return raw
+        read = import_ofx.read_holdings(rewrite_download(ofx_brokerage_download, change))
+        assert [each.asset for each in read.holdings[:2]] == ["VTSAX", "VMFXX"]
+        # Each is named apart from the positions, so the mapping can place it apart.
+        assert all(each.asset == f"({each.hints['name']})" for each in read.holdings[2:])
+        return [(each.hints["name"], each.value_cents) for each in read.holdings[2:]], read.notes
+
+    # All of the cash is in the money market fund, which is a position: not counted twice.
+    # The cash beside it and the loan are holdings though they are nothing: an earlier
+    # import's cash lot is then set to nothing, and not left as it was.
+    nothing = [("cash", 0), ("margin", 0)]
+    assert beside_the_funds() == (nothing, ())
+    # 750 more than the fund holds: the account's core cash, with no position of its own.
+    # Which positions are the cash is a guess, and said.
+    assert beside_the_funds((b"<AVAILCASH>20000.00", b"<AVAILCASH>20750.00")) == ([("cash", 75000), ("margin", 0)], (
+        "Example Brokerage investment ...5678: 750.00 of its cash of 20750.00 is added, taking the rest to be its "
+        "position(s) priced at a dollar a share (20000.00); check the account's total",))
+    # Less cash than the fund holds: the fund may be an investment and the cash apart from it.
+    added, notes = beside_the_funds((b"<AVAILCASH>20000.00", b"<AVAILCASH>2000.00"))
+    assert added == nothing
+    assert notes[0].startswith("Example Brokerage investment ...5678: its cash of 2000.00 is not added")
+    # The fund by its price of a dollar, though its shares and its rounded value differ.
+    assert beside_the_funds((b"<UNITS>20000<", b"<UNITS>20000.567<"), (b"<MKTVAL>20000.00", b"<MKTVAL>20000.57"),
+                            (b"<AVAILCASH>20000.00", b"<AVAILCASH>20000.567")) == (nothing, ())
+    # A CD at par has as many units as dollars and is no sweep fund: priced in percent.
+    assert beside_the_funds((b"<UNITPRICE>1.00", b"<UNITPRICE>100.00"),
+                            (b"<AVAILCASH>20000.00", b"<AVAILCASH>5000.00")) == ([("cash", 500000), ("margin", 0)], ())
+    # Borrowed on margin: less than no cash, or a margin balance the cash doesn't show.
+    assert beside_the_funds((b"<UNITPRICE>1.00", b"<UNITPRICE>100.00"),
+                            (b"<AVAILCASH>20000.00", b"<AVAILCASH>-2000.00"),
+                            (b"<MARGINBALANCE>0", b"<MARGINBALANCE>-2000.00")) == (
+        [("cash", 0), ("margin", -200000)], ())
+    # Cash below zero is all the cash too: the fund priced at a dollar is not counted beside it.
+    assert beside_the_funds((b"<AVAILCASH>20000.00", b"<AVAILCASH>-500.00")) == ([("cash", 0), ("margin", -2050000)], (
+        "Example Brokerage investment ...5678: -20500.00 is added as borrowed, taking its cash of -500.00 to "
+        "include its position(s) priced at a dollar a share (20000.00); check the account's total",))
+    assert beside_the_funds((b"<AVAILCASH>20000.00", b"<AVAILCASH>20750.00"),
+                            (b"<MARGINBALANCE>0", b"<MARGINBALANCE>-1500"))[0] == [("cash", 75000), ("margin", -150000)]
+    # A loan the file states is taken as stated, whatever the cash below zero would come to.
+    assert beside_the_funds((b"<AVAILCASH>20000.00", b"<AVAILCASH>-500.00"),
+                            (b"<MARGINBALANCE>0", b"<MARGINBALANCE>-500.00")) == ([("cash", 0), ("margin", -50000)], ())
+    # Balances left unclosed are read as they are when closed.
+    assert beside_the_funds((b"<AVAILCASH>20000.00", b"<AVAILCASH>20750.00"), (b"</INVBAL>", b""))[0] == [
+        ("cash", 75000), ("margin", 0)]
+
+    def changed(old: bytes, new: bytes) -> Path:
+        return rewrite_download(ofx_brokerage_download, lambda raw: raw.replace(old, new))
+
+    # Cash's basis is what it is worth: a taxable cash lot needs no other.
+    core = import_ofx.read_holdings(changed(b"<AVAILCASH>20000.00", b"<AVAILCASH>20750.00"))
+    assert [each.cost_basis_cents for each in core.holdings] == [None, None, 75000, 0]
+    # The price says which position is the cash, so one that can't be read is refused, and
+    # one left out is said: taken silently as some other price, the cash would be added twice.
+    for price, why in (("1,000", "could be thousands or a decimal"), ("N/A", "is not a number")):
+        with pytest.raises(ValueError, match=f"UNITPRICE '{price}' {why}"):
+            import_ofx.read_holdings(changed(b"<UNITPRICE>1.00", f"<UNITPRICE>{price}".encode()))
+    unpriced = import_ofx.read_holdings(changed(b"<UNITPRICE>1.00</UNITPRICE>", b""))
+    assert unpriced.holdings[2].value_cents == 2000000
+    assert unpriced.notes == (
+        "Example Brokerage investment ...5678: its position VMFXX has no price, so it is taken not to be the "
+        "account's cash; if it is (a sweep or money market fund), that cash is counted twice",)
+
+    # A list of positions is all the account holds, even an empty one; a download that
+    # leaves the list out says nothing of them, and its cash may be a lot's.
+    assert core.complete == {"Example Brokerage investment ...5678"}
+
+    def listless(raw: bytes) -> bytes:
+        return raw[:raw.index(b"<INVPOSLIST>")] + raw[raw.index(b"</INVPOSLIST>") + len(b"</INVPOSLIST>"):]
+    without = import_ofx.read_holdings(rewrite_download(ofx_brokerage_download, listless))
+    assert not without.complete and [each.value_cents for each in without.holdings] == [2000000, 0]
+    assert without.notes == (
+        "Example Brokerage investment ...5678: the file leaves out its positions, so all its cash of 20000.00 "
+        "is added; if a lot of the account holds some of it (a sweep or money market fund), that is counted "
+        "twice: download the account with its positions",)
+
+
+def test_sim_import_holdings_stores_what_a_card_owes_whichever_sign_its_file_has(
+    test_data_dir: Path, ofx_card_download: Path, rewrite_download: Rewrite, write_import_map: MapWriter,
+) -> None:
+    write_import_map("ofx/accounts.csv", "Example Card card ...1007,,map,Liability_Mortgage,,\n")
+
+    owed = _import(test_data_dir, "holdings", str(ofx_card_download))
+    assert owed.exit_code == 0, owed.output
+    assert "credit balance" not in owed.output
+    assert _lots(test_data_dir)["Liability_Mortgage"]["opening_balance"] == "250.00"
+
+    # Some issuers write what is owed as a positive amount: the same debt, and said.
+    positive = rewrite_download(ofx_card_download, lambda raw: raw.replace(b"-250.00", b"310.00"))
+    result = _import(test_data_dir, "holdings", str(positive))
+    assert result.exit_code == 0, result.output
+    assert "unusual credit balance in ofx" in result.output
+    assert _lots(test_data_dir)["Liability_Mortgage"]["opening_balance"] == "310.00"
+
+
+def test_sim_import_transactions_reads_ofx_files_by_payee_and_drops_what_two_downloads_share(
+    test_data_dir: Path, ofx_bank_download: Path, ofx_bank_later_download: Path, ofx_card_download: Path,
+    write_import_map: MapWriter,
+) -> None:
+    write_import_map("expense_accounts.csv", "Food,Expense_Living\nUtilities,Expense_Housing\n")
+
+    # No payees.csv yet: the payees are listed, as for a bank's CSV.
+    refused = _transactions(test_data_dir, ofx_bank_download)
+    assert refused.exit_code != 0 and "payees.csv" in refused.output
+
+    # One map for every institution's OFX file.
+    write_import_map("ofx/payees.csv", _OFX_PAYEES)
+    result = _transactions(test_data_dir, ofx_bank_download, str(ofx_bank_later_download),
+                           str(ofx_card_download))
+
+    assert result.exit_code == 0, result.output
+    # February is in both of the bank's downloads, and counted once.
+    assert "3 transaction(s) that an earlier file had too, by their reference, were left out" in result.output
+    rules = _generated(test_data_dir)
+    # Over three months: food is 400 + 200 + 90 from the bank and 80 on the card, and the
+    # utility's two payments (March's isn't in yet).
+    assert {name: (rule["amount"], rule["to_account"]) for name, rule in rules.items()} == {
+        "baseline_expense_food": ("256.67", "Expense_Living"),
+        "baseline_expense_utilities": ("100.00", "Expense_Housing"),
+    }
+    assert json.loads(rules["baseline_expense_food"]["meta_json"])["source"] == "ofx"
+
+
+def test_sim_import_holdings_sets_a_balance_from_an_ofx_statement(
+    test_data_dir: Path, ofx_bank_download: Path, ofx_card_download: Path, write_import_map: MapWriter,
+    rewrite_download: Rewrite,
+) -> None:
+    write_import_map("ofx/accounts.csv", "First Example Bank checking ...4321,,map,Asset_Checking,,\n")
+
+    result = _import(test_data_dir, "holdings", str(ofx_bank_download))
+
+    assert result.exit_code == 0, result.output
+    assert "ofx snapshot as of 2026-02-28" in result.output
+    assert _lots(test_data_dir)["Asset_Checking"]["opening_balance"] == "4321.09"
+
+    # A statement with no balance says so, and not nothing.
+    bare = rewrite_download(ofx_bank_download, lambda raw: raw[:raw.index(b"<LEDGERBAL>")]
+                            + raw[raw.index(b"</LEDGERBAL>\n") + len(b"</LEDGERBAL>\n"):])
+    assert import_ofx.read_holdings(bare).notes == (
+        "First Example Bank checking ...4321: the file has no balance for it (no LEDGERBAL), so its balance is "
+        "left as it is",)
+
+    # The card's file is another outside account, which nothing maps yet.
+    card = _import(test_data_dir, "holdings", str(ofx_card_download))
+    assert card.exit_code != 0 and "Example Card card ...1007" in card.output
+
+
+def test_sim_import_holdings_reads_an_ofx_brokerage_s_positions_by_symbol(
+    test_data_dir: Path, ofx_brokerage_download: Path, rewrite_download: Rewrite, write_import_map: MapWriter,
+) -> None:
+    write_import_map("ofx/accounts.csv", "Example Brokerage investment ...5678,,map,Asset_Roth_Bill,,\n")
+    # What the reader guessed about the account's cash is said before anything is written.
+    core = rewrite_download(ofx_brokerage_download,
+                            lambda raw: raw.replace(b"<AVAILCASH>20000.00", b"<AVAILCASH>20750.00"))
+    looked = _import(test_data_dir, "holdings", str(core), "--new-lots", "--dry-run")
+    assert "note: Example Brokerage investment ...5678: 750.00 of its cash of 20750.00 is added" in looked.output
+
+    result = _import(test_data_dir, "holdings", str(ofx_brokerage_download), "--new-lots")
+
+    assert result.exit_code == 0, result.output
+    assert "2 new" in result.output and "ofx snapshot as of 2026-01-05" in result.output
+    lots = _all_lots(test_data_dir)
+    stock = lots["Asset_Roth_Bill", "vtsax"]
+    assert (stock["symbol"], stock["quantity"], stock["opening_balance"]) == ("VTSAX", "2500", "400000.00")
+    assert lots["Asset_Roth_Bill", "vmfxx"]["opening_balance"] == "20000.00"
+
+
+def test_ofx_reads_a_brokerage_s_banking_and_not_its_trades(
+    ofx_brokerage_download: Path, rewrite_download: Rewrite,
+) -> None:
+    # The purchase in the file is investment activity, not spending.
+    assert import_ofx.read_transactions(ofx_brokerage_download).transactions.empty
+    # A check written on the brokerage account is spending, as a bank account's is.
+    banking = rewrite_download(ofx_brokerage_download, lambda raw: raw.replace(
+        b"</INVTRANLIST>",
+        b"<INVBANKTRAN><STMTTRN><TRNTYPE>CHECK</TRNTYPE><DTPOSTED>20260103</DTPOSTED><TRNAMT>-125.00</TRNAMT>"
+        b"<FITID>K1</FITID><CHECKNUM>1001</CHECKNUM><NAME>CORNER MARKET</NAME></STMTTRN>"
+        b"<SUBACCTFUND>CASH</SUBACCTFUND></INVBANKTRAN></INVTRANLIST>"))
+    spent = import_ofx.read_transactions(banking).transactions
+    assert list(zip(spent["account"], spent["payee"], spent["amount_cents"], spent["reference"], strict=True)) == [
+        ("Example Brokerage investment ...5678", "CORNER MARKET", -12500, "K1")]
+
+
+def test_sim_import_holdings_asks_no_lot_for_a_brokerage_with_cash_beside_its_positions(
+    test_data_dir: Path, ofx_brokerage_download: Path, rewrite_download: Rewrite, write_import_map: MapWriter,
+    at_a_terminal: None,
+) -> None:
+    """The cash has no symbol; an answer naming one lot would put every position in it."""
+    write_import_map("ofx/accounts.csv", "Example Brokerage investment ...5678,,map,Asset_Roth_Bill,,\n")
+    first = _import(test_data_dir, "holdings", str(ofx_brokerage_download), "--new-lots", input="\n\n\n\n")
+    assert first.exit_code == 0, first.output
+    write_import_map("ofx/accounts.csv", "")
+    core = rewrite_download(ofx_brokerage_download,
+                            lambda raw: raw.replace(b"<AVAILCASH>20000.00", b"<AVAILCASH>20750.00"))
+
+    result = _import(test_data_dir, "holdings", str(core), input="Asset_Roth_Bill\n")
+
+    assert result.exit_code == 0, result.output
+    assert "lot of" not in result.output
+    assert _saved(test_data_dir, "ofx") == ["Example Brokerage investment ...5678,,map,Asset_Roth_Bill,,"]
+    lots = _all_lots(test_data_dir)
+    assert lots["Asset_Roth_Bill", "vtsax"]["opening_balance"] == "400000.00"
+    assert lots["Asset_Roth_Bill", "vmfxx"]["opening_balance"] == "20000.00"
+    assert lots["Asset_Roth_Bill", "default"]["opening_balance"] == "750.00"
+
+
+def test_sim_import_holdings_gives_a_new_account_s_cash_a_lot_of_its_own(
+    test_data_dir: Path, ofx_brokerage_download: Path, rewrite_download: Rewrite, at_a_terminal: None,
+) -> None:
+    """A new account has no lot yet: the cash is asked about once, as a lot, and not as an
+    account the scenario lacks, which would move the positions with it."""
+    core = rewrite_download(ofx_brokerage_download, lambda raw: raw.replace(
+        b"<AVAILCASH>20000.00", b"<AVAILCASH>20750.00").replace(b"<MARGINBALANCE>0", b"<MARGINBALANCE>-100.00"))
+
+    result = _import(test_data_dir, "holdings", str(core), "--new-lots",
+                     input="Asset_New_Brokerage\ny\nasset\nbrokerage_taxable\njoint\n")
+
+    assert result.exit_code == 0, result.output
+    assert "doesn't have" not in result.output
+    lots = _all_lots(test_data_dir)
+    assert lots["Asset_New_Brokerage", "vtsax"]["opening_balance"] == "400000.00"
+    assert lots["Asset_New_Brokerage", "vmfxx"]["opening_balance"] == "20000.00"
+    # The cash and what is borrowed, in one cash lot, whose basis is what it holds.
+    cash = lots["Asset_New_Brokerage", "cash"]
+    assert (cash["symbol"], cash["opening_balance"], cash["opening_cost_basis"]) == ("CASH", "650.00", "650.00")
+    # The plan knows what a cash lot holds; the funds have no basis in the file, which is said.
+    assert "doesn't know VMFXX, VTSAX yet" in result.output
+    assert ("note: the ofx file has no cost basis for Asset_New_Brokerage's new lot(s) vtsax, vmfxx. A run stops "
+            "at the first withdrawal from a taxable lot with none") in result.output
+    assert _saved(test_data_dir, "ofx") == ["Example Brokerage investment ...5678,,map,Asset_New_Brokerage,,"]

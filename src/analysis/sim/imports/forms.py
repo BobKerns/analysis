@@ -12,9 +12,19 @@ from pathlib import Path
 import pandas as pd
 
 __all__ = [
-    "FLOW_COLUMNS", "ORIGIN", "REFERENCE", "Budget", "BudgetLine", "Flows", "Holding", "Snapshot",
-    "read_rows",
+    "CORRECTS", "FLOW_COLUMNS", "ORIGIN", "REFERENCE", "REMOVES", "Budget", "BudgetLine", "Flows", "Holding",
+    "Snapshot", "read_rows",
 ]
+
+
+# What a holding is named (its ``asset``) when it is an account's cash, or
+# what it has borrowed, beside its holdings that have symbols. No symbol is
+# written so; its lot is the account's cash lot (the symbol ``CASH``), or one
+# with no symbol. With a name of its own it can have a mapping row of its
+# own, apart from the account's other holdings.
+CASH = "(cash)"
+MARGIN = "(margin)"
+UNLISTED = frozenset({CASH, MARGIN})
 
 
 @dataclass(frozen=True)
@@ -50,6 +60,14 @@ class Snapshot:
     holdings: tuple[Holding, ...]
     as_of: dt.date | None = None
     """None when the file doesn't say."""
+    notes: tuple[str, ...] = ()
+    """What the reader guessed, or read without being sure of, for the
+    user to check."""
+    complete: frozenset[str] = frozenset()
+    """The accounts (as ``Holding.account``) whose holdings the file says
+    it lists every one of, where it says so apart from the holdings: an
+    account listed in full that holds only cash, or nothing, has sold
+    what an earlier file had."""
 
 
 FLOW_COLUMNS = (
@@ -58,7 +76,8 @@ FLOW_COLUMNS = (
 """What every source's transactions frame has: ``date`` a timestamp,
 ``amount_cents`` signed with money out negative, ``transfer`` non-blank for
 a move between the household's own accounts, ``source_row`` the 1-based line
-of the file. A source may add columns of its own."""
+of the file (the row's place among them, where a file has no lines to
+count by). A source may add columns of its own."""
 
 
 ORIGIN = "origin"
@@ -66,6 +85,14 @@ ORIGIN = "origin"
 REFERENCE = "reference"
 """A column some sources add: the outside program's own id for a transaction,
 the same in every file that has it."""
+CORRECTS = "corrects"
+"""A column some sources add, beside ``REFERENCE``: on a row that corrects
+an earlier transaction of its account, that transaction's reference; blank
+otherwise. ``sources.read_flows`` leaves out what a row corrects, and the
+column."""
+REMOVES = "removes"
+"""With ``CORRECTS``: whether the row only removes what it corrects, and is
+no transaction itself."""
 
 
 @dataclass(frozen=True)
@@ -83,6 +110,9 @@ class Flows:
     origins: tuple[str, ...] = ()
     """Each source the rows came from, in the order first met, when there
     are several."""
+    notes: tuple[str, ...] = ()
+    """What the reader guessed, or read without being sure of, for the
+    user to check."""
 
     @property
     def sources(self) -> tuple[str, ...]:

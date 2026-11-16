@@ -9,15 +9,17 @@ flows, or both, each with a test of whether a file is in its layout so
 from __future__ import annotations
 
 import datetime as dt
+import itertools
+from collections import Counter
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
 
 import pandas as pd
 
-from analysis.sim.imports import profiles, quicken
-from analysis.sim.imports.forms import ORIGIN, REFERENCE, Budget, Flows, Snapshot
+from analysis.sim.imports import ofx, profiles, quicken
+from analysis.sim.imports.forms import CORRECTS, ORIGIN, REFERENCE, REMOVES, Budget, Flows, Snapshot
 
 __all__ = [
     "FORMS", "Form", "Reader", "Source", "SourceError", "broken", "detect", "get", "names",
@@ -52,6 +54,11 @@ class Source:
     budget: Reader[Budget] | None = None
     profile: profiles.Profile | None = None
     """What describes it, when that is a profile and not code."""
+    payees: bool = False
+    """Whether rows with no category are read by the source's
+    ``payees.csv``, and asked about, even before it has one: every
+    profile's, and a coded source whose transactions never come with
+    categories."""
 
     def reader(self, form: Form) -> Reader[Snapshot] | Reader[Flows] | Reader[Budget] | None:
         return {"holdings": self.holdings, "transactions": self.transactions, "budget": self.budget}[form]
@@ -75,13 +82,22 @@ _CODED: dict[str, Source] = {
         budget=Reader(quicken.is_budget, quicken.read_budget,
                       'Budget: Export, "Full" (a column for each month) or "Summary"'),
     ),
+    ofx.NAME: Source(
+        name=ofx.NAME,
+        description="OFX and QFX downloads (a bank's, a card's, a brokerage's)",
+        holdings=Reader(ofx.is_ofx, ofx.read_holdings,
+                        'a download for "Quicken" or "Money" (.qfx, .ofx): balances and positions'),
+        transactions=Reader(ofx.is_ofx, ofx.read_transactions,
+                            'a download for "Quicken" or "Money" (.qfx, .ofx): a bank account\'s or a card\'s'),
+        payees=True,
+    ),
 }
 
 
 def _from_profile(profile: profiles.Profile) -> Source:
     held, moved = profile.holdings, profile.transactions
     return Source(
-        name=profile.name, description=profile.description, profile=profile,
+        name=profile.name, description=profile.description, profile=profile, payees=True,
         holdings=None if held is None else Reader(held.matches, held.read, held.layout),
         transactions=None if moved is None else Reader(moved.matches, moved.read, moved.layout),
     )
@@ -244,6 +260,8 @@ def read_holdings(
         source=source.name,
         holdings=tuple(holding for snapshot in snapshots for holding in snapshot.holdings),
         as_of=next(iter(dates), None),
+        notes=tuple(note for snapshot in snapshots for note in snapshot.notes),
+        complete=frozenset(account for snapshot in snapshots for account in snapshot.complete),
     )
 
 
@@ -293,8 +311,11 @@ def read_flows(
     named = dict(zip(unnamed, given, strict=True)) if given else {}
     frames: list[pd.DataFrame] = []
     met: dict[str, None] = {}
-    seen: set[tuple[str, str, str]] = set()
+    references = _References()
+    # Accounts that one file has together, so are known to differ.
+    apart: set[tuple[str, str, str]] = set()
     duplicates = 0
+    notes: list[str] = []
     # Each outside account's days in each file, and whether every one of its
     # rows there has a reference.
     spans: dict[tuple[str, str], list[tuple[dt.date, dt.date, bool, int]]] = {}
@@ -303,9 +324,11 @@ def read_flows(
         described = None if source.profile is None else source.profile.transactions
         if number in unnamed and described is not None:
             said = named.get(number) or (ask_account(path, source.name) if ask_account else None)
-            frame = described.read(path, said).transactions
+            read = described.read(path, said)
         else:
-            frame = source.transactions.read(path).transactions
+            read = source.transactions.read(path)
+        frame = read.transactions
+        notes += read.notes
         frame = frame.assign(**{ORIGIN: source.name})
         if REFERENCE not in frame.columns:
             frame[REFERENCE] = ""
@@ -328,17 +351,167 @@ def read_flows(
                         f"{key[1]!r} between {max(first, start)} and {min(last, end)}; "
                         "import each period of an outside account from one file")
             spans[key].append((first, last, key not in bare, number))
-        # Within one file a reference repeated is the file's own business;
-        # across files it is the same transaction downloaded twice.
-        keys = [(source.name, str(each), str(reference)) if reference else None
-                for each, reference in zip(frame["account"], frame[REFERENCE], strict=True)]
-        fresh = [key is None or key not in seen for key in keys]
+        apart.update((source.name, *pair) for pair in itertools.combinations(sorted(key[1] for key in days), 2))
+        fresh, said = references.sift(source.name, path, frame)
+        notes += said
         duplicates += fresh.count(False)
-        seen.update(key for key in keys if key is not None)
         frames.append(frame.loc[fresh].reset_index(drop=True))
         met[source.name] = None
+    transactions = _corrected(frames[0] if len(frames) == 1 else pd.concat(frames, ignore_index=True))
+    notes += _under_two_names(transactions, apart)
     return Flows(source="+".join(met), duplicates=duplicates, origins=tuple(met),
-                 transactions=frames[0] if len(frames) == 1 else pd.concat(frames, ignore_index=True))
+                 transactions=transactions, notes=tuple(dict.fromkeys(notes)))
+
+
+_Row = tuple[str, str, str, str]
+_What = tuple[dt.date, int]
+
+
+@dataclass
+class _References:
+    """Which rows of a run's files are ones an earlier file had, by their
+    references.
+
+    A reference is the institution's word that two rows are one
+    transaction, and is taken at it: a row whose reference an earlier file
+    had is left out, whatever its day and amount (a charge may post on
+    another day, or with its tip). Within one file a reference repeated is
+    the file's own business (some make it from the day, amount and payee,
+    so two like purchases share one), so only as many are left out as the
+    files before kept: those with an earlier copy's day and amount first,
+    wherever they are in the file, and only then others.
+
+    A correction may reuse the reference of what it corrects, so it is a
+    row of its own: only the same correction, in an earlier file, is its
+    duplicate. A row that corrects nothing is the duplicate of any earlier
+    row with its reference, a correction too: a later download lists a
+    corrected transaction as it stands, with nothing to say it was one.
+
+    What a reference can't be trusted for is noted: rows left out whose
+    day or amount is not the earlier file's, and rows kept that have the
+    day and amount of an earlier file's row under another reference."""
+
+    # The referenced rows kept so far, by their source, account, reference
+    # and what they correct: their days and amounts.
+    seen: dict[_Row, Counter[_What]] = field(default_factory=dict)
+    # The same, whatever they correct.
+    referenced: dict[tuple[str, str, str], Counter[_What]] = field(default_factory=dict)
+    # Each account's referenced rows kept so far, by day and amount.
+    had: dict[tuple[str, str], Counter[_What]] = field(default_factory=dict)
+
+    def sift(self, source: str, path: Path, frame: pd.DataFrame) -> tuple[list[bool], list[str]]:
+        """Whether each row of ``frame``, the next file's (``path``), is
+        new to the run, and the notes of what its references left unsure."""
+        corrects = frame[CORRECTS].fillna("").astype(str) if CORRECTS in frame.columns else [""] * len(frame)
+        fresh = [True] * len(frame)
+        copies: dict[_Row, list[tuple[int, _What]]] = {}
+        for place, (each, reference, correcting, stamp, cents) in enumerate(zip(
+                frame["account"], frame[REFERENCE], corrects, frame["date"], frame["amount_cents"], strict=True)):
+            if reference:
+                key = (source, str(each), str(reference), str(correcting))
+                copies.setdefault(key, []).append((place, (stamp.date(), int(cents))))
+        new: list[tuple[_Row, _What]] = []
+        # The earlier files' rows that this file's duplicates are, by day and amount.
+        again: dict[tuple[str, str], Counter[_What]] = {}
+        differing: Counter[str] = Counter()
+        unmet: list[tuple[tuple[str, str], _What]] = []
+        for key, rows in copies.items():
+            account, correcting = key[:2], key[3]
+            earlier = Counter(self.seen.get(key, ()) if correcting else self.referenced.get(key[:3], ()))
+            known = bool(earlier)
+            unmatched: list[tuple[int, _What]] = []
+            for place, what in rows:
+                if earlier[what] > 0:
+                    earlier[what] -= 1
+                    fresh[place] = False
+                    again.setdefault(account, Counter())[what] += 1
+                else:
+                    unmatched.append((place, what))
+            left = sorted((+earlier).elements())
+            for (place, _), was in zip(unmatched, left, strict=False):
+                fresh[place] = False
+                again.setdefault(account, Counter())[was] += 1
+                differing[account[1]] += 1
+            for _, what in unmatched[len(left):]:
+                new.append((key, what))
+                if not known and not correcting:
+                    unmet.append((account, what))
+        # A row no earlier file's reference matched, though one of them has
+        # a row of its day and amount that this file doesn't have as well.
+        alike: Counter[str] = Counter()
+        left_over = {account: self.had[account] - again.get(account, Counter())
+                     for account in {account for account, _ in unmet} & set(self.had)}
+        for account, what in unmet:
+            if left_over.get(account, {}).get(what, 0) > 0:
+                left_over[account][what] -= 1
+                alike[account[1]] += 1
+        for key, what in new:
+            self.seen.setdefault(key, Counter())[what] += 1
+            self.referenced.setdefault(key[:3], Counter())[what] += 1
+            self.had.setdefault(key[:2], Counter())[what] += 1
+        return fresh, [
+            f"{count} transaction(s) of {account!r} in {path} have a reference that an earlier file gave a "
+            "transaction of another day or amount; they are left out as that transaction, at the earlier "
+            "file's day and amount. If this institution numbers each download's transactions afresh, they "
+            "are other transactions and are missing: import one download that has the whole period"
+            for account, count in differing.items()] + [
+            f"{count} transaction(s) of {account!r} in {path} have the day and amount of ones in an earlier "
+            "file, under other references; if this institution gives a transaction a new reference in each "
+            "download, they are counted twice: import downloads that don't overlap"
+            for account, count in alike.items()]
+
+
+def _corrected(frame: pd.DataFrame) -> pd.DataFrame:
+    """``frame`` with its corrections applied (``forms.CORRECTS``), and
+    without their columns. Here and not in a source's reader, since what a
+    row corrects may be in an earlier file of the run, where it survives
+    the dropping of duplicates.
+
+    A row is left out when another row of its account names its reference:
+    a correction that a later one corrects goes too, and one that names
+    its own reference (an institution reusing the id) stays. A row that
+    only removes is never a transaction."""
+    if CORRECTS not in frame.columns:
+        return frame
+    corrects = frame[CORRECTS].fillna("").astype(str)
+    removes = frame[REMOVES].fillna(value=False).astype(bool)
+    if not corrects.any() and not removes.any():
+        return frame.drop(columns=[CORRECTS, REMOVES])
+    naming: dict[tuple[str, str, str], set[int]] = {}
+    for place, (origin, account, reference) in enumerate(zip(frame[ORIGIN], frame["account"], corrects, strict=True)):
+        if reference:
+            naming.setdefault((origin, str(account), reference), set()).add(place)
+    keep = [
+        not gone and not (naming.get((origin, str(account), str(reference)), set()) - {place})
+        for place, (origin, account, reference, gone)
+        in enumerate(zip(frame[ORIGIN], frame["account"], frame[REFERENCE], removes, strict=True))]
+    return frame.loc[keep].drop(columns=[CORRECTS, REMOVES]).reset_index(drop=True)
+
+
+def _under_two_names(frame: pd.DataFrame, apart: set[tuple[str, str, str]]) -> list[str]:
+    """Notes of transactions that two outside accounts of one source both
+    have: the same reference, day and amount. An account's name is made
+    from what its file says, and one account may come out under two (a
+    bank's two kinds of download, a card reissued with a new number); its
+    overlapping downloads are then neither refused nor counted once. Not
+    two that are in ``apart`` (a source and two names, in order): one file
+    has both, so they are two accounts."""
+    keys = [ORIGIN, REFERENCE, "date", "amount_cents"]
+    referenced = frame[frame[REFERENCE].astype(str) != ""]
+    # Only rows that share all four with another can be two accounts' rows.
+    referenced = referenced[referenced.duplicated(keys, keep=False)]
+    shared: dict[tuple[str, str, str], int] = {}
+    for _, rows in referenced.groupby(keys, sort=False):
+        accounts = sorted(set(rows["account"].astype(str)))
+        for first, second in itertools.combinations(accounts, 2):
+            key = (str(rows[ORIGIN].iloc[0]), first, second)
+            if key not in apart:
+                shared[key] = shared.get(key, 0) + 1
+    return [
+        f"{count} transaction(s) of {first!r} and of {second!r} ({origin}) have the same reference, day and "
+        "amount; if they are one account under two names, those transactions are counted twice: import "
+        "its downloads so they don't overlap"
+        for (origin, first, second), count in shared.items()]
 
 
 def read_budget(path: Path, name: str | None = None, imports: Path | None = None) -> Budget:
