@@ -533,7 +533,7 @@ def _inputs(pieces: RunPieces) -> _RunInputs:
     expenses = transfers.loc[spent, ["pos", "amount"]].copy()
     expenses["tags"] = [tags_of[key] for key in zip(flows.loc[spent, "rule_tags"],
                                                     flows.loc[spent, "to_name"], strict=True)]
-    end = months.max() if len(months) else pd.Timestamp.max
+    end = months[months.argmax()] if len(months) else pd.Timestamp.max
     death = None if pieces.household_end is None else _timestamp(pieces.household_end)
     return _RunInputs(
         months=months, axis=measures.year_axis(np.asarray(index_years(pd.Series(0.0, index=months)))),

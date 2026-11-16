@@ -38,7 +38,7 @@ class WholeItems(Guardrail):
     kind = "whole_items"
 
     @dataclass(frozen=True)
-    class Params(Guardrail.Params):  # ty: ignore[invalid-attribute-override]  # extending Params is the pattern (ADR-010 §3)
+    class Params(Guardrail.Params):  # extending Params is the pattern (ADR-010 §3)
         order: tuple[str, ...] = ()
         """The owned rules, most wanted first."""
 
