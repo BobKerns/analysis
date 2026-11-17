@@ -17,7 +17,7 @@ import pytest
 from click.testing import CliRunner
 
 from analysis.cli import main
-from analysis.sim import builder, prices, research_schedule
+from analysis.sim import builder, prices, research_schedule, symbols
 from analysis.sim.research_schedule import RunReport
 
 NY = research_schedule.MARKET
@@ -214,6 +214,77 @@ def test_weights_written_again_when_main_changed_them_meanwhile(
     assert "written again" in _message(repo, research_schedule.RESEARCH_BRANCH)
 
 
+def test_a_bundle_only_main_has_is_left_alone_when_written_again(
+    fund_repo: tuple[Path, git.Repo], commit_files: Callable[..., str],
+    research_bundles: Path, researching: None,
+) -> None:
+    data, repo = fund_repo
+    research_schedule.research(data, _worktree(data), now=NOW, runner=_runner(research_bundles))
+    # Meanwhile main gets research run by hand, and a conflicting set.
+    commit_files(repo, {"sim/research/BBB/2026-11-16/BBB-tear-sheet.md": "# BBB\n",
+                        "sim/allocations.csv": FUND + "ABCDX,2026-07,stock_us,55%\nABCDX,2026-07,bond,45%\n"},
+                 "by hand")
+    lines = research_schedule.merge_pending(data, _worktree(data))
+    assert lines[0] == "merged new research into main"
+    assert "BBB" not in _message(repo, research_schedule.RESEARCH_BRANCH)
+    assert (data / "research" / "BBB" / "2026-11-16" / "BBB-tear-sheet.md").read_text() == "# BBB\n"
+
+
+def test_research_older_than_the_latest_set_writes_nothing(
+    fund_repo: tuple[Path, git.Repo], commit_files: Callable[..., str], research_bundles: Path,
+) -> None:
+    data, repo = fund_repo
+    later = FUND + "ABCDX,2026-10,stock_us,70%\nABCDX,2026-10,bond,30%\n"
+    commit_files(repo, {"sim/allocations.csv": later}, "later")
+    applied = research_schedule.apply_weights(data, "ABCDX", research_bundles / "abcdx")
+    assert not applied.wrote
+    assert "ABCDX: the research is as of 2026-09, older than the set as of 2026-10; " \
+        "allocations.csv unchanged" in applied.lines
+    assert (data / "allocations.csv").read_text() == later
+
+
+def test_nothing_due_is_remembered_for_the_day(
+    fund_repo: tuple[Path, git.Repo], researching: None, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    data, _ = fund_repo
+    monkeypatch.setattr(research_schedule, "due_symbols", lambda *_: [])
+    assert not research_schedule.due(data, {"research": True}, NOW)
+    assert research_schedule.read_state(data)["quiet"] == "2026-11-17"
+
+    def no_scan(*_):
+        raise AssertionError("scanned again the same day")
+    monkeypatch.setattr(research_schedule, "due_symbols", no_scan)
+    assert not research_schedule.due(data, {"research": True}, NOW + timedelta(minutes=1))
+    monkeypatch.setattr(research_schedule, "due_symbols", lambda *_: ["ABCDX"])
+    assert research_schedule.due(data, {"research": True}, NOW + timedelta(days=1))  # tomorrow looks again
+
+
+def test_a_runner_that_raises_is_a_recorded_failure(
+    fund_repo: tuple[Path, git.Repo], researching: None,
+) -> None:
+    data, _ = fund_repo
+
+    def broken(*_) -> RunReport:
+        raise RuntimeError("claude not found")
+    outcome = research_schedule.research(data, _worktree(data), now=NOW, runner=broken)
+    assert "ABCDX: research failed: RuntimeError: claude not found" in outcome.lines
+    state = research_schedule.read_state(data)
+    assert state["failing"]["ABCDX"]["error"] == "RuntimeError: claude not found"
+    assert research_schedule.due_symbols(data, state, NOW)[-1] == "ABCDX"  # to the back of the queue
+
+
+def test_a_symbol_named_by_hand_leaves_the_days_run_due(
+    fund_repo: tuple[Path, git.Repo], commit_files: Callable[..., str],
+    research_bundles: Path, researching: None,
+) -> None:
+    data, repo = fund_repo
+    commit_files(repo, {"sim/securities.csv": "symbol,name\nBBB,B fund\n"}, "names")
+    research_schedule.research(data, _worktree(data), now=NOW, symbol="ABCDX",
+                               runner=_runner(research_bundles))
+    assert "day" not in research_schedule.read_state(data)
+    assert research_schedule.due(data, {"research": True}, NOW)  # BBB is still due today
+
+
 def test_status_shows_the_last_run_its_cost_and_the_next(
     fund_repo: tuple[Path, git.Repo], research_bundles: Path, researching: None,
 ) -> None:
@@ -290,8 +361,9 @@ def test_yes_writes_nothing_within_half_a_point(
     commit_files(repo, {"sim/allocations.csv": near}, "near")
     result = _research(data, "ABCDX", "--from-bundle", str(research_bundles / "abcdx"), "--yes", "--no-open")
     assert result.exit_code == 0, result.output
-    assert "Within 0.5 points of the set as of 2026-08 on every class: nothing written." in result.output
+    assert "Within 0.5 points of the set as of 2026-08 on every class: no weights written." in result.output
     assert (data / "allocations.csv").read_text() == near
+    assert symbols.security_name(data, "ABCDX") == "A Balanced Index Fund"  # named all the same
 
 
 def test_a_no_fetch_symbol_named_is_researched_with_a_warning(

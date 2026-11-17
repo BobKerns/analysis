@@ -252,10 +252,11 @@ def test_from_bundle_asks_for_the_name_and_before_writing(test_data_dir: Path, r
     declined = _sim(test_data_dir, "ABCDX", "--from-bundle", bundle, "--no-open", input="My Fund\nn\n")
     assert declined.exit_code == 0, declined.output
     assert "[A Balanced Index Fund]" in declined.output
-    assert "Nothing written" in declined.output
+    assert "No weights written" in declined.output
     assert symbols.latest_set(test_data_dir, "ABCDX") is None
+    assert symbols.security_name(test_data_dir, "ABCDX") == "My Fund"  # the name is kept anyway
 
-    accepted = _sim(test_data_dir, "ABCDX", "--from-bundle", bundle, "--no-open", input="My Fund\ny\n")
+    accepted = _sim(test_data_dir, "ABCDX", "--from-bundle", bundle, "--no-open", input="y\n")
     assert accepted.exit_code == 0, accepted.output
     assert symbols.security_name(test_data_dir, "ABCDX") == "My Fund"
     assert len(_bundles(test_data_dir)) == 2

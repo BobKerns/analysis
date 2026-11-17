@@ -15526,7 +15526,7 @@ def _run_research(data: Path, subject: str, key: str, kind: str | None, plugin_d
             raise click.ClickException(str(exc)) from None
         cost = f", ${outcome.cost_usd:.2f}" if outcome.cost_usd is not None else ""
         click.echo(f"Finished in {outcome.seconds / 60:.1f} minutes{cost}.")
-        has_files = any(p.is_file() and p.suffix.lower() in (".md", ".json", ".csv") for p in work.iterdir())
+        has_files = any(p.is_file() and p.suffix.lower() in research.KEPT_SUFFIXES for p in work.iterdir())
         if not has_files:
             why = outcome.message if not outcome.ok else (
                 "the run wrote no files; are the fund-tear-sheet and public-tear-sheet skills "
@@ -15572,7 +15572,8 @@ def _confirm_and_write_research(
     if latest is not None and not research_schedule.weights_changed(allocation.weights, latest[1]):
         if yes:
             click.echo(f"  Within 0.5 points of the set as of {latest[0] or 'every date'} on every "
-                       "class: nothing written.")
+                       "class: no weights written.")
+            _fill_research_name(data, symbol, name if new_symbol else None)
             return
         click.echo("  These are within 0.5 points of the latest set on every class; the background "
                    "builder would leave allocations.csv as it is.")
@@ -15585,7 +15586,8 @@ def _confirm_and_write_research(
                 f"to replace them. The bundle is kept at {bundle}"
             )
     if not yes and not click.confirm("Write these weights to allocations.csv?", default=False):
-        click.echo(f"Nothing written. The bundle is kept at {bundle}")
+        click.echo(f"No weights written. The bundle is kept at {bundle}")
+        _fill_research_name(data, symbol, name if new_symbol else None)
         return
     try:
         added = symbols.add_symbol(
@@ -15602,6 +15604,13 @@ def _confirm_and_write_research(
     click.echo(f"{symbol}: {', '.join(f'{c} {w}' for c, w in allocation.weights.items())} {verb} allocations.csv")
     if symbol not in registries.SYMBOL_ASSET_CLASS and not (data / "prices" / f"security_price__{symbol}.csv").exists():
         click.echo(f"{symbol} has no prices yet; `sim prices fetch {symbol}` gets them.")
+
+
+def _fill_research_name(data: Path, symbol: str, name: str | None) -> None:
+    """Fill a blank or missing securities.csv name from the research even when
+    no weights are written (#640); a name already there is never changed."""
+    if name and prices.fill_names(data, {symbol: name}):
+        click.echo(f"{symbol}: named {name!r} in securities.csv")
 
 
 @symbol_group_command.command("list")

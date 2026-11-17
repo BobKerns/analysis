@@ -201,9 +201,17 @@ def due(data_dir: Path, config: dict[str, Any] | None, now: datetime) -> bool:
     if day is None:
         return False
     state = read_state(data_dir)
-    if state.get("day") == day.isoformat():
+    if day.isoformat() in (state.get("day"), state.get("quiet")):
         return False
-    return bool(due_symbols(data_dir, state, now))
+    if due_symbols(data_dir, state, now):
+        return True
+    # Nothing due today: the usual state, once every symbol has been done in
+    # the past month. Said in the state, so the daemon's minute and the
+    # hourly tick don't scan the scenarios and git again until tomorrow (a
+    # symbol added today waits for tomorrow's look).
+    with contextlib.suppress(price_schedule.PriceScheduleError, OSError):
+        _update_state(price_schedule._top(data_dir), quiet=day.isoformat())
+    return False
 
 
 # -- writing the weights ------------------------------------------------------------
@@ -220,6 +228,12 @@ def weights_changed(proposed: dict[str, str], latest: Iterable[tuple[str, str]] 
     old = {cls: units.percent_to_micros(w, require_sign=False) for cls, w in latest}
     new = {cls: units.percent_to_micros(w, require_sign=False) for cls, w in proposed.items()}
     return any(abs(new.get(cls, 0) - old.get(cls, 0)) > TOLERANCE_MICROS for cls in {*old, *new})
+
+
+def older_than(as_of: str, latest: str) -> bool:
+    """Whether a set dated ``as_of`` (YYYY-MM) would sit behind one dated
+    ``latest``: a blank ``latest`` holds at every date and sorts first."""
+    return bool(latest) and as_of[:7] < latest[:7]
 
 
 @dataclass
@@ -257,6 +271,11 @@ def apply_weights(data_dir: Path, symbol: str, bundle: Path, *, today: date | No
         return Applied([*named, f"{symbol}: weights within 0.5 points of the set as of "
                         f"{latest[0] or 'every date'}; allocations.csv unchanged"])
     as_of = allocation.as_of or (today or date.today()).strftime("%Y-%m")
+    if latest is not None and older_than(as_of, latest[0]):
+        # A set behind the latest would never be the one used, and the next
+        # run would find the same difference and write it again.
+        return Applied([*named, f"{symbol}: the research is as of {as_of}, older than the set as of "
+                        f"{latest[0]}; allocations.csv unchanged"])
     try:
         symbols.add_symbol(data_dir, symbol, weights=allocation.weights, as_of=as_of,
                            replace=symbols.has_weights(data_dir, symbol, as_of))
@@ -442,17 +461,26 @@ def _redo(top: Path, worktree: Path, data: Path, rel: str, pending: str) -> str 
     """``builder/research``'s bundles that ``main`` lacks, on ``main``, with
     their weights written again; None when there are none."""
     folder = f"{_prefix(rel)}research/"
-    names = _git(top, "diff", "--name-only", _MAIN_REF, pending, "--", folder).stdout.split()
+    # Only the branch's own bundles, added since it left main (three dots):
+    # one main has, from a run by hand, is main's to keep as it is.
+    names = _git(top, "diff", "--name-only", "--diff-filter=A", f"{_MAIN_REF}...{pending}", "--",
+                 folder).stdout.split()
     bundles = sorted({"/".join(n.split("/")[: folder.count("/") + 2]) for n in names})
     _git(worktree, "reset", "--hard", "-q", _MAIN_REF, check=True)
-    _git(top, "update-ref", _RESEARCH_REF, _MAIN_REF, check=True)
     if not bundles:
+        _git(top, "update-ref", _RESEARCH_REF, _MAIN_REF, check=True)
         return None
+    # The branch moves only once the redo is committed: until then, a
+    # failure leaves its research where it was.
     _git(worktree, "checkout", "-q", pending, "--", *bundles, check=True)
     lines = []
     for path in bundles:
-        symbol = path[len(folder):].split("/", 1)[0]
-        lines.extend(apply_weights(data, symbol, worktree / path).lines)
+        symbol, _, folder_name = path[len(folder):].partition("/")
+        try:
+            researched = date.fromisoformat(folder_name[:10])  # YYYY-MM-DD, or with -2...
+        except ValueError:
+            researched = None
+        lines.extend(apply_weights(data, symbol, worktree / path, today=researched).lines)
     _git(worktree, "add", "-A", "--", *bundles, *(f"{_prefix(rel)}{n}" for n in WEIGHT_FILES),
          check=True)
     _git(worktree, *price_schedule._QUIET, "commit", "-q", "-m",
@@ -496,7 +524,8 @@ def research(
             return ResearchOutcome(["another research of this data repo is running"])
         if price_schedule._ref(top, _MAIN_REF) is None:
             raise ResearchScheduleError(f"the data repo has no {price_schedule.DATA_BRANCH} branch")
-        state = _update_state(top, attempted=now.timestamp(), day=day)
+        # A symbol named by hand isn't the day's pick: the schedule's still runs.
+        state = _update_state(top, attempted=now.timestamp(), **({"day": day} if symbol is None else {}))
         data = _prepare(top, worktree, rel)
         chosen = symbol or next(iter(due_symbols(data, state, now)), None)
         if chosen is None:
@@ -506,8 +535,11 @@ def research(
         failing: dict[str, Any] = dict(state.get("failing") or {})
         with tempfile.TemporaryDirectory(prefix=f"research-{chosen}-") as tmp:
             work = Path(tmp)
-            report = runner(chosen, work, data, progress)
-            kept = [p for p in work.iterdir() if p.is_file() and p.suffix.lower() in (".md", ".json", ".csv")]
+            try:
+                report = runner(chosen, work, data, progress)
+            except Exception as exc:  # noqa: BLE001 - any failure is the symbol's, recorded below
+                report = RunReport(False, f"{type(exc).__name__}: {exc}")
+            kept = [p for p in work.iterdir() if p.is_file() and p.suffix.lower() in research_mod.KEPT_SUFFIXES]
             costs = [c for c in state.get("costs") or [] if now.timestamp() - c[0] < COST_DAYS * 86400]
             if report.cost_usd is not None:
                 costs.append([now.timestamp(), report.cost_usd])
