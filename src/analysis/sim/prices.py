@@ -218,43 +218,10 @@ def fill_names(data_dir: Path, names: dict[str, str]) -> list[str]:
     """Give each symbol in ``names`` its name in ``securities.csv`` where it
     has none, adding its row when absent (Bob, #640: a price fetch or a
     research that finds a name fills it in). A name already there is kept.
-    Returns the symbols named."""
-    import os
-    import tempfile
+    Returns the symbols named. The one writer is :func:`symbols.fill_names`."""
+    from analysis.sim import symbols
 
-    path = data_dir / "securities.csv"
-    header: list[str] = ["symbol", "name"]
-    rows: list[dict[str, str]] = []
-    if path.exists():
-        with path.open(newline="", encoding="utf-8") as fh:
-            reader = csv.DictReader(fh)
-            header = list(reader.fieldnames or header)
-            rows = [dict(row) for row in reader]
-        if "symbol" not in header or "name" not in header:
-            return []
-    by_symbol = {(r.get("symbol") or "").strip(): r for r in rows}
-    named = []
-    for symbol, name in sorted(names.items()):
-        name = " ".join((name or "").split())
-        if not name or symbol in NO_PRICE_SYMBOLS or is_lot_key(symbol):
-            continue
-        row = by_symbol.get(symbol)
-        if row is None:
-            row = {"symbol": symbol, "name": ""}
-            rows.append(row)
-            by_symbol[symbol] = row
-        if (row.get("name") or "").strip():
-            continue
-        row["name"] = name
-        named.append(symbol)
-    if named:
-        fd, tmp = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
-        with os.fdopen(fd, "w", newline="", encoding="utf-8") as fh:
-            writer = csv.DictWriter(fh, fieldnames=header, extrasaction="ignore", lineterminator="\n")
-            writer.writeheader()
-            writer.writerows(rows)
-        os.replace(tmp, path)
-    return named
+    return symbols.fill_names(data_dir, names)
 
 
 def known_symbols(data_dir: Path) -> list[str]:

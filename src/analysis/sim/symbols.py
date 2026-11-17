@@ -329,6 +329,40 @@ def add_symbol(
     return SymbolAdded(symbol, named=bool(name), weighted=bool(weights))
 
 
+def fill_names(data_dir: Path, names: Mapping[str, str]) -> list[str]:
+    """Give each symbol in ``names`` its name in ``securities.csv`` where it
+    has none, adding its row when absent (#640). A name already there is
+    kept, and CASH, CD and lot keys are never named. Returns the symbols
+    named; a file that wouldn't load afterwards is left as it is."""
+    path = data_dir / SECURITIES
+    header, rows = _read(path)
+    header = header or list(_SECURITY_COLUMNS)
+    if "symbol" not in header or "name" not in header:
+        return []
+    by_symbol = {(r.get("symbol") or "").strip(): r for r in rows}
+    named = []
+    for symbol, name in sorted(names.items()):
+        name = " ".join((name or "").split())
+        if not name or symbol in registries.SYMBOL_ASSET_CLASS or is_lot_key(symbol):
+            continue
+        row = by_symbol.get(symbol)
+        if row is None:
+            row = by_symbol[symbol] = {"symbol": symbol, "name": ""}
+            rows.append(row)
+        if (row.get("name") or "").strip():
+            continue
+        row["name"] = name
+        named.append(symbol)
+    if not named:
+        return []
+    issues: list[str] = []
+    _validate_securities(rows, issues)
+    if issues:
+        return []
+    os.replace(_write_atomic(path, header, rows), path)
+    return named
+
+
 def edit_security(
     data_dir: Path, symbol: str, *, name: str | None = None, no_fetch: bool | None = None,
 ) -> bool:

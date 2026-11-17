@@ -15590,16 +15590,11 @@ def _confirm_and_write_research(
         _fill_research_name(data, symbol, name if new_symbol else None)
         return
     try:
-        added = symbols.add_symbol(
-            data, symbol, name=name if new_symbol and existing_name is None else None,
-            weights=allocation.weights, as_of=allocation.as_of or None, replace=replacing,
-        )
+        symbols.add_symbol(data, symbol, weights=allocation.weights, as_of=allocation.as_of or None,
+                           replace=replacing)
     except ValueError as exc:
         raise click.ClickException(f"{exc}\nThe bundle is kept at {bundle}") from None
-    if new_symbol and existing_name is not None and name:
-        symbols.edit_security(data, symbol, name=name)  # its row is there, unnamed
-    if (added.named or existing_name == "") and name:
-        click.echo(f"{symbol}: named {name!r} in securities.csv")
+    _fill_research_name(data, symbol, name if new_symbol else None)
     verb = "replaced in" if replacing else "written to"
     click.echo(f"{symbol}: {', '.join(f'{c} {w}' for c, w in allocation.weights.items())} {verb} allocations.csv")
     if symbol not in registries.SYMBOL_ASSET_CLASS and not (data / "prices" / f"security_price__{symbol}.csv").exists():
