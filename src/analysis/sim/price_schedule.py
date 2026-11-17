@@ -85,10 +85,17 @@ _MAIN_REF = f"refs/heads/{DATA_BRANCH}"
 # Commits the builder makes in its own worktree: no hooks (it isn't a
 # worktree the builder watches) and no signing (nobody is there to unlock a key).
 _QUIET = ("-c", "core.hooksPath=/dev/null", "-c", "commit.gpgsign=false")
-# What git sets for a hook: the repository that ran it. Git honors these over
-# -C, so inherited by a builder a hook started they'd aim every command at the
-# worktree that ran the hook instead (#627).
-HOOK_GIT_ENV = ("GIT_DIR", "GIT_INDEX_FILE", "GIT_WORK_TREE", "GIT_PREFIX", "GIT_COMMON_DIR")
+# What names a repository to git: what a hook gets for the repository that
+# ran it, and what a caller may have set. Git honors these over -C, so
+# inherited by a builder they'd aim its commands at that repository instead
+# (#627); an object directory alone sends a commit's objects there while the
+# ref goes to the data repo (#646). `git rev-parse --local-env-vars`'s list.
+HOOK_GIT_ENV = (
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_CONFIG", "GIT_CONFIG_PARAMETERS", "GIT_CONFIG_COUNT",
+    "GIT_OBJECT_DIRECTORY", "GIT_DIR", "GIT_WORK_TREE", "GIT_IMPLICIT_WORK_TREE", "GIT_GRAFT_FILE",
+    "GIT_INDEX_FILE", "GIT_NO_REPLACE_OBJECTS", "GIT_REPLACE_REF_BASE", "GIT_PREFIX",
+    "GIT_SHALLOW_FILE", "GIT_COMMON_DIR", "GIT_QUARANTINE_PATH",
+)
 SWITCH_ENV = "ANALYSIS_PRICE_FETCH"
 MARKET = ZoneInfo("America/New_York")
 # After the 16:00 close, once the provider's close is final.
@@ -264,17 +271,49 @@ def _sparse_patterns(rel: str) -> list[str]:
             f"{base}scenarios/*/account_lots.csv", f"{base}scenarios/*/scenario.csv"]
 
 
+def worktree_ok(top: Path, worktree: Path) -> bool:
+    """Whether ``worktree`` is a worktree of ``top``'s repository, at its own
+    top: not missing, not left from another clone, and not a folder whose git
+    walks up to an enclosing repository (#646). Otherwise a commit made there
+    lands in another object store, and moving the branch fails with
+    "nonexistent object"."""
+    if not (worktree / ".git").is_file():  # a linked worktree's .git is a file
+        return False
+    own = _git(worktree, "rev-parse", "--show-toplevel")
+    if own.returncode or Path(own.stdout.strip()).resolve() != worktree.resolve():
+        return False
+    common = _git(worktree, "rev-parse", "--git-common-dir")
+    if common.returncode:
+        return False
+    path = Path(common.stdout.strip())
+    path = path if path.is_absolute() else worktree / path
+    return path.resolve() == _common_dir(top).resolve()
+
+
+def ensure_worktree(top: Path, worktree: Path, *, checkout: bool = True) -> None:
+    """``worktree`` as a detached worktree of ``top``'s repository at
+    ``main``, made again when it is missing or isn't one (:func:`worktree_ok`)."""
+    if worktree_ok(top, worktree):
+        return
+    if (worktree / ".git").is_file():
+        # Unregistered from whichever repository it belongs to, which may
+        # not be this one (#646), so that one isn't left a stale entry.
+        _git(worktree, "worktree", "remove", "--force", str(worktree))
+    _git(top, "worktree", "prune")
+    if worktree.is_symlink():
+        worktree.unlink()
+    elif worktree.exists():
+        shutil.rmtree(worktree)
+    worktree.parent.mkdir(parents=True, exist_ok=True)
+    _git(top, "worktree", "add", *([] if checkout else ["--no-checkout"]), "--detach", str(worktree),
+         DATA_BRANCH, check=True)
+
+
 def _prepare(top: Path, worktree: Path, rel: str) -> str | None:
     """The sparse worktree at ``builder/prices`` with ``main`` merged in
     (:func:`_merge_main`), nothing left over; a line for the log when the
     branch had to start over from ``main``."""
-    if not (worktree / ".git").exists():
-        _git(top, "worktree", "prune")
-        if worktree.exists():
-            shutil.rmtree(worktree)
-        worktree.parent.mkdir(parents=True, exist_ok=True)
-        _git(top, "worktree", "add", "--no-checkout", "--detach", str(worktree), DATA_BRANCH,
-             check=True)
+    ensure_worktree(top, worktree, checkout=False)
     _git(worktree, "sparse-checkout", "set", "--no-cone", *_sparse_patterns(rel), check=True)
     base = _PRICES_REF if _ref(top, _PRICES_REF) else _MAIN_REF
     _git(worktree, "reset", "--hard", "-q", base, check=True)
@@ -502,7 +541,7 @@ def _merge_main_again(top: Path, worktree: Path) -> str | None | Literal[False]:
     the branch's new tip, None when that leaves nothing for ``main``
     (:func:`_settle`), or False when it fails or the worktree is gone (the
     next fetch starts over)."""
-    if not (worktree / ".git").exists():
+    if not worktree_ok(top, worktree):
         return False
     if _git(worktree, "reset", "--hard", "-q", _PRICES_REF).returncode:
         return False

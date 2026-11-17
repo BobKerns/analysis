@@ -277,13 +277,7 @@ def _prepare(top: Path, worktree: Path, data_dir: Path, rel: str) -> Path:
     """The roll's worktree at ``main``, nothing left over, with the data
     repo's runs (which hold what each scenario's run projected) linked in
     where the worktree's own would be; its data dir."""
-    if not (worktree / ".git").exists():
-        _git(top, "worktree", "prune")
-        if worktree.exists():
-            shutil.rmtree(worktree)
-        worktree.parent.mkdir(parents=True, exist_ok=True)
-        _git(top, "worktree", "add", "--detach", str(worktree), price_schedule.DATA_BRANCH,
-             check=True)
+    price_schedule.ensure_worktree(top, worktree)
     _git(worktree, "reset", "--hard", "-q", _MAIN_REF, check=True)
     # Not -x: the linked runs (state/ is ignored) stay.
     _git(worktree, "clean", "-fdq", check=True)
