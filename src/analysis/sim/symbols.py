@@ -27,8 +27,9 @@ from analysis.sim.dates import month_end_iso
 from analysis.sim.loader import _validate_allocations, _validate_securities
 
 __all__ = [
-    "SymbolAdded", "add_symbol", "edit_security", "has_weights", "latest_set", "no_fetch_symbols",
-    "normalize_symbol", "parse_weights", "security_name", "symbol_table",
+    "SymbolAdded", "SymbolDeleted", "add_symbol", "delete_symbol", "edit_security", "has_weights",
+    "holders", "latest_set", "leftovers", "no_fetch_symbols", "normalize_symbol", "parse_weights",
+    "price_files_of", "security_name", "set_weights", "symbol_table",
 ]
 
 SECURITIES = "securities.csv"
@@ -287,7 +288,8 @@ def add_symbol(
         if any(same_set(r) for r in old):
             if not replace:
                 dated = f" as of {when}" if when else " with a blank as_of"
-                raise ValueError(f"{symbol} already has weights{dated} in {ALLOCATIONS}; edit that file to change them")
+                raise ValueError(f"{symbol} already has weights{dated} in {ALLOCATIONS}; "
+                                 "change them with `sim symbol edit --weight`")
             # In place of the old set, so the file's diff reads as an edit.
             at = next(i for i, r in enumerate(old) if same_set(r))
             kept = [r for r in old if not same_set(r)]
@@ -302,6 +304,12 @@ def add_symbol(
             raise ValueError("; ".join(issues))
         writes.append((path, header, rows))
 
+    _write_all(writes)
+    return SymbolAdded(symbol, named=bool(name), weighted=bool(weights))
+
+
+def _write_all(writes: list[tuple[Path, list[str], list[dict[str, str]]]]) -> None:
+    """Write each ``(path, header, rows)``: every file or none."""
     temps: list[tuple[Path, Path]] = []
     try:
         for path, header, rows in writes:
@@ -326,7 +334,6 @@ def add_symbol(
         for tmp, _path in temps[done:]:
             tmp.unlink(missing_ok=True)
         raise
-    return SymbolAdded(symbol, named=bool(name), weighted=bool(weights))
 
 
 def fill_names(data_dir: Path, names: Mapping[str, str]) -> list[str]:
@@ -399,3 +406,97 @@ def edit_security(
         raise ValueError("; ".join(issues))
     os.replace(_write_atomic(path, header, rows), path)
     return True
+
+
+def set_weights(
+    data_dir: Path, symbol: str, weights: Mapping[str, str], as_of: str | None = None,
+) -> tuple[str, bool]:
+    """Give ``symbol`` a set of weights in ``allocations.csv`` (#191).
+
+    With ``as_of``, the set for that month is replaced, or a new dated set is
+    added beside the others. Without it, the latest set is corrected in place,
+    keeping its ``as_of``; a symbol with no set gets an undated one. Returns
+    the ``as_of`` written (blank for every date) and whether a set was
+    replaced. Raises ``ValueError``, writing nothing, when the set would not
+    load."""
+    symbol = normalize_symbol(symbol)
+    if not weights:
+        raise ValueError("give the weights, e.g. --weight stock_us=60% --weight bond=40%")
+    if as_of is None:
+        latest = latest_set(data_dir, symbol)
+        as_of = latest[0] if latest else ""
+    as_of = as_of.strip()
+    replaced = has_weights(data_dir, symbol, as_of)
+    add_symbol(data_dir, symbol, weights=weights, as_of=as_of or None, replace=True)
+    return as_of, replaced
+
+
+def holders(data_dir: Path, symbol: str) -> list[str]:
+    """The ``scenario: account (lot)`` lots, in any scenario, holding ``symbol``."""
+    return _holders(data_dir / "scenarios").get(symbol, [])
+
+
+def price_files_of(data_dir: Path, symbol: str) -> list[Path]:
+    """``symbol``'s price files: the shared one, then each scenario's own."""
+    found = [p for p in [price_files(data_dir / "prices").get(symbol)] if p is not None]
+    scenarios = data_dir / "scenarios"
+    if scenarios.is_dir():
+        for folder in sorted(p for p in scenarios.iterdir() if p.is_dir()):
+            if (path := price_files(folder / "prices").get(symbol)) is not None:
+                found.append(path)
+    return found
+
+
+def leftovers(data_dir: Path, symbol: str) -> list[Path]:
+    """What ``delete_symbol`` leaves in place but a reader may want to know
+    about: its ``research/`` folder, and the rate series named for it
+    (``rate__<SYMBOL>.csv``, ``rate__<SYMBOL>.<class>.csv``; ADR-005 §5),
+    which nothing reads once no lot holds it."""
+    # Imported here: research pulls in the plugin machinery.
+    from analysis.sim.research import RESEARCH_DIR
+
+    found = [p for p in [data_dir / RESEARCH_DIR / symbol] if p.is_dir()]
+    names = {f"rate__{symbol}.csv", *(f"rate__{symbol}.{c}.csv" for c in registries.ASSET_CLASSES)}
+    found += sorted(p for p in (data_dir / "scenarios").glob("*/series/rate__*.csv") if p.name in names)
+    return found
+
+
+@dataclass
+class SymbolDeleted:
+    symbol: str
+    named: bool
+    """Its ``securities.csv`` row was removed."""
+    weight_sets: int
+    """How many sets of weights were removed from ``allocations.csv``."""
+    prices: list[Path]
+    """The price files removed."""
+
+
+def delete_symbol(data_dir: Path, symbol: str, *, prices: bool = False) -> SymbolDeleted:
+    """Remove ``symbol`` from the data repo (#191): its ``securities.csv``
+    row, its ``allocations.csv`` rows and, with ``prices``, its price files
+    (the shared one and each scenario's own). Raises ``ValueError``, changing
+    nothing, while a lot in any scenario holds it, or when nothing names it."""
+    symbol = normalize_symbol(symbol)
+    if held := holders(data_dir, symbol):
+        raise ValueError(f"{symbol} is held by {len(held)} lot(s); change or delete them first:\n  "
+                         + "\n  ".join(held))
+    writes: list[tuple[Path, list[str], list[dict[str, str]]]] = []
+    header, rows = _read(data_dir / SECURITIES)
+    kept = [r for r in rows if r.get("symbol") != symbol]
+    named = len(kept) < len(rows)
+    if named:
+        writes.append((data_dir / SECURITIES, header, kept))
+    header, rows = _read(data_dir / ALLOCATIONS)
+    kept = [r for r in rows if r.get("symbol") != symbol]
+    sets = len({_month_key(r.get("as_of", "")) for r in rows if r.get("symbol") == symbol})
+    if sets:
+        writes.append((data_dir / ALLOCATIONS, header, kept))
+    files = price_files_of(data_dir, symbol)
+    if not writes and not files:
+        raise ValueError(f"{symbol} is not in {SECURITIES}, {ALLOCATIONS} or any prices/ folder")
+    _write_all(writes)
+    removed = files if prices else []
+    for path in removed:
+        path.unlink()
+    return SymbolDeleted(symbol, named=named, weight_sets=sets, prices=removed)

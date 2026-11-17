@@ -15273,47 +15273,164 @@ def _ask_symbol() -> tuple[str, str | None, tuple[str, ...], str | None]:
 @click.option("--never-fetch/--may-fetch", "no_fetch", default=None,
               help="Mark it no_fetch in securities.csv, or clear the mark: a marked symbol's "
                    "prices are fetched, and it is researched, only when it is named.")
+@click.option("--weight", "weight_specs", multiple=True, metavar="CLASS=PERCENT",
+              help="Its share in one asset class (repeatable); together they make a whole new "
+                   "set, adding up to 100%. Without --as-of, they correct its latest set.")
+@click.option("--as-of", "as_of", default=None, metavar="YYYY-MM",
+              help="The month the --weight set describes: replaces that month's set, or adds a "
+                   "new dated set beside the others.")
 @click.option("--data-dir", type=click.Path(exists=True, file_okay=False, path_type=Path),
               default=None, help="Data repo (default: $ANALYSIS_DATA_DIR)")
 def symbol_edit_command(
-    symbol: str | None, name: str | None, no_fetch: bool | None, data_dir: Path | None,
+    symbol: str | None, name: str | None, no_fetch: bool | None,
+    weight_specs: tuple[str, ...], as_of: str | None, data_dir: Path | None,
 ) -> None:
-    """Change a symbol's securities.csv row: its name, or its no_fetch mark.
+    """Change a symbol: its name, its no_fetch mark, or its asset-class weights.
 
-    With no options, shows the row and asks for each field. A symbol with no
-    row gets one, unnamed unless a name is given. A symbol marked no_fetch
-    (one nothing can price, or an obsolete one) is skipped by `sim prices
-    fetch` with no symbol named and by the background builder's price fetch
-    and research; naming it runs it anyway, with a warning (#640). Weights
-    are changed in allocations.csv, or with `sim symbol research`.
+    With no options, shows what it has and asks for each. A symbol with no
+    securities.csv row gets one, unnamed unless a name is given. A symbol
+    marked no_fetch (one nothing can price, or an obsolete one) is skipped by
+    `sim prices fetch` with no symbol named and by the background builder's
+    price fetch and research; naming it runs it anyway, with a warning (#640).
+
+    --weight writes a whole set of weights to allocations.csv (#191). With
+    --as-of it replaces that month's set, or adds a new dated one (a fund's
+    glide path); without it, it corrects the latest set, keeping its date.
+    A symbol with no weights yet gets a set for every date. `sim symbol
+    research` can look the weights up.
     """
     data = _resolve_data_dir(data_dir)
     if symbol is None:
         symbol = _ask_name("symbol", names.symbols(data), other=lambda _new: True)
     try:
         symbol = symbols.normalize_symbol(symbol)
+        weights = symbols.parse_weights(list(weight_specs))
     except ValueError as exc:
         raise click.UsageError(str(exc)) from None
+    if as_of is not None and not weights:
+        raise click.UsageError("--as-of dates a set of weights; give --weight too")
     current = symbols.security_name(data, symbol)
     marked = symbol in prices.no_fetch_symbols(data)
-    if name is None and no_fetch is None:
+    if name is None and no_fetch is None and not weights:
+        latest = symbols.latest_set(data, symbol)
         click.echo(f"{symbol}: name {current or '(none)'}; "
-                   f"{'marked no_fetch' if marked else 'fetched and researched'}")
+                   f"{'marked no_fetch' if marked else 'fetched and researched'}; "
+                   f"weights {_weight_set_text(latest)}")
         name = click.prompt("name (blank: none)", default=current or "",
                             show_default=bool(current)).strip()
         no_fetch = click.confirm("mark it no_fetch (no price fetch or research unless named)?",
                                  default=marked)
+        weights, as_of = _ask_weight_change(latest)
+    changed, written, replaced = False, "", False
     try:
-        changed = symbols.edit_security(data, symbol, name=name, no_fetch=no_fetch)
+        if name is not None or no_fetch is not None:
+            changed = symbols.edit_security(data, symbol, name=name, no_fetch=no_fetch)
+        if weights:
+            written, replaced = symbols.set_weights(data, symbol, weights, as_of)
     except ValueError as exc:
         raise click.ClickException(str(exc)) from None
-    if not changed:
+    if changed:
+        shown = symbols.security_name(data, symbol)
+        mark = symbol in prices.no_fetch_symbols(data)
+        click.echo(f"{symbol}: name {shown or '(none)'}; "
+                   f"{'marked no_fetch' if mark else 'fetched and researched'} (securities.csv)")
+    if weights:
+        dated = f"as of {written}" if written else "for every date"
+        click.echo(f"{symbol}: {', '.join(f'{c} {w}' for c, w in weights.items())} {dated} "
+                   f"({'replaced' if replaced else 'added to'} allocations.csv)")
+    elif not changed:
         click.echo(f"{symbol}: unchanged")
-        return
-    shown = symbols.security_name(data, symbol)
-    mark = symbol in prices.no_fetch_symbols(data)
-    click.echo(f"{symbol}: name {shown or '(none)'}; "
-               f"{'marked no_fetch' if mark else 'fetched and researched'} (securities.csv)")
+
+
+def _weight_set_text(found: tuple[str, list[tuple[str, str]]] | None) -> str:
+    """A set of weights as ``symbol list`` shows it: ``stock_us 60%, bond 40% (as of 2026-01)``."""
+    if found is None:
+        return "(none)"
+    as_of, classes = found
+    return ", ".join(f"{c} {w}" for c, w in classes) + (f" (as of {as_of})" if as_of else "")
+
+
+def _ask_weight_change(
+    latest: tuple[str, list[tuple[str, str]]] | None,
+) -> tuple[dict[str, str], str | None]:
+    """``symbol edit``'s guided weights: a new set, or none to keep them, and its as_of."""
+    click.echo(f"  asset classes: {registries.asset_class_list()}")
+    while True:
+        text = click.prompt("new weights, e.g. stock_us=60% bond=40% (blank: keep)",
+                            default="", show_default=False).strip()
+        try:
+            weights = symbols.parse_weights(text.split()) if text else {}
+        except ValueError as exc:
+            click.echo(f"  {exc}")
+            continue
+        total = sum(units.percent_to_micros(w) for w in weights.values())
+        if weights and total != 1_000_000:
+            click.echo(f"  these add up to {units.micros_to_percent(total)}, not 100%")
+            continue
+        break
+    if not weights:
+        return {}, None
+    kept = latest[0] if latest else ""
+    where = f"the latest set, as of {kept}" if kept else (
+        "the latest set" if latest else "a set for every date")
+    as_of = click.prompt(f"as of YYYY-MM (blank: {where})", default="", show_default=False).strip()
+    return weights, as_of or None
+
+
+@symbol_group_command.command("delete")
+@click.argument("symbol", type=completion.SYMBOL, required=False)
+@click.option("--prices/--keep-prices", "delete_prices", default=None,
+              help="Also delete its price files, the shared one and any scenario's own "
+                   "(default: asked).")
+@click.option("--yes", is_flag=True, help="Delete without asking for confirmation.")
+@click.option("--data-dir", type=click.Path(exists=True, file_okay=False, path_type=Path),
+              default=None, help="Data repo (default: $ANALYSIS_DATA_DIR)")
+def symbol_delete_command(
+    symbol: str | None, delete_prices: bool | None, yes: bool, data_dir: Path | None,
+) -> None:
+    """Remove a symbol added by mistake: its securities.csv and allocations.csv rows.
+
+    Refuses while a lot in any scenario holds it, and lists them. Its price
+    files (prices/security_price__SYMBOL.csv, and any scenario's own) go too
+    after asking, or with --prices. Its research/ folder and any rate series
+    named for it are left in place and named.
+    """
+    data = _resolve_data_dir(data_dir)
+    if symbol is None:
+        symbol = _ask_name("symbol", names.symbols(data))
+    try:
+        symbol = symbols.normalize_symbol(symbol)
+    except ValueError as exc:
+        raise click.UsageError(str(exc)) from None
+    if held := symbols.holders(data, symbol):
+        raise click.ClickException(
+            f"{symbol} is held by {len(held)} lot(s); change or delete them first:\n  "
+            + "\n  ".join(held))
+    files = symbols.price_files_of(data, symbol)
+    if symbols.security_name(data, symbol) is None and symbols.latest_set(data, symbol) is None and not files:
+        raise click.ClickException(f"{symbol} is not in securities.csv, allocations.csv or any prices/ folder")
+    if not yes and not click.confirm(f"delete {symbol} from securities.csv and allocations.csv?",
+                                     default=False):
+        raise click.Abort
+    if delete_prices is None:
+        delete_prices = bool(files) and click.confirm(
+            "also delete its price files?\n  " + "\n  ".join(str(p.relative_to(data)) for p in files)
+            + "\n", default=False)
+    try:
+        deleted = symbols.delete_symbol(data, symbol, prices=bool(delete_prices))
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from None
+    if deleted.named:
+        click.echo(f"{symbol}: removed from securities.csv")
+    if deleted.weight_sets:
+        click.echo(f"{symbol}: removed {deleted.weight_sets} set(s) of weights from allocations.csv")
+    for path in deleted.prices:
+        click.echo(f"{symbol}: deleted {path.relative_to(data)}")
+    for path in files:
+        if path not in deleted.prices:
+            click.echo(f"{symbol}: kept {path.relative_to(data)}")
+    for path in symbols.leftovers(data, symbol):
+        click.echo(f"{symbol}: left in place: {path.relative_to(data)}")
 
 
 @symbol_group_command.command("research")

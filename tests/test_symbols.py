@@ -1,4 +1,4 @@
-"""`sim symbol add|list`: a stock or fund's name, allocation and prices (issue #127)."""
+"""`sim symbol add|edit|delete|list`: a stock or fund's name, allocation and prices (#127, #191)."""
 
 from __future__ import annotations
 
@@ -203,9 +203,9 @@ def test_edit_marks_a_symbol_with_no_row_and_clears_the_mark(test_data_dir: Path
     assert "unchanged" in _sim(test_data_dir, "edit", "GONE", "--may-fetch").output
 
 
-def test_guided_edit_asks_for_the_name_and_the_mark(test_data_dir: Path) -> None:
+def test_guided_edit_asks_for_the_name_the_mark_and_the_weights(test_data_dir: Path) -> None:
     (test_data_dir / "securities.csv").write_text("symbol,name\nVTI,Total market\n")
-    result = _sim(test_data_dir, "edit", "VTI", input="Total stock market\ny\n")
+    result = _sim(test_data_dir, "edit", "VTI", input="Total stock market\ny\n\n")  # blank: keep weights
     assert result.exit_code == 0, result.output
     assert symbols.security_name(test_data_dir, "VTI") == "Total stock market"
     assert prices.no_fetch_symbols(test_data_dir) == {"VTI"}
@@ -217,3 +217,134 @@ def test_list_shows_the_no_fetch_mark(test_data_dir: Path) -> None:
     assert frame.set_index("symbol").loc["XOLD", "no_fetch"]
     assert "no_fetch" in _sim(test_data_dir, "list").output
 
+
+
+def _allocations(data_dir: Path) -> list[str]:
+    return (data_dir / "allocations.csv").read_text().splitlines()[1:]
+
+
+def test_edit_weights_correct_the_latest_set_and_keep_its_date(test_data_dir: Path, load_test_copy) -> None:
+    (test_data_dir / "allocations.csv").write_text(
+        "symbol,as_of,asset_class,weight\nTGT,,stock_us,90%\nTGT,,bond,10%\n"
+        "TGT,2030-01,stock_us,60%\nTGT,2030-01,bond,40%\nVTI,,stock_us,100%\n")
+    result = _sim(test_data_dir, "edit", "tgt", "--weight", "stock_us=55", "--weight", "bond=45%")
+    assert result.exit_code == 0, result.output
+    assert "TGT: stock_us 55%, bond 45% as of 2030-01 (replaced allocations.csv)" in result.output
+    assert _allocations(test_data_dir) == [
+        "TGT,,stock_us,90%", "TGT,,bond,10%",
+        "TGT,2030-01,stock_us,55%", "TGT,2030-01,bond,45%", "VTI,,stock_us,100%"]
+    load_test_copy()  # what it wrote loads
+
+
+def test_edit_weights_as_of_adds_a_dated_set_or_replaces_that_months(test_data_dir: Path) -> None:
+    (test_data_dir / "allocations.csv").write_text(
+        "symbol,as_of,asset_class,weight\nTGT,,stock_us,90%\nTGT,,bond,10%\n")
+    added = _sim(test_data_dir, "edit", "TGT", "--weight", "bond=100%", "--as-of", "2040-01")
+    assert added.exit_code == 0, added.output
+    assert "as of 2040-01 (added to allocations.csv)" in added.output
+    fixed = _sim(test_data_dir, "edit", "TGT", "--weight", "cash=100%", "--as-of", "2040-01-31")
+    assert fixed.exit_code == 0, fixed.output
+    assert "(replaced allocations.csv)" in fixed.output
+    assert _allocations(test_data_dir) == ["TGT,,stock_us,90%", "TGT,,bond,10%", "TGT,2040-01-31,cash,100%"]
+
+
+def test_edit_weights_give_a_symbol_without_any_a_set_for_every_date(test_data_dir: Path) -> None:
+    result = _sim(test_data_dir, "edit", "ABCDX", "--weight", "other=100%")
+    assert result.exit_code == 0, result.output
+    assert "ABCDX: other 100% for every date (added to allocations.csv)" in result.output
+    assert _allocations(test_data_dir) == ["ABCDX,,other,100%"]
+
+
+@pytest.mark.parametrize(("args", "message"), [
+    (["--weight", "stock_us=60%"], "add up to 60%, not 100%"),
+    (["--as-of", "2026-01"], "give --weight too"),
+    (["--weight", "stocks=100%"], "unknown asset class 'stocks'"),
+])
+def test_edit_refuses_weights_that_would_not_load(test_data_dir: Path, args: list[str], message: str) -> None:
+    before = (test_data_dir / "allocations.csv").read_text()
+    result = _sim(test_data_dir, "edit", "TGT", *args)
+    assert result.exit_code != 0
+    assert message in result.output
+    assert (test_data_dir / "allocations.csv").read_text() == before
+
+
+def test_guided_edit_takes_new_weights_for_the_latest_set(test_data_dir: Path) -> None:
+    (test_data_dir / "allocations.csv").write_text(
+        "symbol,as_of,asset_class,weight\nTGT,2030-01,stock_us,60%\nTGT,2030-01,bond,40%\n")
+    answers = "\nn\nstock_us=50%\nstock_us=50% bond=50%\n\n"
+    result = _sim(test_data_dir, "edit", "TGT", input=answers)
+    assert result.exit_code == 0, result.output
+    assert "weights stock_us 60%, bond 40% (as of 2030-01)" in result.output
+    assert "these add up to 50%, not 100%" in result.output  # asked again
+    assert "blank: the latest set, as of 2030-01" in result.output
+    assert _allocations(test_data_dir) == ["TGT,2030-01,stock_us,50%", "TGT,2030-01,bond,50%"]
+
+
+def _hold(data_dir: Path, symbol: str) -> None:
+    """Give retire_alice a lot holding ``symbol``."""
+    path = data_dir / "scenarios" / "retire_alice" / "account_lots.csv"
+    header = path.read_text().splitlines()[0].split(",")
+    row = {"account_name": "Asset_Brokerage_Joint", "lot": "fund", "symbol": symbol}
+    with path.open("a") as fh:
+        fh.write(",".join(row.get(c, "") for c in header) + "\n")
+
+
+def _with_symbol(data_dir: Path) -> None:
+    (data_dir / "securities.csv").write_text("symbol,name\nXOLD,A mistake\nVTI,Total market\n")
+    (data_dir / "allocations.csv").write_text(
+        "symbol,as_of,asset_class,weight\nXOLD,,bond,100%\nXOLD,2030-01,cash,100%\nVTI,,stock_us,100%\n")
+    (data_dir / "prices" / "security_price__XOLD.csv").write_text("effective_date,price\n2026-01-02,10.00\n")
+    own = data_dir / "scenarios" / "retire_alice" / "prices"
+    own.mkdir(exist_ok=True)
+    (own / "security_price__XOLD.csv").write_text("effective_date,price\n2026-01-02,11.00\n")
+
+
+def test_delete_refuses_while_a_lot_holds_it_and_lists_them(test_data_dir: Path) -> None:
+    _with_symbol(test_data_dir)
+    _hold(test_data_dir, "XOLD")
+    before = (test_data_dir / "allocations.csv").read_text()
+    result = _sim(test_data_dir, "delete", "XOLD", "--yes", "--prices")
+    assert result.exit_code != 0
+    assert "XOLD is held by 1 lot(s)" in result.output
+    assert "retire_alice: Asset_Brokerage_Joint (fund)" in result.output
+    assert (test_data_dir / "allocations.csv").read_text() == before
+    assert (test_data_dir / "prices" / "security_price__XOLD.csv").exists()
+
+
+def test_delete_removes_its_rows_and_asks_about_its_prices(test_data_dir: Path, load_test_copy) -> None:
+    _with_symbol(test_data_dir)
+    research = test_data_dir / "research" / "XOLD"
+    research.mkdir(parents=True)
+    result = _sim(test_data_dir, "delete", "xold", input="y\ny\n")
+    assert result.exit_code == 0, result.output
+    assert "prices/security_price__XOLD.csv" in result.output  # named in the question
+    assert (test_data_dir / "securities.csv").read_text().splitlines() == ["symbol,name", "VTI,Total market"]
+    assert _allocations(test_data_dir) == ["VTI,,stock_us,100%"]
+    assert "removed 2 set(s) of weights" in result.output
+    assert not (test_data_dir / "prices" / "security_price__XOLD.csv").exists()
+    assert not (test_data_dir / "scenarios" / "retire_alice" / "prices" / "security_price__XOLD.csv").exists()
+    assert "left in place: research/XOLD" in result.output
+    assert research.is_dir()
+    load_test_copy()  # what it left loads
+
+
+def test_delete_keep_prices_leaves_the_files(test_data_dir: Path) -> None:
+    _with_symbol(test_data_dir)
+    result = _sim(test_data_dir, "delete", "XOLD", "--yes", "--keep-prices")
+    assert result.exit_code == 0, result.output
+    assert "kept prices/security_price__XOLD.csv" in result.output
+    assert (test_data_dir / "prices" / "security_price__XOLD.csv").exists()
+    assert symbols.security_name(test_data_dir, "XOLD") is None
+
+
+def test_delete_refuses_a_symbol_nothing_names(test_data_dir: Path) -> None:
+    result = _sim(test_data_dir, "delete", "NOPE", "--yes")
+    assert result.exit_code != 0
+    assert "NOPE is not in securities.csv" in result.output
+
+
+def test_delete_without_confirmation_changes_nothing(test_data_dir: Path) -> None:
+    _with_symbol(test_data_dir)
+    result = _sim(test_data_dir, "delete", "XOLD", input="n\n")
+    assert result.exit_code != 0
+    assert symbols.security_name(test_data_dir, "XOLD") == "A mistake"

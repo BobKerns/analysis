@@ -1239,7 +1239,15 @@ asked for each instead. The weights must add up to 100%; `--as-of 2027-01`
 dates a set, and adding another set with a later date follows a fund whose
 mix changes over time, such as a target-date fund. Leave out `--weight` if
 you don't know the mix yet, and add it later; an AI can look it up (below).
-To change a name or a set of weights already written, edit the file.
+
+To change one later, use `sim symbol edit ABCDX`. `--name` renames it, and
+`--weight` (all of them, adding up to 100%) corrects its latest set of
+weights, keeping that set's date; with `--as-of` it replaces that month's set
+instead, or adds a new dated set. With no options it shows what the symbol
+has and asks. `sim symbol delete ABCDX` removes a symbol added by mistake:
+its name and weights, and, if you say so (or pass `--prices`), its price
+files. It refuses while a lot in any scenario still holds the symbol, and
+lists those lots.
 
 If the price provider has no prices for the symbol (a 401(k)'s collective
 trust fund often has no public ticker), the name and weights are still
