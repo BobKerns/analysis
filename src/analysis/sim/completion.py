@@ -408,11 +408,13 @@ AUX_KIND = NameType(lambda ctx, data_dir: sorted(registries.SWAPPABLE_AUX_KINDS)
 
 class LotName(NameType):
     """A lot of the account that ``account_param`` (an argument or option of
-    the same command) names."""
+    the same command) names; for a repeatable option, the one account given."""
 
     def __init__(self, account_param: str) -> None:
         def lister(ctx: click.Context, data_dir: Path) -> Sequence[str]:
             account = _line_params(ctx).get(account_param)
+            if isinstance(account, (tuple, list)) and len(account) == 1:
+                account = account[0]
             if not isinstance(account, str):
                 return []
             return _union(lambda s: names.lot_names(data_dir, s, account),

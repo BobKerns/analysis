@@ -145,3 +145,32 @@ def test_events_widget_account_filter_narrows_the_table(two_lot_run: RunConnecti
     assert "Asset_Checking" in account_picker.account_picker.options
     account_picker.account_picker.value = ("Asset_Checking",)  # must not raise
     reason_picker.value = ("ytd",)
+
+
+def test_filtering_by_rule(two_lot_run: RunConnection) -> None:
+    _heading, table = events_view(two_lot_run, rules=("lot_b_draw",))
+    assert len(table) > 0
+    assert (table["rule"] == "lot_b_draw").all()
+    assert (table["rule_kind"].notna()).all()
+
+
+def test_a_rules_tag_comes_before_its_accounts(report_run: RunConnection) -> None:
+    # Expense_Living is budget:core, but the living rule's own budget:fun wins.
+    _heading, core = events_view(report_run, tags=("budget:core",))
+    assert "Expense_Healthcare" in set(core["to"])
+    assert "living" not in set(core["rule"].dropna())
+    _heading, fun = events_view(report_run, tags=("budget:fun",))
+    assert len(fun) > 0 and set(fun["rule"]) == {"living"}
+    _heading, budget = events_view(report_run, tags=("budget:*",))
+    assert len(budget) == len(core) + len(fun) + len(events_view(report_run, tags=("budget:home",))[1])
+
+
+def test_a_tag_on_either_account_matches(report_run: RunConnection) -> None:
+    _heading, work = events_view(report_run, tags=("source:work",))
+    assert len(work) > 0
+    assert ((work["from"] == "Income_Salary_Alice") | (work["to"] == "Income_Salary_Alice")).all()
+
+
+def test_a_tag_must_name_a_role(report_run: RunConnection) -> None:
+    with pytest.raises(ValueError, match="role:name"):
+        events_view(report_run, tags=("core",))
