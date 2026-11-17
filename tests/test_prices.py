@@ -302,6 +302,24 @@ def test_bare_fetch_gets_a_symbol_no_lot_holds_and_only_reports_its_failure(
     assert named.exit_code != 0 and "TYPED: not found" in named.output
 
 
+def test_a_bare_fetch_skips_a_no_fetch_symbol_and_a_named_one_warns(
+    test_data_dir: Path, add_account_value, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # #640: held or not, a marked symbol is fetched only when named.
+    add_account_value("Asset_Roth_Alice", lot="x", symbol="AAA", quantity="10", opening_balance="1.00")
+    (test_data_dir / "securities.csv").write_text("symbol,name,no_fetch\nAAA,,1\nQQQ,Q,\n")
+    provider = FakeProvider({"AAA": DAILY, "QQQ": DAILY})
+    monkeypatch.setitem(prices.PRICE_PROVIDERS, "yahoo", lambda: provider)
+    runner = CliRunner()
+    result = runner.invoke(main, ["sim", "prices", "fetch", "--data-dir", str(test_data_dir)])
+    assert result.exit_code == 0, result.output
+    assert [asked[0] for asked in provider.asked] == ["QQQ"]
+    named = runner.invoke(main, ["sim", "prices", "fetch", "AAA", "--data-dir", str(test_data_dir)])
+    assert named.exit_code == 0, named.output
+    assert "warning: AAA is marked no_fetch" in named.output
+    assert [asked[0] for asked in provider.asked] == ["QQQ", "AAA"]
+
+
 def test_a_held_symbol_still_fails_a_bare_fetch(
     test_data_dir: Path, add_account_value, monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -122,7 +122,7 @@ The snapshot in a run file is byte-comparable to the corresponding intent file's
 
 ### Intent layer DDL
 
-The DDL in this section and the next four is copied from `src/analysis/sim/schema.py` (`SCHEMA_VERSION` 68) and must be kept identical to it; the code is authoritative. These tables exist in both intent files and (as snapshot) run files. Not in the DDL: `tag`, `account_tag`, `scheduled_transaction_tag` and `calendar_event_tag` are a generic labelling facility (role/name pairs) that no loader writes yet.
+The DDL in this section and the next four is copied from `src/analysis/sim/schema.py` (`SCHEMA_VERSION` 69) and must be kept identical to it; the code is authoritative. These tables exist in both intent files and (as snapshot) run files. Not in the DDL: `tag`, `account_tag`, `scheduled_transaction_tag` and `calendar_event_tag` are a generic labelling facility (role/name pairs) that no loader writes yet.
 
 ```sql
 CREATE TABLE person (
@@ -135,10 +135,12 @@ CREATE TABLE person (
 );
 
 -- Names for the symbols lots hold (data repo securities.csv); shared reference
--- data like `person`. A symbol without a row is simply unnamed.
+-- data like `person`. A symbol without a row, or with a blank name, is simply
+-- unnamed. no_fetch (#640): no price fetch or research unless named.
 CREATE TABLE security (
-    symbol  TEXT PRIMARY KEY,
-    name    TEXT NOT NULL
+    symbol   TEXT PRIMARY KEY,
+    name     TEXT NOT NULL,
+    no_fetch INTEGER NOT NULL DEFAULT 0 CHECK (no_fetch IN (0, 1))
 );
 
 -- What a symbol is made of, by asset class (data repo allocations.csv). One set
@@ -1249,3 +1251,4 @@ Each entry changed this ADR's design. The sections it names were rewritten in pl
 - [#568](https://github.com/BobKerns/analysis/issues/568): a tax jurisdiction also pays back what was paid past the year's tax (Intent layer DDL).
 - [#542](https://github.com/BobKerns/analysis/issues/542): run table `mortgage_balance` (the balance each month's mortgage interest was figured on, for the debt limit) (Placement summary, Ledger DDL, glossary; schema 67).
 - [#586](https://github.com/BobKerns/analysis/issues/586): expense subkind `taxes_local` (Intent layer DDL; schema 68).
+- [#640](https://github.com/BobKerns/analysis/issues/640): `security.no_fetch`, and a blank `security.name` (Intent layer DDL; schema 69).

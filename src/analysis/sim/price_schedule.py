@@ -321,7 +321,8 @@ def fetch(
     builds (:func:`merge_pending`), so a build never reads a price file
     while a merge rewrites it. The symbols are ``sim prices fetch``'s with none named: those held with a
     quantity, and those securities.csv, allocations.csv or a price file
-    names; one no lot holds is noted, not counted as a failure."""
+    names, less those it marks ``no_fetch`` (#640); one no lot holds is
+    noted, not counted as a failure."""
     from analysis.sim import prices
 
     now = now or datetime.now(UTC)
@@ -339,7 +340,8 @@ def fetch(
         use = prices.prices_in_use(data / "scenarios") if (data / "scenarios").is_dir() \
             else prices.PriceUse()
         held = set(use.symbols)
-        chosen = sorted(held | set(prices.known_symbols(data)))
+        # A symbol marked no_fetch (#640) is only fetched when named.
+        chosen = prices.fetchable(data, held | set(prices.known_symbols(data)))
         failing: dict[str, Any] = dict(state.get("failing") or {})
         if not chosen:
             lines.append("no symbols to fetch")

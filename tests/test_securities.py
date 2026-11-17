@@ -39,7 +39,7 @@ def test_the_file_is_optional(test_data_dir: Path, load_test_copy: Callable[[], 
 
 @pytest.mark.parametrize(("text", "message"), [
     ("symbol,name\nVTI,A\nVTI,B\n", r"line 3 \(VTI\): duplicate symbol"),
-    ("symbol,name\nVTI,\n", r"line 2 \(VTI\): missing name"),
+    ("symbol,name,no_fetch\nVTI,A,yes\n", r"line 2 \(VTI\): no_fetch must be 0 or 1"),
     ("symbol,name\n,Apple Inc.\n", r"line 2: missing symbol"),
 ])
 def test_bad_rows_are_rejected(
@@ -48,6 +48,20 @@ def test_bad_rows_are_rejected(
     (test_data_dir / "securities.csv").write_text(text)
     with pytest.raises(LoadError, match=message):
         load_test_copy()
+
+
+def test_a_blank_name_and_the_no_fetch_mark_load(
+    test_data_dir: Path, load_test_copy: Callable[[], LoadResult],
+) -> None:
+    # #640: a row may be there only to mark its symbol no_fetch.
+    (test_data_dir / "securities.csv").write_text(
+        "symbol,name,no_fetch\nOLD,,1\nVTI,Total market,\nBND,Bonds,0\n")
+    con = sqlite3.connect(load_test_copy().intent_path)
+    try:
+        rows = con.execute("SELECT symbol, name, no_fetch FROM security ORDER BY symbol").fetchall()
+    finally:
+        con.close()
+    assert rows == [("BND", "Bonds", 0), ("OLD", "", 1), ("VTI", "Total market", 0)]
 
 
 def test_a_symbol_without_a_row_is_allowed(

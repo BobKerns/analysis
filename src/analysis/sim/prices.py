@@ -191,6 +191,24 @@ def _csv_symbols(path: Path) -> set[str]:
         }
 
 
+def no_fetch_symbols(data_dir: Path) -> set[str]:
+    """Symbols ``securities.csv`` marks ``no_fetch`` (#640): no price fetch
+    or research takes them unless they are named."""
+    path = data_dir / "securities.csv"
+    if not path.exists():
+        return set()
+    with path.open(newline="", encoding="utf-8") as fh:
+        return {s for row in csv.DictReader(fh)
+                if (s := (row.get("symbol") or "").strip())
+                and (row.get("no_fetch") or "").strip() == "1"}
+
+
+def fetchable(data_dir: Path, symbols: Iterable[str]) -> list[str]:
+    """``symbols`` less the ones marked ``no_fetch``, sorted: what a fetch
+    or research with no symbol named takes (#640)."""
+    return sorted(set(symbols) - no_fetch_symbols(data_dir))
+
+
 def known_symbols(data_dir: Path) -> list[str]:
     """Symbols the data repo names without a lot holding them: those in
     ``securities.csv`` or ``allocations.csv``, or with a shared ``prices/`` file,

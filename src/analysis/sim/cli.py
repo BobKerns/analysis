@@ -13983,10 +13983,13 @@ def prices_fetch_command(
     if not scenarios_dir.is_dir():
         raise click.ClickException(f"no scenarios/ in {data}")
     held = prices.prices_in_use(scenarios_dir).symbols
-    chosen = _upper(symbols) or sorted({*held, *prices.known_symbols(data)})
+    marked = prices.no_fetch_symbols(data)
+    chosen = _upper(symbols) or prices.fetchable(data, {*held, *prices.known_symbols(data)})
     if not chosen:
-        click.echo("no symbol in securities.csv, allocations.csv, prices/ or on a lot; nothing to fetch")
+        click.echo("no symbol in securities.csv, allocations.csv, prices/ or on a lot; nothing to fetch"
+                   if not marked else "every symbol is marked no_fetch in securities.csv; nothing to fetch")
         return
+    _warn_no_fetch(chosen, marked)
     optional = set() if symbols else set(chosen) - set(held)
     failed = _fetch_prices(data, chosen, since_text, provider_name,
                            refresh=refresh, dry_run=dry_run, optional=optional)
@@ -13994,6 +13997,15 @@ def prices_fetch_command(
         click.echo("dry run: no files written")
     if failed:
         raise click.ClickException(f"{failed} of {len(chosen)} symbol(s) failed")
+
+
+def _warn_no_fetch(named: Iterable[str], marked: Set[str]) -> None:
+    """#640: a symbol named on the command line runs even when securities.csv
+    marks it no_fetch, with a warning."""
+    for symbol in named:
+        if symbol in marked:
+            click.echo(f"warning: {symbol} is marked no_fetch in securities.csv; going ahead since "
+                       f"you named it (sim symbol edit {symbol} --may-fetch clears the mark)", err=True)
 
 
 def _upper(symbols: tuple[str, ...]) -> list[str]:
@@ -15152,6 +15164,9 @@ def symbol_group_command() -> None:
               help="The month the weights describe (default: every date).")
 @click.option("--fetch/--no-fetch", default=True, show_default=True,
               help="Fetch its prices into prices/security_price__<SYMBOL>.csv.")
+@click.option("--never-fetch", is_flag=True, default=False,
+              help="Mark it no_fetch in securities.csv: nothing fetches its prices or researches "
+                   "it unless it is named (implies --no-fetch).")
 @click.option("--provider", "provider_name", default="yahoo", show_default=True,
               type=click.Choice(sorted(prices.PRICE_PROVIDERS)), help="Where prices come from.")
 @click.option("--since", "since_text", default=None, metavar="YYYY-MM-DD",
@@ -15160,7 +15175,7 @@ def symbol_group_command() -> None:
               default=None, help="Data repo (default: $ANALYSIS_DATA_DIR)")
 def symbol_add_command(
     symbol: str | None, name: str | None, weight_specs: tuple[str, ...], as_of: str | None,
-    fetch: bool, provider_name: str, since_text: str | None, data_dir: Path | None,
+    fetch: bool, never_fetch: bool, provider_name: str, since_text: str | None, data_dir: Path | None,
 ) -> None:
     """Add a stock or fund: its name, its asset-class weights and its prices.
 
@@ -15179,12 +15194,16 @@ def symbol_add_command(
     assert symbol is not None
     try:
         weights = symbols.parse_weights(list(weight_specs))
-        added = symbols.add_symbol(data, symbol, name=name, weights=weights, as_of=as_of)
+        added = symbols.add_symbol(data, symbol, name=name, weights=weights, as_of=as_of,
+                                   no_fetch=never_fetch)
     except ValueError as exc:
         raise click.ClickException(str(exc)) from None
     symbol = added.symbol
+    fetch = fetch and not never_fetch
     if added.named:
         click.echo(f"{symbol}: named {name!r} in securities.csv")
+    if never_fetch:
+        click.echo(f"{symbol}: marked no_fetch in securities.csv")
     if added.weighted:
         click.echo(f"{symbol}: {', '.join(f'{c} {w}' for c, w in weights.items())} in allocations.csv")
     else:
@@ -15203,7 +15222,9 @@ def symbol_add_command(
             words += ["--weight", spec]
         if as_of:
             words += ["--as-of", as_of]
-        if not fetch:
+        if never_fetch:
+            words.append("--never-fetch")
+        elif not fetch:
             words.append("--no-fetch")
         if fetch and provider_name != "yahoo":
             words += ["--provider", provider_name]
@@ -15240,6 +15261,55 @@ def _ask_symbol() -> tuple[str, str | None, tuple[str, ...], str | None]:
         as_of = click.prompt("as of YYYY-MM (optional; blank for every date)",
                              default="", show_default=False).strip() or None
     return symbol, name, tuple(text.split()), as_of
+
+
+@symbol_group_command.command("edit")
+@click.argument("symbol", type=completion.SYMBOL, required=False)
+@click.option("--name", default=None, help="Its name in securities.csv ('' leaves it unnamed).")
+@click.option("--never-fetch/--may-fetch", "no_fetch", default=None,
+              help="Mark it no_fetch in securities.csv, or clear the mark: a marked symbol's "
+                   "prices are fetched, and it is researched, only when it is named.")
+@click.option("--data-dir", type=click.Path(exists=True, file_okay=False, path_type=Path),
+              default=None, help="Data repo (default: $ANALYSIS_DATA_DIR)")
+def symbol_edit_command(
+    symbol: str | None, name: str | None, no_fetch: bool | None, data_dir: Path | None,
+) -> None:
+    """Change a symbol's securities.csv row: its name, or its no_fetch mark.
+
+    With no options, shows the row and asks for each field. A symbol with no
+    row gets one, unnamed unless a name is given. A symbol marked no_fetch
+    (one nothing can price, or an obsolete one) is skipped by `sim prices
+    fetch` with no symbol named and by the background builder's price fetch
+    and research; naming it runs it anyway, with a warning (#640). Weights
+    are changed in allocations.csv, or with `sim symbol research`.
+    """
+    data = _resolve_data_dir(data_dir)
+    if symbol is None:
+        symbol = _ask_name("symbol", names.symbols(data), other=lambda _new: True)
+    try:
+        symbol = symbols.normalize_symbol(symbol)
+    except ValueError as exc:
+        raise click.UsageError(str(exc)) from None
+    current = symbols.security_name(data, symbol)
+    marked = symbol in prices.no_fetch_symbols(data)
+    if name is None and no_fetch is None:
+        click.echo(f"{symbol}: name {current or '(none)'}; "
+                   f"{'marked no_fetch' if marked else 'fetched and researched'}")
+        name = click.prompt("name (blank: none)", default=current or "",
+                            show_default=bool(current)).strip()
+        no_fetch = click.confirm("mark it no_fetch (no price fetch or research unless named)?",
+                                 default=marked)
+    try:
+        changed = symbols.edit_security(data, symbol, name=name, no_fetch=no_fetch)
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from None
+    if not changed:
+        click.echo(f"{symbol}: unchanged")
+        return
+    shown = symbols.security_name(data, symbol)
+    mark = symbol in prices.no_fetch_symbols(data)
+    click.echo(f"{symbol}: name {shown or '(none)'}; "
+               f"{'marked no_fetch' if mark else 'fetched and researched'} (securities.csv)")
 
 
 @symbol_group_command.command("research")
@@ -15476,7 +15546,8 @@ def symbol_list_command(data_dir: Path | None) -> None:
     A symbol appears if any of securities.csv, allocations.csv, prices/, a
     scenario's own prices/ or its account_lots.csv names it. A missing
     allocation or price is shown in red, since `sim allocation` or a lot's
-    opening balance needs it; CASH and CD need no prices.
+    opening balance needs it; CASH and CD need no prices. A symbol marked
+    no_fetch (`sim symbol edit --never-fetch`) says so under its name.
     """
     from rich.console import Console
     from rich.table import Table
@@ -15491,6 +15562,7 @@ def symbol_list_command(data_dir: Path | None) -> None:
                             ("Prices", "right"), ("Latest price", "right"), ("Held by", "left")):
         table.add_column(column, justify=justify)
     for r in named_rows(frame):
+        name = r.name + ("\n[dim]no_fetch[/dim]" if r.no_fetch else "")
         allocation = r.allocation or "[red]none[/red]"
         if r.allocation_sets > 1:
             allocation += f" [dim]+{r.allocation_sets - 1} earlier[/dim]"
@@ -15503,7 +15575,7 @@ def symbol_list_command(data_dir: Path | None) -> None:
         if r.scenario_prices:
             count += f"\n[dim]own file in {', '.join(r.scenario_prices)}[/dim]"
         latest = f"{r.latest_price} ({r.latest_date})" if r.latest_date else ""
-        table.add_row(r.symbol, r.name, allocation, count, latest, "\n".join(r.held_by))
+        table.add_row(r.symbol, name, allocation, count, latest, "\n".join(r.held_by))
     Console().print(table)
 
 

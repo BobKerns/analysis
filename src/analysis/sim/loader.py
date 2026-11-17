@@ -2710,10 +2710,19 @@ def _validate_birthdates(rows: list[dict[str, str]], issues: list[str]) -> None:
             )
 
 
+# securities.csv's no_fetch column (#640): blank is 0.
+NO_FETCH_VALUES = ("", "0", "1")
+
+
+def is_no_fetch(cell: str | None) -> bool:
+    """Whether a ``no_fetch`` cell marks its symbol (``1``)."""
+    return (cell or "").strip() == "1"
+
+
 def _validate_securities(rows: list[dict[str, str]], issues: list[str]) -> None:
     seen: set[str] = set()
     for where, row in _located(rows, "securities.csv"):
-        symbol, name = row.get("symbol", ""), row.get("name", "")
+        symbol = row.get("symbol", "")
         if not symbol:
             issues.append(f"{where}: missing symbol")
             continue
@@ -2721,8 +2730,11 @@ def _validate_securities(rows: list[dict[str, str]], issues: list[str]) -> None:
         if symbol in seen:
             issues.append(f"{where} ({symbol}): duplicate symbol")
         seen.add(symbol)
-        if not name:
-            issues.append(f"{where} ({symbol}): missing name")
+        # A blank name leaves the symbol unnamed (#640): a row may be there
+        # only to mark it no_fetch.
+        if (row.get("no_fetch") or "").strip() not in NO_FETCH_VALUES:
+            issues.append(f"{where} ({symbol}): no_fetch must be 0 or 1 (or blank), "
+                          f"not {row.get('no_fetch')!r}")
 
 
 def _validate_allocations(rows: list[dict[str, str]], issues: list[str]) -> None:
@@ -6968,7 +6980,8 @@ def _write_intent(
 
     for sec in securities:
         con.execute(
-            "INSERT INTO security(symbol, name) VALUES (?,?)", (sec["symbol"], sec["name"]),
+            "INSERT INTO security(symbol, name, no_fetch) VALUES (?,?,?)",
+            (sec["symbol"], sec.get("name") or "", int(is_no_fetch(sec.get("no_fetch")))),
         )
     counts["security"] = len(securities)
 

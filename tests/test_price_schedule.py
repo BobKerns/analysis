@@ -356,6 +356,17 @@ def test_a_failing_symbol_is_recorded_and_does_not_stop_the_others(
     assert price_schedule.stale_held(state, later) == []  # no lot holds it
 
 
+def test_a_scheduled_fetch_skips_a_no_fetch_symbol(
+    commit_files: Callable[..., str],
+    priced: tuple[Path, git.Repo], fetching: None,
+) -> None:
+    data, repo = priced
+    commit_files(repo, {"sim/securities.csv": "symbol,name,no_fetch\nBAD,Gone fund,1\n"}, "BAD")
+    outcome = price_schedule.fetch(data, _worktree(data), provider=FakeProvider(), now=NOW)
+    assert not any(line.startswith("BAD") for line in outcome.lines)
+    assert "BAD" not in (price_schedule.read_state(data).get("failing") or {})
+
+
 def test_a_fetch_where_every_symbol_fails_is_tried_again_later(
     priced: tuple[Path, git.Repo], fetching: None,
 ) -> None:
