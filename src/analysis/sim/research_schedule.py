@@ -662,6 +662,7 @@ def describe(state: dict[str, Any], data_dir: Path, now: datetime, *,
     for symbol, failed in sorted((state.get("failing") or {}).items()):
         days = int((now.timestamp() - failed.get("since", now.timestamp())) // 86400)
         since = f" for {days} days" if days >= 1 else ""
-        lines.append(f"research failing{since}: {symbol}: {failed.get('error')}")
+        lines.append(f"research failing{since}: {symbol} (last tried {when(failed.get('at'))}): "
+                     f"{failed.get('error')}")
     return lines
 

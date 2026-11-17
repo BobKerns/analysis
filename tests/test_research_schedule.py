@@ -183,7 +183,9 @@ def test_a_failed_run_keeps_nothing_and_is_recorded(
     assert repo.commit(research_schedule.RESEARCH_BRANCH).hexsha == main
     state = research_schedule.read_state(data)
     assert state["failing"]["ABCDX"]["error"] == "the skill gave up"
-    assert "research failing: ABCDX: the skill gave up" in research_schedule.describe(state, data, NOW)
+    tried = NOW.astimezone().strftime("%Y-%m-%d %H:%M")  # local time, as status shows it
+    assert f"research failing: ABCDX (last tried {tried}): the skill gave up" \
+        in research_schedule.describe(state, data, NOW)
     # Not again today.
     assert not research_schedule.due(data, {"research": True}, NOW + timedelta(hours=2))
 

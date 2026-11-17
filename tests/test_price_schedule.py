@@ -351,7 +351,11 @@ def test_a_failing_symbol_is_recorded_and_does_not_stop_the_others(
     price_schedule.fetch(data, _worktree(data), provider=FakeProvider(), now=later)
     state = price_schedule.read_state(data)
     assert state["failing"]["BAD"]["since"] == NOW.timestamp()  # when it first failed
-    assert "price failing for 4 days: BAD: no such symbol (no lot holds it)" in \
+    tried = later.astimezone().strftime("%Y-%m-%d %H:%M")  # local time, as status shows it
+    assert f"price failing for 4 days: BAD (last tried {tried}): no such symbol (no lot holds it)" in \
+        price_schedule.describe(state, later)
+    del state["failing"]["BAD"]["at"]  # state from before #648: the fetch's last try
+    assert f"price failing for 4 days: BAD (last tried {tried}): no such symbol (no lot holds it)" in \
         price_schedule.describe(state, later)
     assert price_schedule.stale_held(state, later) == []  # no lot holds it
 
