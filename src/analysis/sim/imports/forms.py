@@ -87,6 +87,10 @@ class Snapshot:
     file's date, where the file has that and the account's one holding is
     its balance. A bank's download is as of the day it was made and never
     of an earlier one; with this its balance on an earlier day is known."""
+    dated: Mapping[dt.date, tuple[Holding, ...]] = field(default_factory=dict)
+    """The holdings as of each date the file has them for, ``as_of`` among
+    them, where it has more than one: a report over a period, with a set
+    of columns for each of its dates (``holdings.nearest`` picks one)."""
     unaccounted: Mapping[str, str] = field(default_factory=dict)
     """By account, why a file that could have such activity has none for
     it, as the end of a sentence: said where the balance was wanted as of

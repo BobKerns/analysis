@@ -21,7 +21,7 @@ from analysis.sim.types import INVESTMENT_ASSET_SUBKINDS, InvestmentAssetSubkind
 from analysis.sim.units import dollars_to_cents
 
 __all__ = [
-    "Change", "HoldingsPlan", "Offer", "at", "format_dollars", "is_investment_asset", "plan",
+    "Change", "HoldingsPlan", "Offer", "at", "nearest", "format_dollars", "is_investment_asset", "plan",
     "roth_basis_note",
 ]
 
@@ -113,6 +113,21 @@ class _Landed:
     """Whether any holding in it has another symbol than the lot's."""
     basis_cents: int | None = 0
     by_symbol: bool = False
+
+
+def nearest(snapshot: Snapshot, wanted: dt.date) -> Snapshot:
+    """``snapshot`` as of the date nearest ``wanted`` among those its file
+    has holdings for (the later of two as near), with a note saying which
+    was taken. A report over a period has each of its dates' numbers, and
+    the plan wants those of one day."""
+    if not snapshot.dated:
+        return snapshot
+    day = min(snapshot.dated, key=lambda each: (abs((each - wanted).days), -each.toordinal()))
+    others = ", ".join(str(each) for each in sorted(snapshot.dated) if each != day)
+    return dataclasses.replace(
+        snapshot, holdings=snapshot.dated[day], as_of=day, dated={},
+        notes=(*snapshot.notes, f"the file has numbers as of several dates; those of {day} are used, "
+                                f"the nearest to {wanted} (not {others})"))
 
 
 def at(snapshot: Snapshot, since: dt.date) -> tuple[Snapshot, frozenset[str], tuple[str, ...]]:

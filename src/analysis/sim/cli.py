@@ -9141,15 +9141,15 @@ def _ask_outside_account(
 ) -> str:
     """Which outside account ``path`` is, asked for: nothing in the file or
     its name says. One the source's mapping has, or a new name for it."""
-    assert source.profile is not None and source.profile.holdings is not None
-    held = [h.asset for h in source.profile.holdings.read(path, "?").holdings if h.asset]
+    assert source.holdings is not None and source.holdings.read_named is not None
+    held = [h.asset for h in source.holdings.read_named(path, "?").holdings if h.asset]
     known = list(dict.fromkeys(outside for outside, _ in saved.entries))
     click.echo(f"{path.name} doesn't say which {source.name} account it is"
                + (f"; it holds {_some(held)}." if held else "."))
     click.echo("  " + (f"One you have imported ({', '.join(known)}), or a new name for it: "
                        if known else "Give it a name: ")
-               + "whatever you call the account. It is asked for again each time, unless "
-               "the file's name has the account's number.")
+               + "whatever you call the account. It is asked for again each time"
+               + (", unless the file's name has the account's number." if source.profile is not None else "."))
     while True:
         if answer := _prompt_with_completion(f"{source.name} account", choices=known).strip():
             return answer
@@ -9630,9 +9630,22 @@ def import_transactions(
             each = category_maps[source] = import_transactions_.CategoryMaps()
             if not import_transactions_.uncategorized(flows.transactions, source) \
                     and not category_map_path.exists():
-                raise click.ClickException(
-                    f"category map not found: {category_map_path} "
-                    f"(columns {', '.join(import_mapping.CATEGORIES_HEADER)})")
+                if not summary:
+                    raise click.ClickException(
+                        f"category map not found: {category_map_path} "
+                        f"(columns {', '.join(import_mapping.CATEGORIES_HEADER)}). It gathers {source}'s "
+                        "categories into the few the plan wants, a row for each; --summary shows the "
+                        "file's categories and what each comes to, with no map")
+                # A look needs no map: each of the source's categories is
+                # shown as itself, which is what a map is written from.
+                rows = flows.transactions
+                own = rows.loc[rows[import_forms.ORIGIN].eq(source), "category"] \
+                    if import_forms.ORIGIN in rows.columns else rows["category"]
+                each.merges = {name: name for name in dict.fromkeys(map(str, own)) if name}
+                click.echo(
+                    f"note: no category map yet ({category_map_path}), so each {source} category is shown "
+                    f"as itself. Write the map (columns {', '.join(import_mapping.CATEGORIES_HEADER)}) to "
+                    "gather them into the few the plan wants before importing")
             # A source read by payee (a profile's, or a coded one that says
             # so) is read that way wherever a row has no category, which may
             # be one file of two (a card's short download beside its
@@ -13646,6 +13659,9 @@ def import_holdings(
                     import_mapping.source_dir(data_dir_p, source.name) / import_mapping.ACCOUNTS))
             asked_account = True
         snapshot = import_sources_.read_holdings(files, source, imports, account=outside_account)
+        # A report over a period: the numbers of the day the plan's are as of.
+        snapshot = import_holdings_.nearest(
+            snapshot, date(scenario_start.year - 1, 12, 31) if year_end else scenario_start.replace(day=1))
         for note in snapshot.notes:
             click.echo(f"note: {note}")
         # The first day whose transactions come after the balances wanted:

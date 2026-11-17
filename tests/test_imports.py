@@ -51,6 +51,56 @@ def test_an_export_with_no_transactions_still_has_dates(
     assert both.transactions["date"].dt.month.tolist() == [1, 1, 2, 2]
 
 
+def test_a_portfolio_report_is_one_account_s_holdings_on_each_of_its_dates(
+    quicken_portfolio_report: Path, quicken_net_worth_export: Path,
+) -> None:
+    assert quicken.is_portfolio(quicken_portfolio_report)
+    assert not quicken.is_account_tree(quicken_portfolio_report)
+    assert not quicken.is_portfolio(quicken_net_worth_export)
+
+    found = quicken.read_portfolio(quicken_portfolio_report, "Joint Brokerage")
+
+    assert found.as_of == dt.date(2026, 8, 18) and found.complete == {"Joint Brokerage"} and not found.notes
+    assert [(h.account, h.asset, h.value_cents, h.cost_basis_cents) for h in found.holdings] == [
+        ("Joint Brokerage", "(cash)", 250000, None),
+        ("Joint Brokerage", "VTSAX", 30000000, 21000000),
+        ("Joint Brokerage", "ACME", 750000, None),
+        ("Joint Brokerage", "Stable Value Trust", 910000, 900000),
+    ]
+    assert found.holdings[1].hints == {"name": "Total Stock Fund"}
+    assert sorted(found.dated) == [dt.date(2025, 12, 31), dt.date(2026, 8, 18)]
+
+    # The numbers wanted are those of the date nearest the plan's.
+    earlier = holdings.nearest(found, dt.date(2026, 1, 1))
+    assert earlier.as_of == dt.date(2025, 12, 31) and not earlier.dated
+    assert [(h.asset, h.value_cents) for h in earlier.holdings] == [
+        ("(cash)", 100000), ("VTSAX", 25000000), ("VBTLX", 3900000), ("ACME", 500000),
+        ("Stable Value Trust", 900000)]
+    assert "those of 2025-12-31 are used, the nearest to 2026-01-01 (not 2026-08-18)" in earlier.notes[0]
+    assert holdings.nearest(found, dt.date(2026, 8, 1)).as_of == dt.date(2026, 8, 18)
+
+
+def test_a_portfolio_report_needs_its_account_and_says_when_it_is_of_them_all(
+    quicken_portfolio_report: Path, quicken_net_worth_export: Path,
+) -> None:
+    source, unnamed = sources.unnamed([quicken_portfolio_report])
+    assert source.name == "quicken" and unnamed == [quicken_portfolio_report]
+    assert sources.unnamed([quicken_net_worth_export])[1] == []
+
+    with pytest.raises(sources.SourceError, match="doesn't say which account it is.*--outside-account"):
+        sources.read_holdings([quicken_portfolio_report])
+    with pytest.raises(sources.SourceError, match="names its accounts itself"):
+        sources.read_holdings([quicken_net_worth_export], account="Joint Brokerage")
+    read = sources.read_holdings([quicken_portfolio_report], account="Joint Brokerage")
+    assert len(read.holdings) == 4 and len(read.dated) == 2
+
+    every = quicken_portfolio_report.with_name("all.csv")
+    every.write_text(
+        quicken_portfolio_report.read_text(encoding="utf-8").replace("Joint Brokerage,", "All Accounts,"),
+        encoding="utf-8")
+    assert "Export the report for one account at a time" in quicken.read_portfolio(every, "Joint Brokerage").notes[0]
+
+
 def test_a_flat_transaction_report_is_read_row_by_row(quicken_flat_transaction_report: Path) -> None:
     assert quicken.is_transaction_export(quicken_flat_transaction_report)
     assert not quicken.is_account_tree(quicken_flat_transaction_report)
