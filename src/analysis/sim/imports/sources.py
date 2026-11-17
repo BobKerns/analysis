@@ -262,6 +262,7 @@ def read_holdings(
         as_of=next(iter(dates), None),
         notes=tuple(note for snapshot in snapshots for note in snapshot.notes),
         complete=frozenset(account for snapshot in snapshots for account in snapshot.complete),
+        activity={account: activity for snapshot in snapshots for account, activity in snapshot.activity.items()},
     )
 
 

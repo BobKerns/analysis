@@ -5223,8 +5223,15 @@ def init_command(
     _check_scenario(sim, data_repo.START_SCENARIO, unused=False)
     if not no_builder and not no_commit and not failed:
         _init_builder(sim)
-    click.echo(f"Next: source {_shown(sim / 'activate-analysis')}, then add the rest of the household "
-               "with `sim person add` and accounts to the base scenario with `sim account add`.")
+    # Set apart and in bold: without it no later command finds the data
+    # repo, and after the lines above it was easy to miss.
+    click.echo()
+    click.secho("Next, activate the data repo in this shell (the sim commands find it that way):", bold=True)
+    click.echo()
+    click.secho(f"    source {_shown(sim / 'activate-analysis')}", bold=True)
+    click.echo()
+    click.echo("Then add the rest of the household with `sim person add` and accounts to the base "
+               "scenario with `sim account add`.")
 
 
 def _init_builder(sim: Path) -> None:
@@ -8956,6 +8963,7 @@ def _ask_holding_target(
     label: str, cents: int, source: str, lots: Sequence[Mapping[str, str]], why: str,
     *, held: Collection[str], by_symbol: bool = False, hint: str = "",
     add: Callable[[str, bool], bool] | None = None, taken: Collection[str] = (),
+    add_lot: Callable[[str, str], bool] | None = None,
 ) -> import_mapping.AccountTarget:
     """Where one outside account goes, asked for: one of the scenario's
     accounts that holds a balance (``held``), or ``skip``; and which lot, if
@@ -8968,11 +8976,20 @@ def _ask_holding_target(
     is what the file calls the account's type, shown to help say its kind.
     ``taken`` is every account and chain name of the scenario: one of those
     that isn't in ``held`` can't take this balance, and can't be added.
+
+    With ``add_lot``, the lot is asked for even where the account has one
+    (Enter takes it), and a new name is a new lot of the account, which
+    ``add_lot(account, lot)`` adds or says why it can't: several outside
+    accounts (a bank's checking and savings) are often one account of the
+    plan with a lot each.
     """
     click.echo(f"{source} account {label} ({format_dollars(cents)}) {why}.")
     if add is not None:
         click.echo("  a new name adds the account to the scenario"
                    + (f" (the file calls this one {hint!r})" if hint else ""))
+
+    # An account added here has the one lot it was added with: no question.
+    added: list[str] = []
 
     def new(name: str) -> bool:
         if name in taken:
@@ -8984,7 +9001,9 @@ def _ask_holding_target(
         if add is None or not click.confirm(f"Add account {name}?", default=False):
             return False
         try:
-            return add(name, by_symbol)
+            if add(name, by_symbol):
+                added.append(name)
+            return bool(added)
         except click.ClickException as e:
             # Stopping here would lose every answer so far: they are saved
             # with the balances, at the end.
@@ -8996,9 +9015,28 @@ def _ask_holding_target(
         return import_mapping.AccountTarget("skip")
     its_lots = [row.get("lot", "") for row in lots if row.get("account_name") == answer]
     lot = ""
-    if len(its_lots) > 1 and not by_symbol:
-        lot = _ask_name("lot", [each or registries.DEFAULT_LOT for each in its_lots],
-                        prompt=f"lot of {answer}")
+    shown = [each or registries.DEFAULT_LOT for each in its_lots]
+    if by_symbol or not shown or added:
+        pass
+    elif add_lot is None:
+        if len(shown) > 1:
+            lot = _ask_name("lot", shown, prompt=f"lot of {answer}")
+    else:
+        def new_lot(name: str) -> bool:
+            return click.confirm(f"Add lot {name} to {answer}?", default=False) and add_lot(answer, name)
+
+        click.echo(f"lots: {', '.join(shown)}; a new name adds a lot to {answer}")
+        only = shown[0] if len(shown) == 1 else None
+        while True:
+            said = _prompt_with_completion(f"lot of {answer}", choices=shown, default=only).strip()
+            if said == only:
+                # The one lot, as before there was a question: the row
+                # names no lot, and so follows the lot if it is renamed.
+                break
+            if said in shown or (said and new_lot(said)):
+                lot = said
+                break
+            click.echo(f"  one of: {', '.join(shown)}")
     return import_mapping.AccountTarget("map", answer, lot)
 
 
@@ -13450,6 +13488,16 @@ def import_holdings(
         rows.append(row)
         fresh.add(len(rows) - 1)
 
+    def add_balance_lot(account: str, name: str) -> bool:
+        """A lot of ``account`` with no symbol, for an outside account's one
+        balance; False, with why, when it can't be one."""
+        try:
+            add_lot(account, name, "")
+        except click.ClickException as e:
+            click.echo(f"  not added: {e.format_message()}")
+            return False
+        return True
+
     def add_account_now(name: str, listed: bool) -> bool:
         """Add account ``name`` to the scenario as `sim account add` does,
         asking what it is, and take it and its lot in; False when the user
@@ -13498,6 +13546,11 @@ def import_holdings(
         snapshot = import_sources_.read_holdings(files, source, imports, account=outside_account)
         for note in snapshot.notes:
             click.echo(f"note: {note}")
+        # The first day whose transactions come after the balances wanted:
+        # the scenario's first day, or for last year's end, January 1.
+        read_as_of = snapshot.as_of
+        snapshot, worked_back, back_notes = import_holdings_.at(
+            snapshot, date(scenario_start.year, 1, 1) if year_end else scenario_start.replace(day=1))
         if not snapshot.holdings:
             raise click.ClickException(
                 "no account balances in " + ", ".join(map(str, files))
@@ -13545,7 +13598,7 @@ def import_holdings(
                         held=holding_lots if (listed := all(h.asset for h in covered)) else with_lots,
                         # A file of holdings gives each holding's type, not the account's.
                         by_symbol=listed, hint="" if listed else covered[0].hints.get("type", ""),
-                        add=add_account_or_not, taken=taken)
+                        add=add_account_or_not, taken=taken, add_lot=add_balance_lot)
                     account_map.set(*key, target)
                     saved_map.set(*key, target)
                     to_save = progress = True
@@ -13559,7 +13612,7 @@ def import_holdings(
                         held=holding_lots if (listed := all(h.asset for h in covered)) else with_lots,
                         # A file of holdings gives each holding's type, not the account's.
                         by_symbol=listed, hint="" if listed else covered[0].hints.get("type", ""),
-                        add=add_account_or_not, taken=taken)
+                        add=add_account_or_not, taken=taken, add_lot=add_balance_lot)
                     account_map.set(*key, target)
                     progress = True
                     # The saved mapping may be right for another scenario, which
@@ -13692,8 +13745,11 @@ def import_holdings(
         for name in dict.fromkeys(h.account for h in snapshot.holdings):
             click.echo(f"{snapshot.source} account {name!r}, from the file's name "
                        "(--outside-account names another)")
+    if read_as_of is not None:
+        click.echo(f"{snapshot.source} snapshot as of {read_as_of}")
+        for note in back_notes:
+            click.echo(f"note: {note}")
     if snapshot.as_of is not None:
-        click.echo(f"{snapshot.source} snapshot as of {snapshot.as_of}")
         # The numbers are written as of a fixed day whatever the file's date.
         # scenario.start is pinned to its month's last day, and the opening
         # balances are those before that first month: as of its first day.
@@ -13701,7 +13757,9 @@ def import_holdings(
         if abs((snapshot.as_of - wanted).days) > _IMPORT_DATE_SLACK_DAYS:
             what = "the December 31 before it starts" if year_end else f"the start of {scen_name}"
             click.echo(
-                f"warning: the file is as of {snapshot.as_of}, and its balances are being set as "
+                f"warning: the file is as of {snapshot.as_of}, and its balances "
+                + (f"(but those of {', '.join(sorted(worked_back))}) " if worked_back else "")
+                + "are being set as "
                 f"of {wanted}, {what}. " + (
                     "Export the year-end report as of that day." if year_end else
                     "Export it as of that day, or bring the plan to the file's date first "

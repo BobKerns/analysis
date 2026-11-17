@@ -252,7 +252,9 @@ def test_init_shows_paths_as_typed(tmp_path: Path, monkeypatch: pytest.MonkeyPat
 
     assert here.exit_code == 0 and there.exit_code == 0, here.output + there.output
     assert "created a data repo in retirement; its data dir is retirement/sim" in here.output
-    assert "Next: source retirement/sim/activate-analysis," in here.output
+    # The one step nothing works without stands apart from the rest.
+    assert "\n\nNext, activate the data repo in this shell" in here.output
+    assert "\n\n    source retirement/sim/activate-analysis\n\n" in here.output
     assert "created a data repo in ~/other; its data dir is ~/other/sim" in there.output
     assert str(tmp_path) not in here.output + there.output
 
