@@ -481,3 +481,35 @@ def test_a_fetch_started_from_a_git_hook_leaves_the_hooks_repository_alone(
     assert [b.name for b in code_repo.branches] == ["main"]
     assert len(code_repo.git.worktree("list").splitlines()) == 1
     assert not code_repo.is_dirty(untracked_files=True)
+
+
+def test_a_worktree_left_belonging_to_another_repository_is_made_again(
+    priced: tuple[Path, git.Repo], fetching: None, code_repo: git.Repo,
+) -> None:
+    """#646: a worktree made while a hook's GIT_DIR named the code repo (before
+    #627) is the code repo's: commits there went into its object store, and
+    moving builder/prices in the data repo failed with "nonexistent object"."""
+    data, repo = priced
+    worktree = _worktree(data)
+    worktree.parent.mkdir(parents=True, exist_ok=True)
+    code_repo.git.worktree("add", "--detach", str(worktree))
+    assert not price_schedule.worktree_ok(Path(repo.working_tree_dir or ""), worktree)
+    outcome = price_schedule.fetch(data, worktree, provider=FakeProvider(), now=NOW)
+    assert outcome.committed is not None
+    assert repo.commit(price_schedule.PRICES_BRANCH).hexsha == outcome.committed
+    assert price_schedule.worktree_ok(Path(repo.working_tree_dir or ""), worktree)
+    assert len(code_repo.git.worktree("list").splitlines()) == 1  # the stray one is gone
+
+
+def test_a_fetch_ignores_an_inherited_object_directory(
+    priced: tuple[Path, git.Repo], fetching: None, code_repo: git.Repo,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#646: an inherited GIT_OBJECT_DIRECTORY would put the commit's objects
+    in another repository."""
+    data, repo = priced
+    monkeypatch.setenv("GIT_OBJECT_DIRECTORY", str(Path(code_repo.git_dir) / "objects"))
+    outcome = price_schedule.fetch(data, _worktree(data), provider=FakeProvider(), now=NOW)
+    monkeypatch.delenv("GIT_OBJECT_DIRECTORY")
+    assert outcome.committed is not None
+    assert repo.commit(price_schedule.PRICES_BRANCH).hexsha == outcome.committed

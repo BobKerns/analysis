@@ -49,7 +49,6 @@ from __future__ import annotations
 import contextlib
 import functools
 import os
-import shutil
 import subprocess
 import tempfile
 import time as clock
@@ -421,13 +420,7 @@ def _prepare(top: Path, worktree: Path, rel: str) -> Path:
     """The research worktree at ``builder/research`` (or ``main`` when that
     holds nothing ``main`` lacks), caught up with ``main``, nothing left over;
     its data dir."""
-    if not (worktree / ".git").exists():
-        _git(top, "worktree", "prune")
-        if worktree.exists():
-            shutil.rmtree(worktree)
-        worktree.parent.mkdir(parents=True, exist_ok=True)
-        _git(top, "worktree", "add", "--detach", str(worktree), price_schedule.DATA_BRANCH,
-             check=True)
+    price_schedule.ensure_worktree(top, worktree)
     data = worktree / rel if rel not in ("", ".") else worktree
     pending = price_schedule._ref(top, _RESEARCH_REF)
     main = price_schedule._ref(top, _MAIN_REF)
@@ -597,7 +590,7 @@ def merge_pending(data_dir: Path, worktree: Path) -> list[str]:
             if not mine:
                 return []  # a research is running, and it catches up first
             rel = str(data_dir.resolve().relative_to(top.resolve()))
-            if not (worktree / ".git").exists():
+            if not price_schedule.worktree_ok(top, worktree):
                 _prepare(top, worktree, rel)
             else:
                 data = worktree / rel if rel not in ("", ".") else worktree
