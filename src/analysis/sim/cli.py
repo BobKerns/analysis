@@ -9096,8 +9096,12 @@ def _ask_holding_target(
     its_lots = [row.get("lot", "") for row in lots if row.get("account_name") == answer]
     lot = ""
     shown = [each or registries.DEFAULT_LOT for each in its_lots]
-    if by_symbol or not shown or added:
+    if by_symbol or not shown:
         pass
+    elif added:
+        # Named as it was added: the row names it, and so still finds it
+        # when the account has a second lot.
+        lot = its_lots[0] if len(its_lots) == 1 else ""
     elif add_lot is None:
         if len(shown) > 1:
             lot = _ask_name("lot", shown, prompt=f"lot of {answer}")
@@ -10785,6 +10789,8 @@ def account_group_command() -> None:
 @click.option("--lot-subkind", default=None,
               type=click.Choice(sorted(registries.RETIREMENT_LOT_SUBKINDS)),
               help="A retirement account's first lot: Roth or traditional, IRA or 401k.")
+@click.option("--lot", "first_lot", default=None,
+              help="The name of the lot that holds the opening balance (default: default).")
 @click.option("--scenario", type=completion.SCENARIO, default=None,
               help="Scenario folder name (for opening-balance lookup).")
 @click.option("--data-dir",
@@ -10804,15 +10810,22 @@ def add_account(
     closed: str,
     opening_balance: str | None,
     lot_subkind: str | None,
+    first_lot: str | None,
     scenario: str | None,
     data_dir: Path | None,
     tags: str,
 ) -> None:
     """Append an account to accounts.csv (and opening balance to the model).
 
-    A retirement account always gets its first lot, ``default``, whose
-    --lot-subkind (asked if not given) says whether it is Roth or traditional.
+    A retirement account always gets its first lot, whose --lot-subkind
+    (asked if not given) says whether it is Roth or traditional. The lot
+    that holds an opening balance is named ``default`` unless --lot names
+    it: an account kept as several lots (a bank's checking and savings) is
+    better started with the name its first one will keep.
     """
+    first_lot = (first_lot or "").strip()
+    if first_lot == registries.DEFAULT_LOT:
+        first_lot = ""
     try:
         registries.parse_tags(tags)
     except ValueError as e:
@@ -10894,6 +10907,8 @@ def add_account(
     cents = _parse_amount_cents(opening_balance) if opening_balance else None
     if cents is None and retirement:
         cents = 0  # its lot row is what carries the lot subkind
+    if first_lot and cents is None:
+        raise click.ClickException("--lot names the lot of an opening balance: give --opening-balance too")
 
     # Both rows go in as one edit, after every prompt: the account and its
     # opening balance are validated together and land together or not at all.
@@ -10907,7 +10922,8 @@ def add_account(
                 registries.ACCOUNT_LOTS_CSV_HEADER,
                 {
                     "account_name": name,
-                    "lot": registries.DEFAULT_LOT if subkind in INVESTMENT_ASSET_SUBKINDS else "",
+                    "lot": first_lot or (
+                        registries.DEFAULT_LOT if subkind in INVESTMENT_ASSET_SUBKINDS else ""),
                     "subkind": lot_subkind or "",
                     "opening_balance": f"{cents // 100}.{cents % 100:02d}",
                     "opening_cost_basis": "",
@@ -13593,8 +13609,14 @@ def import_holdings(
         subkind = _ask_account_subkind(kind)
         owner = _ask_account_owner(persons)
         lot_subkind = _ask_first_lot_subkind() if subkind == registries.RETIREMENT_SUBKIND else None
+        # Its one lot takes the balance. Named here, it needn't be renamed
+        # when the account gets a second (a bank's savings beside its
+        # checking), and a lot called `default` isn't a surprise later.
+        first_lot = None if listed else click.prompt(
+            f"name of {name}'s lot (a name of your own, such as checking)", default=registries.DEFAULT_LOT)
         click.get_current_context().invoke(
             add_account, name=name, kind=kind, subkind=subkind, owner=owner, lot_subkind=lot_subkind,
+            first_lot=first_lot,
             scenario=scen_name, data_dir=data_dir_p,
             # The file says what it holds: no balance is asked for. A file
             # with one number for the account needs a lot to put it in.

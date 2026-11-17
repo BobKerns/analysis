@@ -706,6 +706,24 @@ def test_sim_add_account_appends_accounts_and_model(test_data_dir: Path) -> None
     assert check.exit_code == 0, check.output
 
 
+def test_sim_add_account_names_the_lot_of_its_opening_balance(test_data_dir: Path) -> None:
+    def add(name: str, *args: str) -> Result:
+        return CliRunner().invoke(main, [
+            "sim", "account", "add", name, "asset", "cash", "--owner", "joint", *args,
+            "--scenario", "retire_alice", "--data-dir", str(test_data_dir)])
+
+    named = add("Asset_Bank", "--opening-balance", "100", "--lot", "checking")
+    assert named.exit_code == 0, named.output
+    lots = (test_data_dir / "scenarios" / "retire_alice" / "account_lots.csv").read_text()
+    assert "Asset_Bank,checking,,,,,,100.00," in lots
+    check = CliRunner().invoke(main, ["sim", "check", "retire_alice", "--data-dir", str(test_data_dir)])
+    assert check.exit_code == 0, check.output
+
+    # A lot is where a balance is: with none, there is nothing to name.
+    bare = add("Asset_Other", "--opening-balance", "", "--lot", "checking")
+    assert bare.exit_code != 0 and "give --opening-balance too" in bare.output
+
+
 @pytest.mark.parametrize(("answer", "character"), [("", "ordinary"), ("gains", "gains")])
 def test_sim_add_account_with_a_series_asks_its_tax_character(
     test_data_dir: Path, answer: str, character: str,
