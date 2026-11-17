@@ -321,7 +321,8 @@ def fetch(
     builds (:func:`merge_pending`), so a build never reads a price file
     while a merge rewrites it. The symbols are ``sim prices fetch``'s with none named: those held with a
     quantity, and those securities.csv, allocations.csv or a price file
-    names; one no lot holds is noted, not counted as a failure."""
+    names, less those it marks ``no_fetch`` (#640); one no lot holds is
+    noted, not counted as a failure."""
     from analysis.sim import prices
 
     now = now or datetime.now(UTC)
@@ -339,7 +340,8 @@ def fetch(
         use = prices.prices_in_use(data / "scenarios") if (data / "scenarios").is_dir() \
             else prices.PriceUse()
         held = set(use.symbols)
-        chosen = sorted(held | set(prices.known_symbols(data)))
+        # A symbol marked no_fetch (#640) is only fetched when named.
+        chosen = prices.fetchable(data, held | set(prices.known_symbols(data)))
         failing: dict[str, Any] = dict(state.get("failing") or {})
         if not chosen:
             lines.append("no symbols to fetch")
@@ -367,6 +369,10 @@ def fetch(
                                  + f" (latest {prices.format_price(result.latest[1])} "
                                  f"on {result.latest[0]})")
         failing = {s: f for s, f in failing.items() if s in chosen}
+        # A name the provider gave fills a blank one (#640); committed with the prices.
+        for symbol in prices.fill_names(data, {r.symbol: r.name for r in results
+                                               if r.name and r.error is None}):
+            lines.append(f"{symbol}: named in securities.csv")
         worked = not results or any(r.error is None for r in results)
         committed = _commit(top, worktree, rel, results)
         pending = _settle(top, worktree)
@@ -389,6 +395,9 @@ def _commit(top: Path, worktree: Path, rel: str, results: list[Any]) -> str | No
     path = f"{rel}/prices" if rel not in ("", ".") else "prices"
     if (worktree / path).exists():  # none when no symbol was fetched into a repo without one
         _git(worktree, "add", "-A", "--", path, check=True)
+    names = f"{rel}/securities.csv" if rel not in ("", ".") else "securities.csv"
+    if (worktree / names).exists():  # names filled in (#640)
+        _git(worktree, "add", "--", names, check=True)
     if _git(worktree, "diff", "--cached", "--quiet").returncode == 0:
         return None
     changed = [r for r in results if r.error is None and (r.added or r.changed)]

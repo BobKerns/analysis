@@ -53,7 +53,7 @@ DEFAULT_TIMEOUT_MINUTES = 20
 TOOLS = ("Skill", "WebSearch", "WebFetch", "Read", "Write", "Edit", "Glob", "Grep", "Bash")
 # The skill's working files sit in fund-work/ beside the tabs; a bundle keeps
 # only what a reader or the importer needs.
-_KEPT_SUFFIXES = (".md", ".json", ".csv")
+KEPT_SUFFIXES = (".md", ".json", ".csv")
 
 
 class ResearchError(Exception):
@@ -207,7 +207,7 @@ def bundle_dir(data_dir: Path, symbol: str, today: date | None = None) -> Path:
 
 def keep_bundle(source: Path, target: Path) -> list[Path]:
     """Copy ``source``'s tabs and exports (not its working files) to ``target``."""
-    files = [p for p in sorted(source.iterdir()) if p.is_file() and p.suffix.lower() in _KEPT_SUFFIXES]
+    files = [p for p in sorted(source.iterdir()) if p.is_file() and p.suffix.lower() in KEPT_SUFFIXES]
     if not files:
         raise ResearchError(f"{source} has no Markdown, JSON or CSV files to keep")
     target.mkdir(parents=True)

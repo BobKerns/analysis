@@ -13983,10 +13983,13 @@ def prices_fetch_command(
     if not scenarios_dir.is_dir():
         raise click.ClickException(f"no scenarios/ in {data}")
     held = prices.prices_in_use(scenarios_dir).symbols
-    chosen = _upper(symbols) or sorted({*held, *prices.known_symbols(data)})
+    marked = prices.no_fetch_symbols(data)
+    chosen = _upper(symbols) or prices.fetchable(data, {*held, *prices.known_symbols(data)})
     if not chosen:
-        click.echo("no symbol in securities.csv, allocations.csv, prices/ or on a lot; nothing to fetch")
+        click.echo("no symbol in securities.csv, allocations.csv, prices/ or on a lot; nothing to fetch"
+                   if not marked else "every symbol is marked no_fetch in securities.csv; nothing to fetch")
         return
+    _warn_no_fetch(chosen, marked)
     optional = set() if symbols else set(chosen) - set(held)
     failed = _fetch_prices(data, chosen, since_text, provider_name,
                            refresh=refresh, dry_run=dry_run, optional=optional)
@@ -13994,6 +13997,15 @@ def prices_fetch_command(
         click.echo("dry run: no files written")
     if failed:
         raise click.ClickException(f"{failed} of {len(chosen)} symbol(s) failed")
+
+
+def _warn_no_fetch(named: Iterable[str], marked: Set[str]) -> None:
+    """#640: a symbol named on the command line runs even when securities.csv
+    marks it no_fetch, with a warning."""
+    for symbol in named:
+        if symbol in marked:
+            click.echo(f"warning: {symbol} is marked no_fetch in securities.csv; going ahead since "
+                       f"you named it (sim symbol edit {symbol} --may-fetch clears the mark)", err=True)
 
 
 def _upper(symbols: tuple[str, ...]) -> list[str]:
@@ -14032,6 +14044,10 @@ def _fetch_prices(
         day, price = r.latest
         change = f"{r.added} added" + (f", {r.changed} changed" if r.changed else "")
         click.echo(f"{r.symbol}: {change} (latest {prices.format_price(price)} on {day})")
+    if not dry_run:
+        found = {r.symbol: r.name for r in results if r.name and r.error is None}
+        for symbol in prices.fill_names(data, found):
+            click.echo(f"{symbol}: named {found[symbol]!r} in securities.csv")
     return failed
 
 
@@ -15152,6 +15168,9 @@ def symbol_group_command() -> None:
               help="The month the weights describe (default: every date).")
 @click.option("--fetch/--no-fetch", default=True, show_default=True,
               help="Fetch its prices into prices/security_price__<SYMBOL>.csv.")
+@click.option("--never-fetch", is_flag=True, default=False,
+              help="Mark it no_fetch in securities.csv: nothing fetches its prices or researches "
+                   "it unless it is named (implies --no-fetch).")
 @click.option("--provider", "provider_name", default="yahoo", show_default=True,
               type=click.Choice(sorted(prices.PRICE_PROVIDERS)), help="Where prices come from.")
 @click.option("--since", "since_text", default=None, metavar="YYYY-MM-DD",
@@ -15160,7 +15179,7 @@ def symbol_group_command() -> None:
               default=None, help="Data repo (default: $ANALYSIS_DATA_DIR)")
 def symbol_add_command(
     symbol: str | None, name: str | None, weight_specs: tuple[str, ...], as_of: str | None,
-    fetch: bool, provider_name: str, since_text: str | None, data_dir: Path | None,
+    fetch: bool, never_fetch: bool, provider_name: str, since_text: str | None, data_dir: Path | None,
 ) -> None:
     """Add a stock or fund: its name, its asset-class weights and its prices.
 
@@ -15179,12 +15198,16 @@ def symbol_add_command(
     assert symbol is not None
     try:
         weights = symbols.parse_weights(list(weight_specs))
-        added = symbols.add_symbol(data, symbol, name=name, weights=weights, as_of=as_of)
+        added = symbols.add_symbol(data, symbol, name=name, weights=weights, as_of=as_of,
+                                   no_fetch=never_fetch)
     except ValueError as exc:
         raise click.ClickException(str(exc)) from None
     symbol = added.symbol
+    fetch = fetch and not never_fetch
     if added.named:
         click.echo(f"{symbol}: named {name!r} in securities.csv")
+    if never_fetch:
+        click.echo(f"{symbol}: marked no_fetch in securities.csv")
     if added.weighted:
         click.echo(f"{symbol}: {', '.join(f'{c} {w}' for c, w in weights.items())} in allocations.csv")
     else:
@@ -15203,7 +15226,9 @@ def symbol_add_command(
             words += ["--weight", spec]
         if as_of:
             words += ["--as-of", as_of]
-        if not fetch:
+        if never_fetch:
+            words.append("--never-fetch")
+        elif not fetch:
             words.append("--no-fetch")
         if fetch and provider_name != "yahoo":
             words += ["--provider", provider_name]
@@ -15242,6 +15267,55 @@ def _ask_symbol() -> tuple[str, str | None, tuple[str, ...], str | None]:
     return symbol, name, tuple(text.split()), as_of
 
 
+@symbol_group_command.command("edit")
+@click.argument("symbol", type=completion.SYMBOL, required=False)
+@click.option("--name", default=None, help="Its name in securities.csv ('' leaves it unnamed).")
+@click.option("--never-fetch/--may-fetch", "no_fetch", default=None,
+              help="Mark it no_fetch in securities.csv, or clear the mark: a marked symbol's "
+                   "prices are fetched, and it is researched, only when it is named.")
+@click.option("--data-dir", type=click.Path(exists=True, file_okay=False, path_type=Path),
+              default=None, help="Data repo (default: $ANALYSIS_DATA_DIR)")
+def symbol_edit_command(
+    symbol: str | None, name: str | None, no_fetch: bool | None, data_dir: Path | None,
+) -> None:
+    """Change a symbol's securities.csv row: its name, or its no_fetch mark.
+
+    With no options, shows the row and asks for each field. A symbol with no
+    row gets one, unnamed unless a name is given. A symbol marked no_fetch
+    (one nothing can price, or an obsolete one) is skipped by `sim prices
+    fetch` with no symbol named and by the background builder's price fetch
+    and research; naming it runs it anyway, with a warning (#640). Weights
+    are changed in allocations.csv, or with `sim symbol research`.
+    """
+    data = _resolve_data_dir(data_dir)
+    if symbol is None:
+        symbol = _ask_name("symbol", names.symbols(data), other=lambda _new: True)
+    try:
+        symbol = symbols.normalize_symbol(symbol)
+    except ValueError as exc:
+        raise click.UsageError(str(exc)) from None
+    current = symbols.security_name(data, symbol)
+    marked = symbol in prices.no_fetch_symbols(data)
+    if name is None and no_fetch is None:
+        click.echo(f"{symbol}: name {current or '(none)'}; "
+                   f"{'marked no_fetch' if marked else 'fetched and researched'}")
+        name = click.prompt("name (blank: none)", default=current or "",
+                            show_default=bool(current)).strip()
+        no_fetch = click.confirm("mark it no_fetch (no price fetch or research unless named)?",
+                                 default=marked)
+    try:
+        changed = symbols.edit_security(data, symbol, name=name, no_fetch=no_fetch)
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from None
+    if not changed:
+        click.echo(f"{symbol}: unchanged")
+        return
+    shown = symbols.security_name(data, symbol)
+    mark = symbol in prices.no_fetch_symbols(data)
+    click.echo(f"{symbol}: name {shown or '(none)'}; "
+               f"{'marked no_fetch' if mark else 'fetched and researched'} (securities.csv)")
+
+
 @symbol_group_command.command("research")
 @click.argument("subject", metavar="SYMBOL_OR_NAME", type=completion.SYMBOL, required=False)
 @click.option("--symbol", "ticker", default=None, type=completion.SYMBOL,
@@ -15271,12 +15345,15 @@ def _ask_symbol() -> tuple[str, str | None, tuple[str, ...], str | None]:
 @click.option("--timeout", "timeout_minutes", default=research.DEFAULT_TIMEOUT_MINUTES,
               show_default=True, type=click.FloatRange(min=1), metavar="MINUTES",
               help="Stop the research after this long.")
+@click.option("--commit/--no-commit", "commit", default=True, show_default=True,
+              help="Commit the bundle, and the weights it wrote, in the data repo. Uncommitted, "
+                   "the bundle doesn't count as research for the builder's schedule.")
 @click.option("--data-dir", type=click.Path(exists=True, file_okay=False, path_type=Path),
               default=None, help="Data repo (default: $ANALYSIS_DATA_DIR)")
 def symbol_research_command(
     subject: str | None, ticker: str | None, kind: str | None, as_of: str | None, name: str | None,
     replace: bool, yes: bool, open_page: bool, from_bundle: Path | None, plugin_dir: Path | None,
-    timeout_minutes: float, data_dir: Path | None,
+    timeout_minutes: float, commit: bool, data_dir: Path | None,
 ) -> None:
     """Research a fund or a company with Claude; record a fund's asset-class weights.
 
@@ -15294,8 +15371,14 @@ def symbol_research_command(
     login: a claude.ai plan's usage limits, or per-token billing when
     ANTHROPIC_API_KEY is set. --from-bundle imports a bundle without a run.
     See docs/guides/finance-research.md.
+
+    It commits the bundle, and the weights and name it wrote, and nothing
+    else (#640): the background builder's schedule reads when a symbol was
+    last researched from those commits. Edits you had already made to
+    allocations.csv or securities.csv stay uncommitted. With --yes, weights
+    within 0.5 points of the symbol's latest set aren't written, as the
+    schedule's aren't.
     """
-    from analysis import research_plugin
 
     data = _resolve_data_dir(data_dir)
     if subject is None:
@@ -15316,6 +15399,12 @@ def symbol_research_command(
             key = research.name_key(subject)
     except ValueError as exc:
         raise click.UsageError(str(exc)) from None
+    if ticker is not None:
+        _warn_no_fetch([ticker], prices.no_fetch_symbols(data))
+    from analysis.sim import research_schedule
+
+    # Before anything is written: these stay out of the commit (#640).
+    dirty = research_schedule.dirty_weight_files(data) if commit else set()
     if as_of:
         try:
             as_of = month_end_iso(as_of)[:7]
@@ -15334,6 +15423,38 @@ def symbol_research_command(
     else:
         bundle = _run_research(data, subject, key, kind, plugin_dir, timeout_minutes)
     click.echo(f"Bundle: {bundle}")
+    try:
+        _research_bundle_written(data, bundle, label=label, key=key, ticker=ticker, as_of=as_of,
+                                 name=name, replace=replace, yes=yes, open_page=open_page)
+    except click.ClickException:
+        if commit:
+            _commit_research(data, bundle, ticker or key, dirty)
+        raise
+    if commit:
+        _commit_research(data, bundle, ticker or key, dirty)
+
+
+def _commit_research(data: Path, bundle: Path, symbol: str, dirty: set[str]) -> None:
+    """Commit what ``sim symbol research`` wrote (#640), saying what was left out."""
+    from analysis.sim import research_schedule
+
+    done = research_schedule.commit_research(data, bundle, symbol, dirty_before=dirty)
+    if done.commit:
+        click.echo(f"Committed: {done.subject} ({done.commit[:10]})")
+    for name in done.left:
+        click.echo(f"{name} already had uncommitted changes, so it was left out of the commit; "
+                   "commit it yourself", err=True)
+    if done.why:
+        click.echo(f"warning: nothing committed: {done.why}. Until the bundle is committed, the "
+                   f"background builder counts {symbol} as not yet researched", err=True)
+
+
+def _research_bundle_written(
+    data: Path, bundle: Path, *, label: str, key: str, ticker: str | None, as_of: str | None,
+    name: str | None, replace: bool, yes: bool, open_page: bool,
+) -> None:
+    """Show the bundle's page and write a fund's weights, asking first."""
+    from analysis import research_plugin
 
     try:
         page = research.write_page(bundle, key, research_plugin.available_languages(), label=label)
@@ -15345,7 +15466,10 @@ def symbol_research_command(
     except research.ResearchError as exc:
         raise click.ClickException(f"{exc}\nNothing was written; the bundle is kept at {bundle}") from None
     if allocation is None:
-        click.echo(f"{label}: the bundle has no allocation export, so nothing was written.")
+        title = research.tear_sheet_title(bundle, key, ticker) if ticker else None
+        if ticker and title and prices.fill_names(data, {ticker: title}):
+            click.echo(f"{ticker}: named {title!r} in securities.csv")
+        click.echo(f"{label}: the bundle has no allocation export, so no weights were written.")
         return
     if ticker is None:
         ticker = _ask_research_ticker(label, bundle, yes)
@@ -15402,7 +15526,7 @@ def _run_research(data: Path, subject: str, key: str, kind: str | None, plugin_d
             raise click.ClickException(str(exc)) from None
         cost = f", ${outcome.cost_usd:.2f}" if outcome.cost_usd is not None else ""
         click.echo(f"Finished in {outcome.seconds / 60:.1f} minutes{cost}.")
-        has_files = any(p.is_file() and p.suffix.lower() in (".md", ".json", ".csv") for p in work.iterdir())
+        has_files = any(p.is_file() and p.suffix.lower() in research.KEPT_SUFFIXES for p in work.iterdir())
         if not has_files:
             why = outcome.message if not outcome.ok else (
                 "the run wrote no files; are the fund-tear-sheet and public-tear-sheet skills "
@@ -15423,7 +15547,8 @@ def _confirm_and_write_research(
     """Show the proposed weights beside the current ones, ask, and write them
     under ``symbol``; ``key`` starts the bundle's file names."""
     existing_name = symbols.security_name(data, symbol)
-    new_symbol = existing_name is None
+    # No name yet, or a blank one (#640): the research's title fills it.
+    new_symbol = not existing_name
     if name and not new_symbol:
         click.echo(f"--name ignored: {symbol} is already named {existing_name!r} in securities.csv; "
                    "edit that file to rename it.")
@@ -15441,6 +15566,17 @@ def _confirm_and_write_research(
         click.echo(line)
     for warning in allocation.warnings:
         click.echo(f"  warning: {warning}")
+    from analysis.sim import research_schedule
+
+    latest = symbols.latest_set(data, symbol)
+    if latest is not None and not research_schedule.weights_changed(allocation.weights, latest[1]):
+        if yes:
+            click.echo(f"  Within 0.5 points of the set as of {latest[0] or 'every date'} on every "
+                       "class: no weights written.")
+            _fill_research_name(data, symbol, name if new_symbol else None)
+            return
+        click.echo("  These are within 0.5 points of the latest set on every class; the background "
+                   "builder would leave allocations.csv as it is.")
     replacing = symbols.has_weights(data, symbol, allocation.as_of)
     if replacing:
         click.echo(f"  This replaces the set already written for {allocation.as_of or 'every date'}.")
@@ -15450,21 +15586,26 @@ def _confirm_and_write_research(
                 f"to replace them. The bundle is kept at {bundle}"
             )
     if not yes and not click.confirm("Write these weights to allocations.csv?", default=False):
-        click.echo(f"Nothing written. The bundle is kept at {bundle}")
+        click.echo(f"No weights written. The bundle is kept at {bundle}")
+        _fill_research_name(data, symbol, name if new_symbol else None)
         return
     try:
-        added = symbols.add_symbol(
-            data, symbol, name=name if new_symbol else None, weights=allocation.weights,
-            as_of=allocation.as_of or None, replace=replacing,
-        )
+        symbols.add_symbol(data, symbol, weights=allocation.weights, as_of=allocation.as_of or None,
+                           replace=replacing)
     except ValueError as exc:
         raise click.ClickException(f"{exc}\nThe bundle is kept at {bundle}") from None
-    if added.named:
-        click.echo(f"{symbol}: named {name!r} in securities.csv")
+    _fill_research_name(data, symbol, name if new_symbol else None)
     verb = "replaced in" if replacing else "written to"
     click.echo(f"{symbol}: {', '.join(f'{c} {w}' for c, w in allocation.weights.items())} {verb} allocations.csv")
     if symbol not in registries.SYMBOL_ASSET_CLASS and not (data / "prices" / f"security_price__{symbol}.csv").exists():
         click.echo(f"{symbol} has no prices yet; `sim prices fetch {symbol}` gets them.")
+
+
+def _fill_research_name(data: Path, symbol: str, name: str | None) -> None:
+    """Fill a blank or missing securities.csv name from the research even when
+    no weights are written (#640); a name already there is never changed."""
+    if name and prices.fill_names(data, {symbol: name}):
+        click.echo(f"{symbol}: named {name!r} in securities.csv")
 
 
 @symbol_group_command.command("list")
@@ -15476,7 +15617,8 @@ def symbol_list_command(data_dir: Path | None) -> None:
     A symbol appears if any of securities.csv, allocations.csv, prices/, a
     scenario's own prices/ or its account_lots.csv names it. A missing
     allocation or price is shown in red, since `sim allocation` or a lot's
-    opening balance needs it; CASH and CD need no prices.
+    opening balance needs it; CASH and CD need no prices. A symbol marked
+    no_fetch (`sim symbol edit --never-fetch`) says so under its name.
     """
     from rich.console import Console
     from rich.table import Table
@@ -15491,6 +15633,7 @@ def symbol_list_command(data_dir: Path | None) -> None:
                             ("Prices", "right"), ("Latest price", "right"), ("Held by", "left")):
         table.add_column(column, justify=justify)
     for r in named_rows(frame):
+        name = r.name + ("\n[dim]no_fetch[/dim]" if r.no_fetch else "")
         allocation = r.allocation or "[red]none[/red]"
         if r.allocation_sets > 1:
             allocation += f" [dim]+{r.allocation_sets - 1} earlier[/dim]"
@@ -15503,7 +15646,7 @@ def symbol_list_command(data_dir: Path | None) -> None:
         if r.scenario_prices:
             count += f"\n[dim]own file in {', '.join(r.scenario_prices)}[/dim]"
         latest = f"{r.latest_price} ({r.latest_date})" if r.latest_date else ""
-        table.add_row(r.symbol, r.name, allocation, count, latest, "\n".join(r.held_by))
+        table.add_row(r.symbol, name, allocation, count, latest, "\n".join(r.held_by))
     Console().print(table)
 
 
@@ -20524,8 +20667,11 @@ def builder_group() -> None:
     matches the workspace's local branch (main, unless ``install BRANCH``
     named another). It also fetches prices after each weekday's close, on a
     branch merged into the data repo's main when that is checked out and
-    clean. ANALYSIS_BUILDER=off turns it off; ANALYSIS_PRICE_FETCH=off, or
-    ``install --no-prices``, turns off only the price fetches.
+    clean. It rolls marked scenarios forward at night, and each morning
+    researches the symbol whose research is oldest. ANALYSIS_BUILDER=off
+    turns it off; ANALYSIS_PRICE_FETCH=off, ANALYSIS_ROLL=off and
+    ANALYSIS_RESEARCH=off (or ``install --no-prices``, ``--no-roll``,
+    ``--no-research``) turn off only those.
     """
 
 
@@ -20549,9 +20695,12 @@ _BUILDER_DATA_DIR = click.option(
 @click.option("--roll-window", default=None, metavar="HH:MM-HH:MM",
               help="When a night's roll may run, in this machine's local time (default: as "
                    "before, else 01:00-05:00).")
+@click.option("--research/--no-research", "research_daily", default=None,
+              help="Research a symbol a day whose research is over a month old (default: as "
+                   "before, else yes).")
 @_BUILDER_DATA_DIR
 def builder_install(branch: str | None, fetch_prices: bool | None, roll: bool | None,
-                    roll_window: str | None, data_dir: Path | None) -> None:
+                    roll_window: str | None, research_daily: bool | None, data_dir: Path | None) -> None:
     """Opt this workspace pair in: check the code worktree and the data repo
     name each other, record the pair, and install the data repo's hooks.
 
@@ -20572,6 +20721,13 @@ def builder_install(branch: str | None, fetch_prices: bool | None, roll: bool | 
     (#564): a month a night, as `sim scenario roll --yes` would, on the
     builder/roll branch, merged the same way. When a start moves into a new
     year, the plan before it is tagged plan-<year>.
+
+    Unless --no-research, each morning from 06:07 New York time it runs
+    `sim symbol research` on one symbol whose research is over a month old
+    (#640), on the builder/research branch, merged the same way. A fund's
+    weights are written as a new dated set only when some class moved more
+    than 0.5 points from its latest set. A run takes several minutes and
+    about 150k tokens on Claude Code's login.
     """
     from analysis.sim import builder, price_schedule, roll_schedule
 
@@ -20582,7 +20738,7 @@ def builder_install(branch: str | None, fetch_prices: bool | None, roll: bool | 
         except ValueError as exc:
             raise click.BadParameter(str(exc), param_hint="--roll-window") from None
     try:
-        done = builder.install(resolved, branch, fetch_prices, roll, roll_window)
+        done = builder.install(resolved, branch, fetch_prices, roll, roll_window, research_daily)
     except ValueError as exc:
         raise click.ClickException(f"not a workspace pair: {exc}") from None
     for line in done:
@@ -20590,7 +20746,7 @@ def builder_install(branch: str | None, fetch_prices: bool | None, roll: bool | 
     # By the recorded choice alone: ANALYSIS_PRICE_FETCH=off is for one shell
     # (an agent's, a test's), so install_timer then leaves the timer as it is.
     config = builder.read_config(builder.BuilderPaths.for_data(resolved)) or {}
-    if config.get("prices", True) or config.get("roll", True):
+    if config.get("prices", True) or config.get("roll", True) or config.get("research", True):
         click.echo(price_schedule.install_timer(resolved, _builder_sim(resolved)))
     elif line := price_schedule.uninstall_timer(resolved):
         click.echo(line)
@@ -20770,20 +20926,85 @@ def builder_roll(if_due: bool, data_dir: Path | None) -> None:
         click.echo(builder.notify(resolved))
 
 
+@builder_group.command(name="research")
+@click.argument("symbol", required=False, type=completion.SYMBOL)
+@click.option("--if-due", is_flag=True, default=False,
+              help="Only when the day's research is due (what the builder runs).")
+@_BUILDER_DATA_DIR
+def builder_research(symbol: str | None, if_due: bool, data_dir: Path | None) -> None:
+    """Research a symbol now, as the morning's schedule does (#640): SYMBOL,
+    else the due one whose research (or failed try) is oldest. The builder
+    merges what it commits into the data repo's main, between builds, once
+    main is checked out with no uncommitted changes.
+
+    It never touches your checkout: it works in its own worktree, on the
+    builder/research branch. A fund's weights are written as a new set only
+    when a class moved more than 0.5 points from its latest written set; the
+    bundle is committed either way. A failed run keeps nothing and is
+    reported in `sim builder status`. `sim symbol research` is the way to
+    research one by hand with questions asked.
+    """
+    from analysis.sim import builder, price_schedule, research_schedule
+
+    resolved = _builder_data_dir(data_dir)
+    paths = builder.BuilderPaths.for_data(resolved)
+    config = builder.read_config(paths)
+    if config is None:
+        raise click.ClickException("background builds aren't installed here (sim builder install)")
+    if research_schedule.switched_off():
+        click.echo(f"research is off ({research_schedule.SWITCH_ENV}=off)")
+        return
+    if if_due and not research_schedule.due(resolved, config, datetime.now(UTC)):
+        click.echo("no research due")
+        return
+    if symbol is not None:
+        try:
+            symbol = symbols.normalize_symbol(symbol)
+        except ValueError as exc:
+            raise click.UsageError(str(exc)) from None
+        _warn_no_fetch([symbol], prices.no_fetch_symbols(resolved))
+    from analysis.sim.builder_log import LogWriter
+    from analysis.sim.locks import BUILDER_CHILD_ENV
+
+    writer = None if os.environ.get(BUILDER_CHILD_ENV) else LogWriter(paths.log_dir)
+    if writer is not None:
+        writer.event("researching a symbol")
+
+    def say(line: str) -> None:
+        click.echo(line)
+        if writer is not None:
+            writer.output(line)
+
+    try:
+        outcome = research_schedule.research(resolved, paths.research_worktree, symbol=symbol,
+                                             progress=say)
+    except (research_schedule.ResearchScheduleError, price_schedule.PriceScheduleError) as exc:
+        if writer is not None:
+            writer.event(f"research failed: {exc}")
+        raise click.ClickException(str(exc)) from None
+    for line in outcome.lines:
+        say(line)
+    if outcome.committed:
+        click.echo(builder.notify(resolved))
+
+
 @builder_group.command(name="tick")
 @_BUILDER_DATA_DIR
 @click.pass_context
 def builder_tick(ctx: click.Context, data_dir: Path | None) -> None:
     """What the hourly timer runs: `sim builder prices --if-due`, then
-    `sim builder roll --if-due`. A fetch that fails doesn't keep the roll
-    from its turn: it is reported, and the tick fails, after the roll."""
-    try:
-        ctx.invoke(builder_prices, if_due=True, data_dir=data_dir)
-    except click.ClickException as exc:
-        exc.show()
-        ctx.invoke(builder_roll, if_due=True, data_dir=data_dir)
-        raise click.exceptions.Exit(exc.exit_code) from None
-    ctx.invoke(builder_roll, if_due=True, data_dir=data_dir)
+    `sim builder roll --if-due`, then `sim builder research --if-due`. One
+    that fails doesn't keep the next from its turn: it is reported, and the
+    tick fails, after the last."""
+    failed: click.ClickException | None = None
+    for step in (builder_prices, builder_roll, builder_research):
+        try:
+            ctx.invoke(step, if_due=True, data_dir=data_dir)
+        except click.ClickException as exc:
+            exc.show()
+            failed = failed or exc
+    if failed is not None:
+        raise click.exceptions.Exit(failed.exit_code)
 
 
 @builder_group.command(name="series", hidden=True)
@@ -20866,6 +21087,16 @@ def builder_status(data_dir: Path | None) -> None:
         click.echo(f"roll: off ({roll_schedule.SWITCH_ENV}=off)")
     else:
         click.echo("roll: off (sim builder install --roll to start)")
+    from analysis.sim import research_schedule
+
+    if research_schedule.enabled(config):
+        for line in research_schedule.describe(research_schedule.read_state(resolved), resolved,
+                                               datetime.now(UTC)):
+            click.echo(line)
+    elif research_schedule.switched_off():
+        click.echo(f"research: off ({research_schedule.SWITCH_ENV}=off)")
+    else:
+        click.echo("research: off (sim builder install --research to start)")
     click.echo(f"log: {paths.log_dir} (sim builder log)")
 
 

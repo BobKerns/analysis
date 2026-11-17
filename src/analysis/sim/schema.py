@@ -6,7 +6,7 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
-SCHEMA_VERSION = 68
+SCHEMA_VERSION = 69
 
 
 def connect_sim_file(path: str | Path, **kwargs: Any) -> sqlite3.Connection:
@@ -34,10 +34,12 @@ CREATE TABLE person (
 );
 
 -- Names for the symbols lots hold (data repo securities.csv); shared reference
--- data like `person`. A symbol without a row is simply unnamed.
+-- data like `person`. A symbol without a row, or with a blank name, is simply
+-- unnamed. no_fetch (#640): no price fetch or research unless named.
 CREATE TABLE security (
-    symbol  TEXT PRIMARY KEY,
-    name    TEXT NOT NULL
+    symbol   TEXT PRIMARY KEY,
+    name     TEXT NOT NULL,
+    no_fetch INTEGER NOT NULL DEFAULT 0 CHECK (no_fetch IN (0, 1))
 );
 
 -- What a symbol is made of, by asset class (data repo allocations.csv). One set

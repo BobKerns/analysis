@@ -74,6 +74,8 @@ class YahooProvider:
 
     def __init__(self, http_get: Callable[[str], bytes] = _http_get) -> None:
         self._get = http_get
+        # The name each fetched symbol's chart gave, if any (#640).
+        self.names: dict[str, str] = {}
 
     def closes(self, symbol: str, start: date, end: date) -> list[tuple[date, Decimal]]:
         p1 = int(datetime(start.year, start.month, start.day, tzinfo=UTC).timestamp())
@@ -108,7 +110,10 @@ class YahooProvider:
                 )
             raise PriceError("no prices returned")
         result = results[0]
-        offset = result.get("meta", {}).get("gmtoffset", 0)
+        meta = result.get("meta", {})
+        if name := str(meta.get("longName") or meta.get("shortName") or "").strip():
+            self.names[symbol] = name
+        offset = meta.get("gmtoffset", 0)
         closes = result["indicators"]["quote"][0]["close"]
         out = []
         for stamp, close in zip(result["timestamp"], closes, strict=False):
@@ -191,6 +196,34 @@ def _csv_symbols(path: Path) -> set[str]:
         }
 
 
+def no_fetch_symbols(data_dir: Path) -> set[str]:
+    """Symbols ``securities.csv`` marks ``no_fetch`` (#640): no price fetch
+    or research takes them unless they are named."""
+    path = data_dir / "securities.csv"
+    if not path.exists():
+        return set()
+    with path.open(newline="", encoding="utf-8") as fh:
+        return {s for row in csv.DictReader(fh)
+                if (s := (row.get("symbol") or "").strip())
+                and (row.get("no_fetch") or "").strip() == "1"}
+
+
+def fetchable(data_dir: Path, symbols: Iterable[str]) -> list[str]:
+    """``symbols`` less the ones marked ``no_fetch``, sorted: what a fetch
+    or research with no symbol named takes (#640)."""
+    return sorted(set(symbols) - no_fetch_symbols(data_dir))
+
+
+def fill_names(data_dir: Path, names: dict[str, str]) -> list[str]:
+    """Give each symbol in ``names`` its name in ``securities.csv`` where it
+    has none, adding its row when absent (Bob, #640: a price fetch or a
+    research that finds a name fills it in). A name already there is kept.
+    Returns the symbols named. The one writer is :func:`symbols.fill_names`."""
+    from analysis.sim import symbols
+
+    return symbols.fill_names(data_dir, names)
+
+
 def known_symbols(data_dir: Path) -> list[str]:
     """Symbols the data repo names without a lot holding them: those in
     ``securities.csv`` or ``allocations.csv``, or with a shared ``prices/`` file,
@@ -239,6 +272,8 @@ class FetchResult:
     changed: int = 0
     latest: tuple[date, Decimal] | None = None
     error: str | None = None
+    name: str | None = None
+    """The security's name, when the provider gave one (#640)."""
 
 
 def fetch_prices(
@@ -261,6 +296,7 @@ def fetch_prices(
             result.error = "no prices in the period"
             continue
         result.latest = rows[-1]
+        result.name = (getattr(provider, "names", None) or {}).get(symbol)
         path = prices_dir / f"{PRICE_FILE_PREFIX}{symbol}.csv"
         merged, result.added, result.changed = merge_price_rows(
             _read_price_file(path), rows, refresh=refresh,

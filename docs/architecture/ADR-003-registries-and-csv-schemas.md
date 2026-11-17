@@ -511,9 +511,10 @@ Names for the symbols lots hold ([ADR-005](ADR-005-lots-and-per-lot-state.md)). 
 | column | type | required | notes |
 | --- | --- | --- | --- |
 | `symbol` | text | ✓ | unique; matches a lot's `symbol` |
-| `name` | text | ✓ | the security's name, shown next to the symbol in holdings views |
+| `name` | text | | the security's name, shown next to the symbol in holdings views; blank leaves it unnamed. A price fetch or research that finds the name fills in a blank or missing one, adding the row |
+| `no_fetch` | `0`/`1` | | `1` marks a symbol nothing can price, or an obsolete one: no price fetch (`sim prices fetch` with no symbol named, the builder's scheduled fetch) and no scheduled research take it. Named on the command line (`sim prices fetch SYMBOL`, `sim symbol research SYMBOL`) it still runs, with a warning. Blank is `0`; the column may be left out ([#640](https://github.com/BobKerns/analysis/issues/640)) |
 
-The file may be omitted, and a symbol with no row is simply unnamed.
+The file may be omitted, and a symbol with no row is simply unnamed. `sim symbol edit` changes a row's name or mark, adding the row (and the `no_fetch` column) when needed.
 
 #### 4.1b Shared base: `data_repo/allocations.csv` (optional)
 
@@ -1704,3 +1705,4 @@ Each entry changed this ADR's design. The sections it names were rewritten in pl
 - [#617](https://github.com/BobKerns/analysis/issues/617): `sim import map [SOURCE]` lists the saved import mappings and changes or removes a row; the holdings mapping question offers a new account (§4.17).
 - [#618](https://github.com/BobKerns/analysis/issues/618): the coded source `ofx` reads OFX and QFX downloads, transactions by payee with each one's `FITID` as its reference, and balances and positions as holdings; the rule for references, shared by every source that has them, is restated (a reference is taken at its word, a file's own repeats are kept, corrections are applied, and what a reference can't be trusted for is noted); a source may say which accounts it lists in full; an account's cash beside its positions goes to its cash lot (§4.17).
 - [#641](https://github.com/BobKerns/analysis/issues/641): a `fixed_amount` with a blank amount pays a liability what it was owed when the month opened; rule kind `card_interest` charges what the month's payments left unpaid, after the month's rules; `sim import transactions` charges a card's spending to the card and writes its payment rule, and the imports' `--from-account` is `--from` (§2.1, §2.12, §4.6, §4.17, §5, §6).
+- [#640](https://github.com/BobKerns/analysis/issues/640): `securities.csv` gains `no_fetch`, and its `name` may be blank (§4.1a).

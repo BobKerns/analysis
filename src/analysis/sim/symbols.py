@@ -22,18 +22,20 @@ import pandas as pd
 
 from analysis.sim import registries, units
 from analysis.sim.asset_classes import is_lot_key
-from analysis.sim.prices import price_files
+from analysis.sim.prices import no_fetch_symbols, price_files
 from analysis.sim.dates import month_end_iso
 from analysis.sim.loader import _validate_allocations, _validate_securities
 
 __all__ = [
-    "SymbolAdded", "add_symbol", "has_weights", "latest_set", "normalize_symbol", "parse_weights",
-    "security_name", "symbol_table",
+    "SymbolAdded", "add_symbol", "edit_security", "has_weights", "latest_set", "no_fetch_symbols",
+    "normalize_symbol", "parse_weights", "security_name", "symbol_table",
 ]
 
 SECURITIES = "securities.csv"
 ALLOCATIONS = "allocations.csv"
 _SECURITY_COLUMNS = ["symbol", "name"]
+# #640: optional; written only once some symbol is marked.
+NO_FETCH = "no_fetch"
 _ALLOCATION_COLUMNS = ["symbol", "as_of", "asset_class", "weight"]
 
 
@@ -131,8 +133,10 @@ def symbol_table(data_dir: Path) -> pd.DataFrame:
     """One row per symbol named anywhere: its name, latest weights, prices and
     holders. Columns: ``symbol``, ``name``, ``allocation``, ``allocation_sets``,
     ``prices``, ``latest_price``, ``latest_date`` (the shared ``prices/`` file),
-    ``scenario_prices`` (the scenarios with their own), ``held_by``."""
+    ``scenario_prices`` (the scenarios with their own), ``held_by``,
+    ``no_fetch`` (#640)."""
     names = {row["symbol"]: row.get("name", "") for row in _read(data_dir / SECURITIES)[1] if row.get("symbol")}
+    marked = no_fetch_symbols(data_dir)
     weights = _latest_weights([  # account:lot keys class a lot, not a symbol (#326)
         r for r in _read(data_dir / ALLOCATIONS)[1] if r.get("symbol") and not is_lot_key(r["symbol"])
     ])
@@ -159,10 +163,10 @@ def symbol_table(data_dir: Path) -> pd.DataFrame:
             "allocation": allocation, "allocation_sets": sets,
             "prices": count, "latest_price": latest_price, "latest_date": latest_date,
             "scenario_prices": overrides.get(symbol, []),
-            "held_by": holders.get(symbol, []),
+            "held_by": holders.get(symbol, []), "no_fetch": symbol in marked,
         })
     columns = ["symbol", "name", "allocation", "allocation_sets", "prices",
-               "latest_price", "latest_date", "scenario_prices", "held_by"]
+               "latest_price", "latest_date", "scenario_prices", "held_by", "no_fetch"]
     return pd.DataFrame(records, columns=columns)
 
 
@@ -237,22 +241,26 @@ def _appended(
 def add_symbol(
     data_dir: Path, symbol: str, *, name: str | None = None,
     weights: Mapping[str, str] | None = None, as_of: str | None = None,
-    replace: bool = False,
+    replace: bool = False, no_fetch: bool = False,
 ) -> SymbolAdded:
     """Name ``symbol`` in ``securities.csv`` and give it one set of weights in
     ``allocations.csv``. Either may be left out; neither file is touched for
     what isn't given. Raises ``ValueError``, writing nothing, when a row would
     not load (a duplicate name, a set that doesn't add up to 100%, a second set
     for the same ``as_of``). With ``replace``, a set already written for the
-    same ``as_of`` is replaced instead of refused."""
+    same ``as_of`` is replaced instead of refused. ``no_fetch`` marks the
+    new ``securities.csv`` row (#640), with or without a name."""
     symbol = normalize_symbol(symbol)
     if as_of and not weights:
         raise ValueError("--as-of dates a set of weights; give the weights too")
     writes: list[tuple[Path, list[str], list[dict[str, str]]]] = []
 
-    if name:
+    if name or no_fetch:
         path = data_dir / SECURITIES
-        header, old, rows = _appended(path, _SECURITY_COLUMNS, [{"symbol": symbol, "name": name.strip()}])
+        row = {"symbol": symbol, "name": (name or "").strip(), **({NO_FETCH: "1"} if no_fetch else {})}
+        header, old, rows = _appended(path, _SECURITY_COLUMNS, [row])
+        if no_fetch and NO_FETCH not in header:
+            header = [*header, NO_FETCH]
         existing = next((r for r in old if r.get("symbol") == symbol), None)
         if existing is not None:
             raise ValueError(f"{symbol} is already in {SECURITIES}, named {existing.get('name')!r}")
@@ -319,3 +327,75 @@ def add_symbol(
             tmp.unlink(missing_ok=True)
         raise
     return SymbolAdded(symbol, named=bool(name), weighted=bool(weights))
+
+
+def fill_names(data_dir: Path, names: Mapping[str, str]) -> list[str]:
+    """Give each symbol in ``names`` its name in ``securities.csv`` where it
+    has none, adding its row when absent (#640). A name already there is
+    kept, and CASH, CD and lot keys are never named. Returns the symbols
+    named; a file that wouldn't load afterwards is left as it is."""
+    path = data_dir / SECURITIES
+    header, rows = _read(path)
+    header = header or list(_SECURITY_COLUMNS)
+    if "symbol" not in header or "name" not in header:
+        return []
+    by_symbol = {(r.get("symbol") or "").strip(): r for r in rows}
+    named = []
+    for symbol, name in sorted(names.items()):
+        name = " ".join((name or "").split())
+        if not name or symbol in registries.SYMBOL_ASSET_CLASS or is_lot_key(symbol):
+            continue
+        row = by_symbol.get(symbol)
+        if row is None:
+            row = by_symbol[symbol] = {"symbol": symbol, "name": ""}
+            rows.append(row)
+        if (row.get("name") or "").strip():
+            continue
+        row["name"] = name
+        named.append(symbol)
+    if not named:
+        return []
+    issues: list[str] = []
+    _validate_securities(rows, issues)
+    if issues:
+        return []
+    os.replace(_write_atomic(path, header, rows), path)
+    return named
+
+
+def edit_security(
+    data_dir: Path, symbol: str, *, name: str | None = None, no_fetch: bool | None = None,
+) -> bool:
+    """Change ``symbol``'s ``securities.csv`` row: its name (``""`` clears
+    it), its ``no_fetch`` mark, or both; ``None`` leaves one as it is. A
+    symbol with no row gets one, unnamed unless ``name`` is given (#640).
+    The ``no_fetch`` column is added when a mark needs it. True when the file
+    changed."""
+    symbol = normalize_symbol(symbol)
+    path = data_dir / SECURITIES
+    header, rows = _read(path)
+    header = header or list(_SECURITY_COLUMNS)
+    if "name" not in header or "symbol" not in header:
+        raise ValueError(f"{SECURITIES} has no symbol or name column")
+    row = next((r for r in rows if r.get("symbol") == symbol), None)
+    if row is None:
+        if not name and not no_fetch:
+            return False  # an unnamed, fetched symbol needs no row
+        row = {"symbol": symbol, "name": ""}
+        rows.append(row)
+    before = dict(row)
+    if name is not None:
+        row["name"] = name.strip()
+    if no_fetch is not None:
+        if no_fetch and NO_FETCH not in header:
+            header = [*header, NO_FETCH]
+        if NO_FETCH in header:
+            row[NO_FETCH] = "1" if no_fetch else "0"
+    if row == before and path.exists():
+        return False
+    issues: list[str] = []
+    _validate_securities(rows, issues)
+    if issues:
+        raise ValueError("; ".join(issues))
+    os.replace(_write_atomic(path, header, rows), path)
+    return True
