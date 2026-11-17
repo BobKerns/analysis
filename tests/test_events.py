@@ -165,10 +165,27 @@ def test_a_rules_tag_comes_before_its_accounts(report_run: RunConnection) -> Non
     assert len(budget) == len(core) + len(fun) + len(events_view(report_run, tags=("budget:home",))[1])
 
 
-def test_a_tag_on_either_account_matches(report_run: RunConnection) -> None:
+def test_a_tag_comes_from_the_income_or_expense_account_as_reports_group(report_run: RunConnection) -> None:
+    from analysis.sim import reports
+
     _heading, work = events_view(report_run, tags=("source:work",))
     assert len(work) > 0
     assert ((work["from"] == "Income_Salary_Alice") | (work["to"] == "Income_Salary_Alice")).all()
+    # The same events, and dollars, as the report's source:work group.
+    income = reports.flows_by_year(report_run, "income", by="tag:source", story=False)
+    assert round(work["amount"].sum(), 2) == round(income["work"].sum(), 2)
+
+
+def test_a_balance_accounts_tag_does_not_match(report_run: RunConnection, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Tag the checking account: moves out of it are paid into expense
+    # accounts, whose tags (or their rules') are the ones that count.
+    accounts = report_run.items("account")
+    tagged = accounts.assign(tags=accounts["tags"].mask(accounts["name"] == "Asset_Checking", "owner:alice"))
+    real_items = report_run.items
+    monkeypatch.setattr(report_run, "items",
+                        lambda kind, **kw: tagged if kind == "account" and not kw else real_items(kind, **kw))
+    _heading, owned = events_view(report_run, tags=("owner:alice",))
+    assert owned.empty
 
 
 def test_a_tag_must_name_a_role(report_run: RunConnection) -> None:

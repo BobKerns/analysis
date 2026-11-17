@@ -10,10 +10,10 @@ from typing import Any
 
 import pandas as pd
 
-from analysis.frames import named_rows
 from analysis.sim.connection import RunConnection
+from analysis.sim.flow_events import event_tags, flow_account
 
-__all__ = ["RULE_REASONS", "events_view", "run_date_bounds", "tag_matches"]
+__all__ = ["check_tag", "events_view", "run_date_bounds", "tag_matches"]
 
 _DISPLAY_COLUMNS = [
     "date", "reason_kind", "rule_name", "rule_kind", "from_name", "from_lot", "to_name", "to_lot",
@@ -29,8 +29,6 @@ _DOLLAR_COLUMNS = ["amount", "requested", "remainder", "balance"]
 # Catch-up entries for the months before the scenario starts: reported, but
 # they don't move balances (ADR-003 §4.10).
 _BALANCE_NEUTRAL = {"ytd", "ytd_rule"}
-RULE_REASONS = ("rule", "ytd_rule")
-"""``transfer_event.reason_kind`` values whose ``reason_id`` is a scheduled rule."""
 
 
 def run_date_bounds(rc: RunConnection) -> tuple[date, date]:
@@ -39,39 +37,26 @@ def run_date_bounds(rc: RunConnection) -> tuple[date, date]:
     return date.fromisoformat(dates.min()), date.fromisoformat(dates.max())
 
 
-def _in_role(tags: str, role: str) -> set[str]:
-    """The names of ``tags``' tokens (space-separated ``role:name``) in ``role``."""
-    return {name for token in tags.split() for r, _, name in [token.partition(":")] if r == role}
-
-
-def tag_matches(rc: RunConnection, frame: pd.DataFrame, tag: str) -> pd.Series:
-    """Which of ``frame``'s events carry ``tag`` (``role:name``, or ``role:*``
-    for any tag in the role).
-
-    As ``sim report --by tag:ROLE`` groups them: a tag in the role on the
-    scheduled rule that posted the event comes first, so a rule can refine
-    its accounts' tags; an event whose rule has none in the role takes the
-    tags of either account it moves money between."""
+def check_tag(tag: str) -> tuple[str, str]:
+    """``tag``'s role and name (``*`` for any in the role); ``ValueError``
+    unless it is ``role:name`` or ``role:*``."""
     role, sep, wanted = tag.partition(":")
     if not sep or not role or not wanted:
         raise ValueError(f"tag {tag!r} must be role:name, or role:* for the whole role")
-    rules = rc.items("scheduled").set_index("id")["tags"]
-    accounts = rc.items("account").set_index("name")["tags"]
+    return role, wanted
 
-    def has(names: set[str]) -> bool:
-        return bool(names) and (wanted == "*" or wanted in names)
 
-    def matches(row: Any) -> bool:
-        if row.reason_kind in RULE_REASONS and pd.notna(row.reason_id):
-            own = _in_role(rules.get(int(row.reason_id), ""), role)
-            if own:
-                return has(own)
-        ends = _in_role(accounts.get(row.from_name, ""), role) | _in_role(accounts.get(row.to_name, ""), role)
-        return has(ends)
-
-    if frame.empty:
-        return pd.Series([], index=frame.index, dtype=bool)
-    return pd.Series([matches(row) for row in named_rows(frame, index=False)], index=frame.index)
+def tag_matches(rc: RunConnection, frame: pd.DataFrame, tag: str) -> pd.Series:
+    """Which of ``frame``'s ``transfer_event`` rows carry ``tag`` (``role:name``,
+    or ``role:*`` for any tag in the role), by the lookup ``report --by
+    tag:ROLE`` groups with (:func:`flow_events.event_tags`): the tag on the
+    scheduled rule that posted the event, else on its income or expense
+    account. A move between balance accounts has only its rule's tag."""
+    role, wanted = check_tag(tag)
+    names = event_tags(rc, frame, role, flow_account(frame))
+    if wanted == "*":
+        return names.notna()
+    return names.map(lambda joined: isinstance(joined, str) and wanted in joined.split("+")).astype(bool)
 
 
 def events_view(

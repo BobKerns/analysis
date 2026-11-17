@@ -5290,13 +5290,16 @@ def switch_command(scenario: str | None, data_dir: Path | None) -> None:
 @click.option("--reason", "reasons", type=click.Choice(registries.REASON_KINDS), multiple=True,
               help="Only events posted for this reason (repeatable): a rule, an opening balance, "
                    "year-to-date catch-up, a refill or overflow, a strategy's or a tax payment.")
-@click.option("--rule", "rules", type=completion.RULE, multiple=True,
+@click.option("--rule", "rules", type=completion.RULE_FILTER, multiple=True,
               help="Only events this scheduled rule (or tax jurisdiction) posted (repeatable).")
 @click.option("--tax-character", "tax_characters", type=click.Choice(sorted(registries.TAX_CHARACTERS)),
               multiple=True, help="Only events of this tax character (repeatable).")
 @click.option("--tag", "tags", type=completion.TAG_FILTER, multiple=True,
               help="Only events carrying this tag ('role:name', or 'role:*'), on their rule or, "
-                   "when the rule has none in that role, on either account (repeatable: all must match).")
+                   "when the rule has none in that role, on its income or expense account, as "
+                   "`sim report --by tag:ROLE` groups them (repeatable: all must match).")
+@click.option("--limit", default=500, show_default=True, type=click.IntRange(min=0),
+              help="Show at most this many events (0: all of them); the title still counts every one.")
 @click.option("--runfile", type=click.Path(exists=True, dir_okay=False, path_type=Path),
               default=None, help="Run file (default: selected scenario's latest run).")
 @click.option("--scenario", type=completion.SCENARIO, default=None,
@@ -5315,6 +5318,7 @@ def items(
     rules: tuple[str, ...],
     tax_characters: tuple[str, ...],
     tags: tuple[str, ...],
+    limit: int,
     runfile: Path | None,
     scenario: str | None,
     data_dir: Path | None,
@@ -5322,7 +5326,7 @@ def items(
 ) -> None:
     """Show a run's ledger events, filtered, with the rules that posted them.
 
-    With no options, every event of the run. Filters narrow it: by account
+    With no options, every event of the run, up to --limit. Filters narrow it: by account
     (either end), dates, reason, rule, tax character and tag; the same as
     events.ipynb's. Each row shows its event number, and Caused by gives the
     event a leg derives from, such as the debit whose look-ahead drew a
@@ -5333,6 +5337,13 @@ def items(
         raise click.UsageError("--lot narrows one --account")
     if months is not None and (start is None or end is not None):
         raise click.UsageError("--months counts from --start, in place of --end")
+    from analysis.sim import events as events_
+
+    for tag in tags:
+        try:
+            events_.check_tag(tag)
+        except ValueError as exc:
+            raise click.UsageError(str(exc)) from None
     first = last = None
     if start is not None:
         start = month_end_iso(_validate_month_date(start))
@@ -5359,26 +5370,24 @@ def items(
                 f"no runs for {scenario_ref.name!r} in {resolved_runs_dir}; run `sim run` first"
             )
 
-    from analysis.sim import events as events_
-
     with RunConnection(runfile) as rc:
         known = rc.items("account").set_index("name")
         for account in accounts:
             if account not in known.index:
                 raise click.ClickException(f"unknown account in run: {account!r}")
-        if lot is not None and lot not in rc.lots_by_account().get(accounts[0], []):
-            raise click.ClickException(f"unknown lot {lot!r} of account {accounts[0]!r}")
-        try:
-            _heading, table = events_.events_view(
-                rc, accounts=accounts, reason_kinds=reasons, tax_characters=tax_characters,
-                start=first, end=last, lots=(lot,) if lot else (), rules=rules, tags=tags,
-            )
-        except ValueError as exc:
-            raise click.UsageError(str(exc)) from None
+        if lot is not None:
+            # Any account's lots, an income or expense account's one included.
+            lots = rc.items("account_lot")
+            if not ((lots["account"] == accounts[0]) & (lots["lot"] == lot)).any():
+                raise click.ClickException(f"unknown lot {lot!r} of account {accounts[0]!r}")
+        _heading, table = events_.events_view(
+            rc, accounts=accounts, reason_kinds=reasons, tax_characters=tax_characters,
+            start=first, end=last, lots=(lot,) if lot else (), rules=rules, tags=tags,
+        )
     subkinds = known["subkind"].to_dict()
 
     click.echo(f"run: {runfile}")
-    window = f"{start or 'start'} through {end or 'end'}"
+    window = f"{first or 'start'} through {end or 'end'}"
     if len(accounts) == 1:
         click.echo(f"account: {accounts[0]}{f' (lot {lot})' if lot else ''}  window: {window}")
     else:
@@ -5413,7 +5422,8 @@ def items(
     def cents(value: Any) -> int | None:
         return None if pd.isna(value) else round(value * 100)
 
-    for event, row in table.iterrows():
+    shown = table if not limit else table.head(limit)
+    for event, row in shown.iterrows():
         source = _account_with_lot(row["from"], subkinds.get(row["from"]), row["from_lot"])
         target = _account_with_lot(row["to"], subkinds.get(row["to"]), row["to_lot"])
         if one:
@@ -5435,6 +5445,9 @@ def items(
             line.append("-" if pd.isna(row["balance"]) else _compact_cents(cents(row["balance"])))
         table_.add_row(*line)
     _print_unclipped(table_)
+    if len(shown) < len(table):
+        click.echo(f"showing the first {len(shown):,} of {len(table):,} events: narrow them with the "
+                   "filters, or pass --limit 0 for all")
 
 
 def _fmt_quantity(micros: int | None) -> str:

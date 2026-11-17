@@ -18,7 +18,7 @@ def _items(runfile: Path, *args: str):
 def test_no_account_shows_the_whole_ledger(two_lot_run_file: Path) -> None:
     result = _items(two_lot_run_file, "--start", "2026-06", "--end", "2026-06")
     assert result.exit_code == 0, result.output
-    assert "accounts: all  window: 2026-06-30 through 2026-06-30" in result.output
+    assert "accounts: all  window: 2026-06-01 through 2026-06-30" in result.output
     assert "From" in result.output and "To" in result.output and "Direction" not in result.output
     with RunConnection(two_lot_run_file) as rc:
         june = rc.items("transfer_event")
@@ -78,3 +78,28 @@ def test_usage_errors(two_lot_run_file: Path) -> None:
     assert tag.exit_code != 0 and "role:name" in tag.output
     unknown = _items(two_lot_run_file, "--account", "Nope")
     assert unknown.exit_code != 0 and "unknown account" in unknown.output
+
+
+def test_a_long_listing_stops_at_the_limit(two_lot_run_file: Path) -> None:
+    with RunConnection(two_lot_run_file) as rc:
+        total = len(rc.items("transfer_event"))
+    result = _items(two_lot_run_file, "--limit", "5")
+    assert result.exit_code == 0, result.output
+    assert f"showing the first 5 of {total:,} events" in result.output
+    assert f"ledger events: {total:,}," in result.output
+    everything = _items(two_lot_run_file, "--limit", "0", "--reason", "refill")
+    assert "showing the first" not in everything.output
+
+
+def test_lot_works_for_an_income_or_expense_accounts_one_lot(two_lot_run_file: Path) -> None:
+    result = _items(two_lot_run_file, "--account", "Expense_Living", "--lot", "default", "--start", "2026-05")
+    assert result.exit_code == 0, result.output
+    assert "living (fixed_amount)" in result.output
+
+
+def test_rule_takes_a_tax_jurisdiction(report_run_file: Path) -> None:
+    with RunConnection(report_run_file) as rc:
+        jurisdiction = rc.items("transfer_event", reason_kind="tax")["rule_name"].iloc[0]
+    result = _items(report_run_file, "--rule", jurisdiction)
+    assert result.exit_code == 0, result.output
+    assert f"tax: {jurisdiction}" in result.output

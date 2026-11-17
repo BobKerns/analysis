@@ -274,6 +274,9 @@ CHAIN = NameType(_in_scenario(names.chain_names), "chain",
 ENDPOINT = NameType(_in_scenario(lambda d, s: names.chain_names(d, s, accounts=True)),
                     "account or chain", plural="accounts and chains", known=_builtin_accounts)
 RULE = NameType(_in_scenario(names.scheduled_names), "scheduled rule")
+# A filter on a run's events: a scheduled rule, but also a tax jurisdiction,
+# a generated growth rule or a rule the run has and the scenario no longer does.
+RULE_FILTER = NameType(_in_scenario(names.scheduled_names), "rule", check=False)
 YTD_ROW = NameType(_in_scenario(names.ytd_names), "year-to-date row")
 STRATEGY = NameType(_in_scenario(names.strategy_names), "strategy")
 TAX_JURISDICTION = NameType(_in_scenario(names.tax_jurisdiction_names), "tax jurisdiction")
