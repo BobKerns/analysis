@@ -968,7 +968,8 @@ def test_sim_import_holdings_adds_an_account_named_at_the_mapping_question(
         "Asset_Checking,,map,Asset_Checking,,\nAsset_Brokerage_Joint,,skip,,,\nLiability_Mortgage,,skip,,,\n")
     # The outside IRA is a new savings account here: its name, yes, then what `sim account add` asks.
     # Its lot is named as it is made, so it needn't be renamed when the account has two.
-    answers = "Asset_Savings_New\ny\nasset\ncash\njoint\nsavings\n"
+    # A name a lot can't have is asked again, before the account is written.
+    answers = "Asset_Savings_New\ny\nasset\ncash\njoint\nmy:savings\nsavings\n"
 
     result = _import(test_data_dir, "holdings", str(quicken_net_worth_export), input=answers)
 
@@ -980,6 +981,7 @@ def test_sim_import_holdings_adds_an_account_named_at_the_mapping_question(
         added = next(row for row in csv.DictReader(f) if row["name"] == "Asset_Savings_New")
     assert (added["kind"], added["subkind"], added["owner"]) == ("asset", "cash", "joint")
     assert "name of Asset_Savings_New's lot (a name of your own, such as checking) [default]:" in result.output
+    assert "a lot label may not contain ':'" in result.output
     lot = _lots(test_data_dir)["Asset_Savings_New"]
     assert (lot["lot"], lot["opening_balance"]) == ("savings", "510000.00")
     assert "Asset_TraditionalIRA_Alice,,map,Asset_Savings_New,savings," in saved.read_text(encoding="utf-8")
@@ -3313,6 +3315,24 @@ def test_sim_import_holdings_asks_which_lot_a_bank_balance_goes_into_and_adds_a_
     assert lots["checking"] == lots["savings"] == "4321.09" and "saving" not in lots
     assert _saved(test_data_dir, "ofx") == [
         "First Example Bank checking ...4321,,map,Asset_Checking,checking,",
+        "First Example Bank savings ...4321,,map,Asset_Checking,savings,"]
+
+
+@pytest.mark.usefixtures("at_a_terminal")
+def test_sim_import_holdings_names_the_one_lot_in_its_row_when_the_account_gets_a_second(
+    test_data_dir: Path, ofx_bank_like_accounts_download: Path,
+) -> None:
+    # Checking takes the account's one lot with Enter, so its row names none;
+    # savings then adds a second lot, and the first row would mean neither.
+    result = _import(test_data_dir, "holdings", str(ofx_bank_like_accounts_download),
+                     input="Asset_Checking\n\nAsset_Checking\nsavings\ny\n")
+    assert result.exit_code == 0, result.output
+    assert "names none, so it was skipped" not in result.output
+    lots = _all_lots(test_data_dir)
+    assert lots["Asset_Checking", ""]["opening_balance"] == "4321.09"     # `default`, written blank
+    assert lots["Asset_Checking", "savings"]["opening_balance"] == "4321.09"
+    assert _saved(test_data_dir, "ofx") == [
+        "First Example Bank checking ...4321,,map,Asset_Checking,default,",
         "First Example Bank savings ...4321,,map,Asset_Checking,savings,"]
 
 

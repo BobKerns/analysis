@@ -9099,8 +9099,9 @@ def _ask_holding_target(
     if by_symbol or not shown:
         pass
     elif added:
-        # Named as it was added: the row names it, and so still finds it
-        # when the account has a second lot.
+        # Named as it was added. Left as `default` it is a blank cell, and
+        # the row names none: ``add_lot`` names it there when the account
+        # gets a second.
         lot = its_lots[0] if len(its_lots) == 1 else ""
     elif add_lot is None:
         if len(shown) > 1:
@@ -9115,7 +9116,9 @@ def _ask_holding_target(
             said = _prompt_with_completion(f"lot of {answer}", choices=shown, default=only).strip()
             if said == only:
                 # The one lot, as before there was a question: the row
-                # names no lot, and so follows the lot if it is renamed.
+                # names no lot, so a file that lists the account's holdings
+                # still sends each to its own. ``add_lot`` names it in the
+                # row when the account gets a second.
                 break
             if said in shown or (said and new_lot(said)):
                 lot = said
@@ -10836,7 +10839,7 @@ def add_account(
     it: an account kept as several lots (a bank's checking and savings) is
     better started with the name its first one will keep.
     """
-    first_lot = (first_lot or "").strip()
+    first_lot = _check_lot_label(first_lot or "")
     if first_lot == registries.DEFAULT_LOT:
         first_lot = ""
     try:
@@ -13600,11 +13603,23 @@ def import_holdings(
     def add_balance_lot(account: str, name: str) -> bool:
         """A lot of ``account`` with no symbol, for an outside account's one
         balance; False, with why, when it can't be one."""
+        nonlocal to_save
+        bare = [row.get("lot", "") or registries.DEFAULT_LOT for row in rows
+                if row.get("account_name") == account and not row.get("symbol")]
         try:
             add_lot(account, name, "")
         except click.ClickException as e:
             click.echo(f"  not added: {e.format_message()}")
             return False
+        if len(bare) == 1:
+            # A row that sends a whole outside account here and names no lot
+            # meant the one there was. With two it would mean neither, and
+            # its balance would be skipped from now on: it names that lot.
+            for each in (account_map, saved_map):
+                for key, target in list(each.entries.items()):
+                    if not key[1] and (target.action, target.account, target.lot) == ("map", account, ""):
+                        each.set(*key, import_mapping.AccountTarget("map", account, bare[0], target.note))
+                        to_save = True
         return True
 
     def add_account_now(name: str, listed: bool) -> bool:
@@ -13625,8 +13640,16 @@ def import_holdings(
         # Its one lot takes the balance. Named here, it needn't be renamed
         # when the account gets a second (a bank's savings beside its
         # checking), and a lot called `default` isn't a surprise later.
+        def lot_label(text: str) -> str:
+            # Asked again here: the account is written before its lot is judged.
+            try:
+                return _check_lot_label(text) or registries.DEFAULT_LOT
+            except click.ClickException as e:
+                raise click.UsageError(e.format_message()) from None
+
         first_lot = None if listed else click.prompt(
-            f"name of {name}'s lot (a name of your own, such as checking)", default=registries.DEFAULT_LOT)
+            f"name of {name}'s lot (a name of your own, such as checking)", default=registries.DEFAULT_LOT,
+            value_proc=lot_label)
         click.get_current_context().invoke(
             add_account, name=name, kind=kind, subkind=subkind, owner=owner, lot_subkind=lot_subkind,
             first_lot=first_lot,
