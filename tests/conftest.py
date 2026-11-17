@@ -2763,6 +2763,30 @@ def ofx_brokerage_download(tmp_path: Path) -> Path:
 
 
 @pytest.fixture
+def quicken_flat_transaction_report(tmp_path: Path) -> Path:
+    """Quicken's "All Transactions" report exported as it stands: one row
+    for each transaction with its account in a column, under a few lines
+    about the report. Two accounts, a move between them, and a total."""
+    path = tmp_path / "all_transactions.csv"
+    path.write_text(
+        "All Transactions Report Created: 2026-03-01 09:00:00 -0800\n"
+        ",\n"
+        "Filter Criteria:,Spending\n"
+        ",Last Year\n"
+        ",All Accounts\n"
+        ",\n"
+        ',"Split","Date","Payee/Security","Category","Tags","Amount","Account","Memo/Notes"\n'
+        ',,"02/14/2026","Florist","Gifts","Family","-60.00","Rewards Card","Flowers, a dozen"\n'
+        ',,"02/02/2026","Market","Groceries","","-1,500.00","Checking",\n'
+        ',,"01/31/2026","Dividend","Uncategorized","","2.08","Savings",\n'
+        ',,"01/15/2026","To Savings","Transfer:[Savings]","","-200.00","Checking",""\n'
+        '"Total",,,,,,"-1,757.92",,\n',
+        encoding="utf-8",
+    )
+    return path
+
+
+@pytest.fixture
 def quicken_empty_transaction_export(tmp_path: Path) -> Path:
     """A Quicken "Transaction Export" of an account with no activity."""
     path = tmp_path / "empty_transaction_export.csv"

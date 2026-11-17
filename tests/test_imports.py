@@ -51,6 +51,25 @@ def test_an_export_with_no_transactions_still_has_dates(
     assert both.transactions["date"].dt.month.tolist() == [1, 1, 2, 2]
 
 
+def test_a_flat_transaction_report_is_read_row_by_row(quicken_flat_transaction_report: Path) -> None:
+    assert quicken.is_transaction_export(quicken_flat_transaction_report)
+    assert not quicken.is_account_tree(quicken_flat_transaction_report)
+
+    frame = quicken.read_transactions(quicken_flat_transaction_report).transactions
+
+    assert frame[["account", "payee", "category", "amount_cents"]].to_dict("records") == [
+        {"account": "Rewards Card", "payee": "Florist", "category": "Gifts", "amount_cents": -6000},
+        {"account": "Checking", "payee": "Market", "category": "Groceries", "amount_cents": -150000},
+        {"account": "Savings", "payee": "Dividend", "category": "Uncategorized", "amount_cents": 208},
+        {"account": "Checking", "payee": "To Savings", "category": "Transfer:[Savings]", "amount_cents": -20000},
+    ]
+    assert frame["date"].dt.strftime("%Y-%m-%d").tolist() == [
+        "2026-02-14", "2026-02-02", "2026-01-31", "2026-01-15"]
+    assert frame["transfer"].tolist() == ["", "", "", "Savings"]
+    assert frame["tags"][0] == "Family" and frame["memo"][0] == "Flowers, a dozen"
+    assert sources.read_flows([quicken_flat_transaction_report]).source == "quicken"
+
+
 def test_flows_refuse_a_frame_without_the_common_columns(quicken_transaction_export: Path) -> None:
     frame = quicken.read_transactions(quicken_transaction_export).transactions.drop(columns=["payee"])
     with pytest.raises(ValueError, match="payee"):
