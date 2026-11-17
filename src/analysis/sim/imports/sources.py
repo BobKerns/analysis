@@ -12,7 +12,7 @@ import contextlib
 import datetime as dt
 import itertools
 from collections import Counter
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Generator, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
@@ -215,7 +215,7 @@ def _resolve(
 
 
 @contextlib.contextmanager
-def _reading(path: Path) -> Iterator[None]:
+def _reading(path: Path) -> Generator[None]:
     """Reading ``path`` as a named source: a file that isn't text is said to
     be that, and not as the codec's complaint about a byte. It is most
     often the outside program's own data file (Quicken's ``.qxf``), given
