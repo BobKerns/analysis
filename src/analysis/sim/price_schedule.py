@@ -369,6 +369,10 @@ def fetch(
                                  + f" (latest {prices.format_price(result.latest[1])} "
                                  f"on {result.latest[0]})")
         failing = {s: f for s, f in failing.items() if s in chosen}
+        # A name the provider gave fills a blank one (#640); committed with the prices.
+        for symbol in prices.fill_names(data, {r.symbol: r.name for r in results
+                                               if r.name and r.error is None}):
+            lines.append(f"{symbol}: named in securities.csv")
         worked = not results or any(r.error is None for r in results)
         committed = _commit(top, worktree, rel, results)
         pending = _settle(top, worktree)
@@ -391,6 +395,9 @@ def _commit(top: Path, worktree: Path, rel: str, results: list[Any]) -> str | No
     path = f"{rel}/prices" if rel not in ("", ".") else "prices"
     if (worktree / path).exists():  # none when no symbol was fetched into a repo without one
         _git(worktree, "add", "-A", "--", path, check=True)
+    names = f"{rel}/securities.csv" if rel not in ("", ".") else "securities.csv"
+    if (worktree / names).exists():  # names filled in (#640)
+        _git(worktree, "add", "--", names, check=True)
     if _git(worktree, "diff", "--cached", "--quiet").returncode == 0:
         return None
     changed = [r for r in results if r.error is None and (r.added or r.changed)]

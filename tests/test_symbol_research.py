@@ -330,7 +330,7 @@ def test_a_company_by_name_is_researched_and_kept_under_its_words(
     assert "/fund-tear-sheet/scripts/" in bash and "/public-tear-sheet/scripts/" in bash
     [bundle] = sorted((test_data_dir / "research" / "ACME-ROBOTICS").iterdir())
     assert "<title>Acme Robotics research" in (bundle / "report.html").read_text(encoding="utf-8")
-    assert "Acme Robotics: the bundle has no allocation export, so nothing was written." in result.output
+    assert "Acme Robotics: the bundle has no allocation export, so no weights were written." in result.output
     assert not (test_data_dir / "allocations.csv").exists() or not any(
         r["symbol"].startswith("ACME") for r in _allocations(test_data_dir))
 

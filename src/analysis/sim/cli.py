@@ -14044,6 +14044,10 @@ def _fetch_prices(
         day, price = r.latest
         change = f"{r.added} added" + (f", {r.changed} changed" if r.changed else "")
         click.echo(f"{r.symbol}: {change} (latest {prices.format_price(price)} on {day})")
+    if not dry_run:
+        found = {r.symbol: r.name for r in results if r.name and r.error is None}
+        for symbol in prices.fill_names(data, found):
+            click.echo(f"{symbol}: named {found[symbol]!r} in securities.csv")
     return failed
 
 
@@ -15341,12 +15345,15 @@ def symbol_edit_command(
 @click.option("--timeout", "timeout_minutes", default=research.DEFAULT_TIMEOUT_MINUTES,
               show_default=True, type=click.FloatRange(min=1), metavar="MINUTES",
               help="Stop the research after this long.")
+@click.option("--commit/--no-commit", "commit", default=True, show_default=True,
+              help="Commit the bundle, and the weights it wrote, in the data repo. Uncommitted, "
+                   "the bundle doesn't count as research for the builder's schedule.")
 @click.option("--data-dir", type=click.Path(exists=True, file_okay=False, path_type=Path),
               default=None, help="Data repo (default: $ANALYSIS_DATA_DIR)")
 def symbol_research_command(
     subject: str | None, ticker: str | None, kind: str | None, as_of: str | None, name: str | None,
     replace: bool, yes: bool, open_page: bool, from_bundle: Path | None, plugin_dir: Path | None,
-    timeout_minutes: float, data_dir: Path | None,
+    timeout_minutes: float, commit: bool, data_dir: Path | None,
 ) -> None:
     """Research a fund or a company with Claude; record a fund's asset-class weights.
 
@@ -15364,8 +15371,14 @@ def symbol_research_command(
     login: a claude.ai plan's usage limits, or per-token billing when
     ANTHROPIC_API_KEY is set. --from-bundle imports a bundle without a run.
     See docs/guides/finance-research.md.
+
+    It commits the bundle, and the weights and name it wrote, and nothing
+    else (#640): the background builder's schedule reads when a symbol was
+    last researched from those commits. Edits you had already made to
+    allocations.csv or securities.csv stay uncommitted. With --yes, weights
+    within 0.5 points of the symbol's latest set aren't written, as the
+    schedule's aren't.
     """
-    from analysis import research_plugin
 
     data = _resolve_data_dir(data_dir)
     if subject is None:
@@ -15386,6 +15399,12 @@ def symbol_research_command(
             key = research.name_key(subject)
     except ValueError as exc:
         raise click.UsageError(str(exc)) from None
+    if ticker is not None:
+        _warn_no_fetch([ticker], prices.no_fetch_symbols(data))
+    from analysis.sim import research_schedule
+
+    # Before anything is written: these stay out of the commit (#640).
+    dirty = research_schedule.dirty_weight_files(data) if commit else set()
     if as_of:
         try:
             as_of = month_end_iso(as_of)[:7]
@@ -15404,6 +15423,38 @@ def symbol_research_command(
     else:
         bundle = _run_research(data, subject, key, kind, plugin_dir, timeout_minutes)
     click.echo(f"Bundle: {bundle}")
+    try:
+        _research_bundle_written(data, bundle, label=label, key=key, ticker=ticker, as_of=as_of,
+                                 name=name, replace=replace, yes=yes, open_page=open_page)
+    except click.ClickException:
+        if commit:
+            _commit_research(data, bundle, ticker or key, dirty)
+        raise
+    if commit:
+        _commit_research(data, bundle, ticker or key, dirty)
+
+
+def _commit_research(data: Path, bundle: Path, symbol: str, dirty: set[str]) -> None:
+    """Commit what ``sim symbol research`` wrote (#640), saying what was left out."""
+    from analysis.sim import research_schedule
+
+    done = research_schedule.commit_research(data, bundle, symbol, dirty_before=dirty)
+    if done.commit:
+        click.echo(f"Committed: {done.subject} ({done.commit[:10]})")
+    for name in done.left:
+        click.echo(f"{name} already had uncommitted changes, so it was left out of the commit; "
+                   "commit it yourself", err=True)
+    if done.why:
+        click.echo(f"warning: nothing committed: {done.why}. Until the bundle is committed, the "
+                   f"background builder counts {symbol} as not yet researched", err=True)
+
+
+def _research_bundle_written(
+    data: Path, bundle: Path, *, label: str, key: str, ticker: str | None, as_of: str | None,
+    name: str | None, replace: bool, yes: bool, open_page: bool,
+) -> None:
+    """Show the bundle's page and write a fund's weights, asking first."""
+    from analysis import research_plugin
 
     try:
         page = research.write_page(bundle, key, research_plugin.available_languages(), label=label)
@@ -15415,7 +15466,10 @@ def symbol_research_command(
     except research.ResearchError as exc:
         raise click.ClickException(f"{exc}\nNothing was written; the bundle is kept at {bundle}") from None
     if allocation is None:
-        click.echo(f"{label}: the bundle has no allocation export, so nothing was written.")
+        title = research.tear_sheet_title(bundle, key, ticker) if ticker else None
+        if ticker and title and prices.fill_names(data, {ticker: title}):
+            click.echo(f"{ticker}: named {title!r} in securities.csv")
+        click.echo(f"{label}: the bundle has no allocation export, so no weights were written.")
         return
     if ticker is None:
         ticker = _ask_research_ticker(label, bundle, yes)
@@ -15493,7 +15547,8 @@ def _confirm_and_write_research(
     """Show the proposed weights beside the current ones, ask, and write them
     under ``symbol``; ``key`` starts the bundle's file names."""
     existing_name = symbols.security_name(data, symbol)
-    new_symbol = existing_name is None
+    # No name yet, or a blank one (#640): the research's title fills it.
+    new_symbol = not existing_name
     if name and not new_symbol:
         click.echo(f"--name ignored: {symbol} is already named {existing_name!r} in securities.csv; "
                    "edit that file to rename it.")
@@ -15511,6 +15566,16 @@ def _confirm_and_write_research(
         click.echo(line)
     for warning in allocation.warnings:
         click.echo(f"  warning: {warning}")
+    from analysis.sim import research_schedule
+
+    latest = symbols.latest_set(data, symbol)
+    if latest is not None and not research_schedule.weights_changed(allocation.weights, latest[1]):
+        if yes:
+            click.echo(f"  Within 0.5 points of the set as of {latest[0] or 'every date'} on every "
+                       "class: nothing written.")
+            return
+        click.echo("  These are within 0.5 points of the latest set on every class; the background "
+                   "builder would leave allocations.csv as it is.")
     replacing = symbols.has_weights(data, symbol, allocation.as_of)
     if replacing:
         click.echo(f"  This replaces the set already written for {allocation.as_of or 'every date'}.")
@@ -15524,12 +15589,14 @@ def _confirm_and_write_research(
         return
     try:
         added = symbols.add_symbol(
-            data, symbol, name=name if new_symbol else None, weights=allocation.weights,
-            as_of=allocation.as_of or None, replace=replacing,
+            data, symbol, name=name if new_symbol and existing_name is None else None,
+            weights=allocation.weights, as_of=allocation.as_of or None, replace=replacing,
         )
     except ValueError as exc:
         raise click.ClickException(f"{exc}\nThe bundle is kept at {bundle}") from None
-    if added.named:
+    if new_symbol and existing_name is not None and name:
+        symbols.edit_security(data, symbol, name=name)  # its row is there, unnamed
+    if (added.named or existing_name == "") and name:
         click.echo(f"{symbol}: named {name!r} in securities.csv")
     verb = "replaced in" if replacing else "written to"
     click.echo(f"{symbol}: {', '.join(f'{c} {w}' for c, w in allocation.weights.items())} {verb} allocations.csv")
@@ -20596,8 +20663,11 @@ def builder_group() -> None:
     matches the workspace's local branch (main, unless ``install BRANCH``
     named another). It also fetches prices after each weekday's close, on a
     branch merged into the data repo's main when that is checked out and
-    clean. ANALYSIS_BUILDER=off turns it off; ANALYSIS_PRICE_FETCH=off, or
-    ``install --no-prices``, turns off only the price fetches.
+    clean. It rolls marked scenarios forward at night, and each morning
+    researches the symbol whose research is oldest. ANALYSIS_BUILDER=off
+    turns it off; ANALYSIS_PRICE_FETCH=off, ANALYSIS_ROLL=off and
+    ANALYSIS_RESEARCH=off (or ``install --no-prices``, ``--no-roll``,
+    ``--no-research``) turn off only those.
     """
 
 
@@ -20621,9 +20691,12 @@ _BUILDER_DATA_DIR = click.option(
 @click.option("--roll-window", default=None, metavar="HH:MM-HH:MM",
               help="When a night's roll may run, in this machine's local time (default: as "
                    "before, else 01:00-05:00).")
+@click.option("--research/--no-research", "research_daily", default=None,
+              help="Research a symbol a day whose research is over a month old (default: as "
+                   "before, else yes).")
 @_BUILDER_DATA_DIR
 def builder_install(branch: str | None, fetch_prices: bool | None, roll: bool | None,
-                    roll_window: str | None, data_dir: Path | None) -> None:
+                    roll_window: str | None, research_daily: bool | None, data_dir: Path | None) -> None:
     """Opt this workspace pair in: check the code worktree and the data repo
     name each other, record the pair, and install the data repo's hooks.
 
@@ -20644,6 +20717,13 @@ def builder_install(branch: str | None, fetch_prices: bool | None, roll: bool | 
     (#564): a month a night, as `sim scenario roll --yes` would, on the
     builder/roll branch, merged the same way. When a start moves into a new
     year, the plan before it is tagged plan-<year>.
+
+    Unless --no-research, each morning from 06:07 New York time it runs
+    `sim symbol research` on one symbol whose research is over a month old
+    (#640), on the builder/research branch, merged the same way. A fund's
+    weights are written as a new dated set only when some class moved more
+    than 0.5 points from its latest set. A run takes several minutes and
+    about 150k tokens on Claude Code's login.
     """
     from analysis.sim import builder, price_schedule, roll_schedule
 
@@ -20654,7 +20734,7 @@ def builder_install(branch: str | None, fetch_prices: bool | None, roll: bool | 
         except ValueError as exc:
             raise click.BadParameter(str(exc), param_hint="--roll-window") from None
     try:
-        done = builder.install(resolved, branch, fetch_prices, roll, roll_window)
+        done = builder.install(resolved, branch, fetch_prices, roll, roll_window, research_daily)
     except ValueError as exc:
         raise click.ClickException(f"not a workspace pair: {exc}") from None
     for line in done:
@@ -20662,7 +20742,7 @@ def builder_install(branch: str | None, fetch_prices: bool | None, roll: bool | 
     # By the recorded choice alone: ANALYSIS_PRICE_FETCH=off is for one shell
     # (an agent's, a test's), so install_timer then leaves the timer as it is.
     config = builder.read_config(builder.BuilderPaths.for_data(resolved)) or {}
-    if config.get("prices", True) or config.get("roll", True):
+    if config.get("prices", True) or config.get("roll", True) or config.get("research", True):
         click.echo(price_schedule.install_timer(resolved, _builder_sim(resolved)))
     elif line := price_schedule.uninstall_timer(resolved):
         click.echo(line)
@@ -20842,20 +20922,85 @@ def builder_roll(if_due: bool, data_dir: Path | None) -> None:
         click.echo(builder.notify(resolved))
 
 
+@builder_group.command(name="research")
+@click.argument("symbol", required=False, type=completion.SYMBOL)
+@click.option("--if-due", is_flag=True, default=False,
+              help="Only when the day's research is due (what the builder runs).")
+@_BUILDER_DATA_DIR
+def builder_research(symbol: str | None, if_due: bool, data_dir: Path | None) -> None:
+    """Research a symbol now, as the morning's schedule does (#640): SYMBOL,
+    else the due one whose research (or failed try) is oldest. The builder
+    merges what it commits into the data repo's main, between builds, once
+    main is checked out with no uncommitted changes.
+
+    It never touches your checkout: it works in its own worktree, on the
+    builder/research branch. A fund's weights are written as a new set only
+    when a class moved more than 0.5 points from its latest written set; the
+    bundle is committed either way. A failed run keeps nothing and is
+    reported in `sim builder status`. `sim symbol research` is the way to
+    research one by hand with questions asked.
+    """
+    from analysis.sim import builder, price_schedule, research_schedule
+
+    resolved = _builder_data_dir(data_dir)
+    paths = builder.BuilderPaths.for_data(resolved)
+    config = builder.read_config(paths)
+    if config is None:
+        raise click.ClickException("background builds aren't installed here (sim builder install)")
+    if research_schedule.switched_off():
+        click.echo(f"research is off ({research_schedule.SWITCH_ENV}=off)")
+        return
+    if if_due and not research_schedule.due(resolved, config, datetime.now(UTC)):
+        click.echo("no research due")
+        return
+    if symbol is not None:
+        try:
+            symbol = symbols.normalize_symbol(symbol)
+        except ValueError as exc:
+            raise click.UsageError(str(exc)) from None
+        _warn_no_fetch([symbol], prices.no_fetch_symbols(resolved))
+    from analysis.sim.builder_log import LogWriter
+    from analysis.sim.locks import BUILDER_CHILD_ENV
+
+    writer = None if os.environ.get(BUILDER_CHILD_ENV) else LogWriter(paths.log_dir)
+    if writer is not None:
+        writer.event("researching a symbol")
+
+    def say(line: str) -> None:
+        click.echo(line)
+        if writer is not None:
+            writer.output(line)
+
+    try:
+        outcome = research_schedule.research(resolved, paths.research_worktree, symbol=symbol,
+                                             progress=say)
+    except (research_schedule.ResearchScheduleError, price_schedule.PriceScheduleError) as exc:
+        if writer is not None:
+            writer.event(f"research failed: {exc}")
+        raise click.ClickException(str(exc)) from None
+    for line in outcome.lines:
+        say(line)
+    if outcome.committed:
+        click.echo(builder.notify(resolved))
+
+
 @builder_group.command(name="tick")
 @_BUILDER_DATA_DIR
 @click.pass_context
 def builder_tick(ctx: click.Context, data_dir: Path | None) -> None:
     """What the hourly timer runs: `sim builder prices --if-due`, then
-    `sim builder roll --if-due`. A fetch that fails doesn't keep the roll
-    from its turn: it is reported, and the tick fails, after the roll."""
-    try:
-        ctx.invoke(builder_prices, if_due=True, data_dir=data_dir)
-    except click.ClickException as exc:
-        exc.show()
-        ctx.invoke(builder_roll, if_due=True, data_dir=data_dir)
-        raise click.exceptions.Exit(exc.exit_code) from None
-    ctx.invoke(builder_roll, if_due=True, data_dir=data_dir)
+    `sim builder roll --if-due`, then `sim builder research --if-due`. One
+    that fails doesn't keep the next from its turn: it is reported, and the
+    tick fails, after the last."""
+    failed: click.ClickException | None = None
+    for step in (builder_prices, builder_roll, builder_research):
+        try:
+            ctx.invoke(step, if_due=True, data_dir=data_dir)
+        except click.ClickException as exc:
+            exc.show()
+            failed = failed or exc
+    if failed is not None:
+        raise click.exceptions.Exit(failed.exit_code)
 
 
 @builder_group.command(name="series", hidden=True)
@@ -20938,6 +21083,16 @@ def builder_status(data_dir: Path | None) -> None:
         click.echo(f"roll: off ({roll_schedule.SWITCH_ENV}=off)")
     else:
         click.echo("roll: off (sim builder install --roll to start)")
+    from analysis.sim import research_schedule
+
+    if research_schedule.enabled(config):
+        for line in research_schedule.describe(research_schedule.read_state(resolved), resolved,
+                                               datetime.now(UTC)):
+            click.echo(line)
+    elif research_schedule.switched_off():
+        click.echo(f"research: off ({research_schedule.SWITCH_ENV}=off)")
+    else:
+        click.echo("research: off (sim builder install --research to start)")
     click.echo(f"log: {paths.log_dir} (sim builder log)")
 
 

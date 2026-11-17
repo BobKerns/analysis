@@ -1371,8 +1371,11 @@ sim symbol research ABCDX
    `research/ABCDX/<today>/`: the tabs as Markdown, the allocation export
    and a `report.html` page. A second run the same day gets its own folder.
    `research/` is outside what a run's provenance covers, so a bundle never
-   makes the data dirty; commit the bundles as the record of where a set of
-   weights came from, or list `research/` in `.gitignore`.
+   makes the data dirty. The command commits the bundle, and the weights and
+   name it writes, and nothing else, as the record of where a set of weights
+   came from: the background builder reads when a symbol was last researched
+   from those commits. Changes you had already made to `allocations.csv` or
+   `securities.csv` stay uncommitted; `--no-commit` commits nothing.
 3. It opens `report.html`: the Overview, Tear sheet, Price chart, Detail
    and Glossary as tabs, and a language switch when the tabs are also in
    another language (switching keeps the tab you're on). Links between tabs
@@ -1380,12 +1383,13 @@ sim symbol research ABCDX
 4. It shows the proposed weights beside the fund's current set, with the
    method behind them (issuer-reported, look-through, computed from
    holdings), the as-of month and any warnings, and asks before writing them
-   to `allocations.csv`. For a symbol not yet in `securities.csv` it also
-   asks for a name, offering the tear sheet's title.
+   to `allocations.csv`. For a symbol with no name yet in `securities.csv`
+   it also asks for one, offering the tear sheet's title.
 
 If the fund already has a set for the same month, answering yes replaces
 it. `--yes` writes without asking, but refuses to replace a set unless you
-add `--replace`. `--as-of 2026-10` dates the set by another month. If the
+add `--replace`, and writes nothing when every class is within 0.5
+percentage points of the fund's latest set. `--as-of 2026-10` dates the set by another month. If the
 research left part of the fund unclassified, or wrote no rows for another
 reason (its weights added up to more than 100%, say), nothing is written;
 the command prints the reason and the skill's warnings, and keeps the
@@ -1417,6 +1421,33 @@ The bundle goes under the name's words joined by `-`
 one. If the name turns out to be a fund with weights, the command asks
 which ticker to write them under (blank writes nothing); `--symbol` answers
 in advance, and with `--yes` and no `--symbol` nothing is written.
+
+#### Keeping research current
+
+With the background builder installed (`sim builder install`), research
+keeps itself current: each morning from 06:07 New York time the builder
+researches one symbol whose latest research is over a month old (or which
+has none), the oldest first, every ticker the data repo names. It writes a
+fund's weights as a new set dated the research's month only when some
+class moved more than 0.5 points from the latest set, so a fund that holds
+steady leaves `allocations.csv` alone and no run goes stale; a slow drift
+crosses the line after a few months. It commits on its own branch and
+merges into `main` when you have it checked out with no uncommitted
+changes, as the price fetch does. With more symbols than days in a month the
+cycle takes longer; research one that can't wait by hand. `sim builder
+status` shows the last symbol researched, the next one due, the month's
+cost and any that fail; `sim builder install --no-research` turns it off.
+
+A symbol nothing can price, or an obsolete one, can be marked so neither
+the price fetch nor the research takes it:
+
+```sh
+sim symbol edit XYZFD --never-fetch
+```
+
+Named on the command line (`sim prices fetch XYZFD`, `sim symbol research
+XYZFD`) it still runs, with a warning. A price fetch or research that
+finds a symbol's name fills in a missing one in `securities.csv`.
 
 ### 4.12 Make a new investment, or a Roth conversion
 

@@ -161,6 +161,18 @@ the plugin afresh from `research.yaml` into a temporary folder (or uses
 `--plugin-dir`), runs the skill in a temporary folder, and stops it
 after `--timeout` minutes (20 by default), along with anything it started.
 It prints a line per step, and the cost when Claude Code reports one.
+It commits the bundle it keeps, and any weights it writes, in the data repo
+(`--no-commit` doesn't).
+
+The background builder runs the same skill unattended once a day
+([#640](https://github.com/BobKerns/analysis/issues/640)): from 06:07 New
+York time, on the symbol whose research is oldest once it is over a month
+old, in a worktree of its own, committed on the `builder/research` branch
+and merged into `main` when that is checked out and clean. It writes a
+fund's weights only when they moved more than 0.5 points from its latest
+set. One run a day bounds the cost; `sim builder status` shows the last
+run's and the last 30 days' total, and `sim builder install --no-research`
+turns it off. A symbol marked `no_fetch` in `securities.csv` is skipped.
 
 The run reads web pages nobody vetted, so a page with instructions hidden
 in it must not be able to act on your computer. The run is confined:

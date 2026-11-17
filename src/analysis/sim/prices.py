@@ -74,6 +74,8 @@ class YahooProvider:
 
     def __init__(self, http_get: Callable[[str], bytes] = _http_get) -> None:
         self._get = http_get
+        # The name each fetched symbol's chart gave, if any (#640).
+        self.names: dict[str, str] = {}
 
     def closes(self, symbol: str, start: date, end: date) -> list[tuple[date, Decimal]]:
         p1 = int(datetime(start.year, start.month, start.day, tzinfo=UTC).timestamp())
@@ -108,7 +110,10 @@ class YahooProvider:
                 )
             raise PriceError("no prices returned")
         result = results[0]
-        offset = result.get("meta", {}).get("gmtoffset", 0)
+        meta = result.get("meta", {})
+        if name := str(meta.get("longName") or meta.get("shortName") or "").strip():
+            self.names[symbol] = name
+        offset = meta.get("gmtoffset", 0)
         closes = result["indicators"]["quote"][0]["close"]
         out = []
         for stamp, close in zip(result["timestamp"], closes, strict=False):
@@ -209,6 +214,49 @@ def fetchable(data_dir: Path, symbols: Iterable[str]) -> list[str]:
     return sorted(set(symbols) - no_fetch_symbols(data_dir))
 
 
+def fill_names(data_dir: Path, names: dict[str, str]) -> list[str]:
+    """Give each symbol in ``names`` its name in ``securities.csv`` where it
+    has none, adding its row when absent (Bob, #640: a price fetch or a
+    research that finds a name fills it in). A name already there is kept.
+    Returns the symbols named."""
+    import os
+    import tempfile
+
+    path = data_dir / "securities.csv"
+    header: list[str] = ["symbol", "name"]
+    rows: list[dict[str, str]] = []
+    if path.exists():
+        with path.open(newline="", encoding="utf-8") as fh:
+            reader = csv.DictReader(fh)
+            header = list(reader.fieldnames or header)
+            rows = [dict(row) for row in reader]
+        if "symbol" not in header or "name" not in header:
+            return []
+    by_symbol = {(r.get("symbol") or "").strip(): r for r in rows}
+    named = []
+    for symbol, name in sorted(names.items()):
+        name = " ".join((name or "").split())
+        if not name or symbol in NO_PRICE_SYMBOLS or is_lot_key(symbol):
+            continue
+        row = by_symbol.get(symbol)
+        if row is None:
+            row = {"symbol": symbol, "name": ""}
+            rows.append(row)
+            by_symbol[symbol] = row
+        if (row.get("name") or "").strip():
+            continue
+        row["name"] = name
+        named.append(symbol)
+    if named:
+        fd, tmp = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+        with os.fdopen(fd, "w", newline="", encoding="utf-8") as fh:
+            writer = csv.DictWriter(fh, fieldnames=header, extrasaction="ignore", lineterminator="\n")
+            writer.writeheader()
+            writer.writerows(rows)
+        os.replace(tmp, path)
+    return named
+
+
 def known_symbols(data_dir: Path) -> list[str]:
     """Symbols the data repo names without a lot holding them: those in
     ``securities.csv`` or ``allocations.csv``, or with a shared ``prices/`` file,
@@ -257,6 +305,8 @@ class FetchResult:
     changed: int = 0
     latest: tuple[date, Decimal] | None = None
     error: str | None = None
+    name: str | None = None
+    """The security's name, when the provider gave one (#640)."""
 
 
 def fetch_prices(
@@ -279,6 +329,7 @@ def fetch_prices(
             result.error = "no prices in the period"
             continue
         result.latest = rows[-1]
+        result.name = (getattr(provider, "names", None) or {}).get(symbol)
         path = prices_dir / f"{PRICE_FILE_PREFIX}{symbol}.csv"
         merged, result.added, result.changed = merge_price_rows(
             _read_price_file(path), rows, refresh=refresh,

@@ -182,12 +182,12 @@ def test_load_notes_an_account_lot_key_in_the_wrong_case(test_data_dir: Path, lo
 
 
 def test_add_never_fetch_marks_the_row_and_fetches_nothing(test_data_dir: Path, provider: None) -> None:
-    result = _sim(test_data_dir, "add", "OLDX", "--never-fetch")
+    result = _sim(test_data_dir, "add", "XOLD", "--never-fetch")
     assert result.exit_code == 0, result.output
-    assert "OLDX: marked no_fetch" in result.output
-    assert (test_data_dir / "securities.csv").read_text().splitlines()[-1] == "OLDX,,1"
-    assert prices.no_fetch_symbols(test_data_dir) == {"OLDX"}
-    assert not (test_data_dir / "prices" / "security_price__OLDX.csv").exists()
+    assert "XOLD: marked no_fetch" in result.output
+    assert (test_data_dir / "securities.csv").read_text().splitlines()[-1] == "XOLD,,1"
+    assert prices.no_fetch_symbols(test_data_dir) == {"XOLD"}
+    assert not (test_data_dir / "prices" / "security_price__XOLD.csv").exists()
 
 
 def test_edit_marks_a_symbol_with_no_row_and_clears_the_mark(test_data_dir: Path, load_test_copy) -> None:
@@ -212,8 +212,8 @@ def test_guided_edit_asks_for_the_name_and_the_mark(test_data_dir: Path) -> None
 
 
 def test_list_shows_the_no_fetch_mark(test_data_dir: Path) -> None:
-    (test_data_dir / "securities.csv").write_text("symbol,name,no_fetch\nOLDX,Old fund,1\n")
+    (test_data_dir / "securities.csv").write_text("symbol,name,no_fetch\nXOLD,Old fund,1\n")
     frame = symbols.symbol_table(test_data_dir)
-    assert frame.set_index("symbol").loc["OLDX", "no_fetch"]
+    assert frame.set_index("symbol").loc["XOLD", "no_fetch"]
     assert "no_fetch" in _sim(test_data_dir, "list").output
 

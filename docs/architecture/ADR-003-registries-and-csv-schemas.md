@@ -511,7 +511,7 @@ Names for the symbols lots hold ([ADR-005](ADR-005-lots-and-per-lot-state.md)). 
 | column | type | required | notes |
 | --- | --- | --- | --- |
 | `symbol` | text | ✓ | unique; matches a lot's `symbol` |
-| `name` | text | | the security's name, shown next to the symbol in holdings views; blank leaves it unnamed |
+| `name` | text | | the security's name, shown next to the symbol in holdings views; blank leaves it unnamed. A price fetch or research that finds the name fills in a blank or missing one, adding the row |
 | `no_fetch` | `0`/`1` | | `1` marks a symbol nothing can price, or an obsolete one: no price fetch (`sim prices fetch` with no symbol named, the builder's scheduled fetch) and no scheduled research take it. Named on the command line (`sim prices fetch SYMBOL`, `sim symbol research SYMBOL`) it still runs, with a warning. Blank is `0`; the column may be left out ([#640](https://github.com/BobKerns/analysis/issues/640)) |
 
 The file may be omitted, and a symbol with no row is simply unnamed. `sim symbol edit` changes a row's name or mark, adding the row (and the `no_fetch` column) when needed.

@@ -36,7 +36,9 @@ scenario's follow it at once.
 It also fetches prices after each weekday's close, on a branch merged into
 the data repo's ``main`` when that is checked out and clean (#560: see
 ``price_schedule``), and at night rolls forward the scenarios marked to roll
-each month, the same way (#564: see ``roll_schedule``).
+each month, the same way (#564: see ``roll_schedule``), and each morning
+researches the symbol whose research is oldest (#640: see
+``research_schedule``).
 
 Everything lives in the data repo's ``state/builder/`` (untracked, and one
 per data worktree): ``config.json`` (the opt-in and the pair),
@@ -250,6 +252,11 @@ class BuilderPaths:
     def roll_worktree(self) -> Path:
         """The worktree scheduled rolls work in (#564)."""
         return self.dir / "roll"
+
+    @property
+    def research_worktree(self) -> Path:
+        """The worktree scheduled research works in (#640)."""
+        return self.dir / "research"
 
     @property
     def working_set(self) -> Path:
@@ -655,6 +662,11 @@ class _Daemon:
         self.roll_reader: threading.Thread | None = None
         self.roll_looked = float("-inf")
         self.roll_ended = float("-inf")
+        # A scheduled research run in progress (#640), and the same.
+        self.researcher: subprocess.Popen[bytes] | None = None
+        self.research_reader: threading.Thread | None = None
+        self.research_looked = float("-inf")
+        self.research_ended = float("-inf")
 
     # The key a build is good for: the code trees and the scenario's data tree.
     def key(self, scenario: str, trees: tuple[str, ...]) -> list[Any]:
@@ -978,6 +990,54 @@ class _Daemon:
                                             name="log roll", daemon=True)
         self.roll_reader.start()
 
+    def research_tick(self, now: bool) -> None:
+        """#640: note a research run that ended; merge research that waits
+        for main, between builds; start the day's research when it is due.
+        Looks as often as :meth:`prices_tick` does."""
+        from analysis.sim import price_schedule, research_schedule
+
+        if self.researcher is not None:
+            if self.researcher.poll() is None:
+                return
+            if self.research_reader is not None:
+                self.research_reader.join(timeout=5)
+            code = self.researcher.returncode
+            self.researcher = self.research_reader = None
+            self.research_ended = time.monotonic()
+            self.log("researched a symbol" if code == 0 else f"research failed (exit {code})")
+            now = True
+        if not now and time.monotonic() - self.research_looked < 60:
+            return
+        self.research_looked = time.monotonic()
+        config = read_config(self.paths)
+        if not research_schedule.enabled(config):
+            return
+        if self.build is None and not self.held:
+            try:
+                merged = research_schedule.merge_pending(self.data_dir, self.paths.research_worktree)
+            except (research_schedule.ResearchScheduleError, price_schedule.PriceScheduleError,
+                    OSError) as exc:
+                self.log(f"research not merged: {exc}")
+                return
+            for line in merged:
+                self.log(line)
+        # One that crashed before recording its day isn't started again
+        # every minute: an hour later, as a failed fetch is.
+        if time.monotonic() - self.research_ended < 3600 \
+                or not research_schedule.due(self.data_dir, config, datetime.now(UTC)):
+            return
+        self.log("researching a symbol")
+        env = {**os.environ, BUILDER_SWITCH_ENV: "off", BUILDER_CHILD_ENV: "1"}
+        self.researcher = subprocess.Popen(
+            [*_sim_executable(), "builder", "research", "--if-due", "--data-dir", str(self.data_dir)],
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            start_new_session=True, env=env, close_fds=True,
+        )
+        assert self.researcher.stdout is not None
+        self.research_reader = threading.Thread(target=self.writer.copy, args=(self.researcher.stdout,),
+                                                name="log research", daemon=True)
+        self.research_reader.start()
+
     def finished(self) -> bool:
         """Note a build that ended; True if one did."""
         build = self.build
@@ -1062,8 +1122,9 @@ class _Daemon:
                     self.write_status()
                 self.prices_tick(looked_again)
                 self.roll_tick(looked_again)
+                self.research_tick(looked_again)
                 if self.build is None and not self.queue and self.fetcher is None \
-                        and self.roller is None:
+                        and self.roller is None and self.researcher is None:
                     idle_since = idle_since or time.monotonic()
                     if time.monotonic() - idle_since > IDLE_GRACE_SECONDS:
                         break
@@ -1379,13 +1440,15 @@ def _ours(hook: Path) -> bool:
 
 
 def install(data_dir: Path, branch: str | None = None, prices: bool | None = None,
-            roll: bool | None = None, roll_window: str | None = None) -> list[str]:
+            roll: bool | None = None, roll_window: str | None = None,
+            research: bool | None = None) -> list[str]:
     """Opt this workspace in: check the pair, record it, the branch its
     code must match (``branch``, else the one recorded before, else main),
     whether it fetches prices (``prices``, else as recorded, else yes:
     #560), and whether it rolls marked scenarios forward and in what
     window (``roll``, ``roll_window``, else as recorded, else yes and
-    01:00-05:00: #564), install the data repo's hooks (the code repo's are
+    01:00-05:00: #564), whether it researches a symbol a day (``research``,
+    else as recorded, else yes: #640), install the data repo's hooks (the code repo's are
     in ``.githooks/``). Returns what it did. The timer is the CLI's
     (``price_schedule.install_timer``)."""
     from analysis.sim import roll_schedule
@@ -1412,15 +1475,19 @@ def install(data_dir: Path, branch: str | None = None, prices: bool | None = Non
     prices = bool(before.get("prices", True)) if prices is None else prices
     roll = bool(before.get("roll", True)) if roll is None else roll
     roll_window = roll_window or str(before.get("roll_window") or roll_schedule.DEFAULT_WINDOW)
+    research = bool(before.get("research", True)) if research is None else research
     _write_json(paths.config, {
         "data_dir": str(data_dir), "code_dir": str(code), "branch": branch,
-        "prices": prices, "roll": roll, "roll_window": roll_window, "installed": time.time(),
+        "prices": prices, "roll": roll, "roll_window": roll_window, "research": research,
+        "installed": time.time(),
     })
     done = [f"recorded the pair in {paths.config}",
             f"builds only from code matching the local {branch} branch",
             "fetches prices after each weekday's close" if prices else "doesn't fetch prices",
             f"rolls scenarios marked to roll forward each night, {roll_window} local time"
-            if roll else "doesn't roll scenarios forward"]
+            if roll else "doesn't roll scenarios forward",
+            "researches a symbol a day whose research is over a month old, from 06:07 New York time"
+            if research else "doesn't research symbols"]
     hooks.mkdir(parents=True, exist_ok=True)
     for name in HOOK_NAMES:
         hook = hooks / name
@@ -1460,4 +1527,8 @@ def uninstall(data_dir: Path) -> list[str]:
         subprocess.run(["git", "-C", str(data_dir), "worktree", "remove", "--force",
                         str(paths.roll_worktree)], capture_output=True, check=False)
         done.append(f"removed the roll worktree {paths.roll_worktree}")
+    if paths.research_worktree.exists():
+        subprocess.run(["git", "-C", str(data_dir), "worktree", "remove", "--force",
+                        str(paths.research_worktree)], capture_output=True, check=False)
+        done.append(f"removed the research worktree {paths.research_worktree}")
     return done

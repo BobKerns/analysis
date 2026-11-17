@@ -112,6 +112,8 @@ def _no_ambient_analysis_env(
     monkeypatch.setenv("ANALYSIS_PRICE_FETCH", "off")
     # Nor rolls scenarios forward at night (#564).
     monkeypatch.setenv("ANALYSIS_ROLL", "off")
+    # Nor researches symbols with Claude each morning (#640).
+    monkeypatch.setenv("ANALYSIS_RESEARCH", "off")
 
 
 _STABLE_CODE_STAMPS = CodeStamps(version="0" * 40, dirty=False, repo_path="CODE_REPO")
