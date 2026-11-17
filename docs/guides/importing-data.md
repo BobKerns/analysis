@@ -827,6 +827,7 @@ Save two reports under *My Reports*, and export each as CSV:
 | --- | --- | --- |
 | Net worth (every account, with its balance) | `sim import holdings` | the scenario's first day; or December 31 for `--year-end` |
 | Transactions (every account, itemized, with payee and category) | `sim import transactions` | the year to average |
+| Portfolio Value & Cost Basis, one saved report for each investment account | `sim import holdings` | a range ending on the scenario's first day |
 | A budget's export, Full | `sim import budget` | the year planned |
 
 The transactions report may be the saved one, grouped under each account,
@@ -840,8 +841,29 @@ Amazon categorizer's monthly summaries in `state/`, which split Amazon
 orders into real categories.
 
 Quicken's net worth report has one number for a brokerage account, so it
-can't fill an account kept as several lots: import those from the
-[brokerage's own file](#brokerage-files).
+can't fill an account kept as several lots. For those, use the built-in
+**Portfolio Value & Cost Basis** report, which is the only export Quicken
+has of what an account holds. The report names no account, and one of
+several accounts adds them together, so make one for each account:
+
+1. Open the built-in report and edit it down to the one account.
+2. Set its dates so that one of them is the scenario's first day (or
+   December 31 for `--year-end`). The report has numbers for several dates;
+   the import takes those of the date nearest the one the plan wants, and
+   says which.
+3. Save it under the account's name, and export it as CSV.
+
+```sh
+sim import holdings "Joint Brokerage.csv"
+```
+
+The import asks which Quicken account the file is, offering the ones the
+net worth report named (`--outside-account NAME` answers it), then sends
+each security to the account's lot of its symbol, with its value and cost
+basis, and the account's cash to its cash lot. The report has no share
+counts: at a terminal the import offers to work one out from a stored price.
+A [brokerage's own file](#brokerage-files) has the counts, and is the better
+source where you can get one.
 
 A data repo with Quicken mappings from before the `imports/` folder moves
 them with `scripts/migrate_527.py` (it reports first; `--write` does it).

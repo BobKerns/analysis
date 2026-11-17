@@ -9061,15 +9061,15 @@ def _ask_outside_account(
 ) -> str:
     """Which outside account ``path`` is, asked for: nothing in the file or
     its name says. One the source's mapping has, or a new name for it."""
-    assert source.profile is not None and source.profile.holdings is not None
-    held = [h.asset for h in source.profile.holdings.read(path, "?").holdings if h.asset]
+    assert source.holdings is not None and source.holdings.read_named is not None
+    held = [h.asset for h in source.holdings.read_named(path, "?").holdings if h.asset]
     known = list(dict.fromkeys(outside for outside, _ in saved.entries))
     click.echo(f"{path.name} doesn't say which {source.name} account it is"
                + (f"; it holds {_some(held)}." if held else "."))
     click.echo("  " + (f"One you have imported ({', '.join(known)}), or a new name for it: "
                        if known else "Give it a name: ")
-               + "whatever you call the account. It is asked for again each time, unless "
-               "the file's name has the account's number.")
+               + "whatever you call the account. It is asked for again each time"
+               + (", unless the file's name has the account's number." if source.profile is not None else "."))
     while True:
         if answer := _prompt_with_completion(f"{source.name} account", choices=known).strip():
             return answer
@@ -13566,6 +13566,9 @@ def import_holdings(
                     import_mapping.source_dir(data_dir_p, source.name) / import_mapping.ACCOUNTS))
             asked_account = True
         snapshot = import_sources_.read_holdings(files, source, imports, account=outside_account)
+        # A report over a period: the numbers of the day the plan's are as of.
+        snapshot = import_holdings_.nearest(
+            snapshot, date(scenario_start.year - 1, 12, 31) if year_end else scenario_start.replace(day=1))
         for note in snapshot.notes:
             click.echo(f"note: {note}")
         # The first day whose transactions come after the balances wanted:

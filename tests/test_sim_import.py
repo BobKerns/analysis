@@ -1659,6 +1659,34 @@ def test_sim_import_holdings_asks_which_account_a_file_without_its_number_is(
     assert _all_lots(test_data_dir)["Asset_Roth_Bill", "vtsax"]["opening_balance"] == "400000.00"
 
 
+def test_sim_import_holdings_asks_whose_a_quicken_portfolio_report_is(
+    test_data_dir: Path, quicken_portfolio_report: Path, quicken_account_map: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    refused = _import(test_data_dir, "holdings", str(quicken_portfolio_report), "--new-lots")
+    assert refused.exit_code != 0
+    assert "doesn't say which account it is (a portfolio report names none)" in refused.output
+
+    monkeypatch.setattr(cli, "_interactive", lambda: True)
+    result = _import(test_data_dir, "holdings", str(quicken_portfolio_report), "--new-lots",
+                     input="Asset_Brokerage_Joint\n\n")
+    assert result.exit_code == 0, result.output
+    # The accounts of the net worth report are offered: the report's own is one of them.
+    assert "portfolio.csv doesn't say which quicken account it is; it holds (cash), VTSAX, ACME, " \
+        "Stable Value Trust." in result.output
+    assert "One you have imported (Asset_Checking, Asset_Brokerage_Joint," in result.output
+    assert "those of 2026-08-18 are used, the nearest to 2026-05-01 (not 2025-12-31)" in result.output
+    lots = _all_lots(test_data_dir)
+    assert lots["Asset_Brokerage_Joint", "vtsax"]["opening_balance"] == "300000.00"
+    assert lots["Asset_Brokerage_Joint", "vtsax"]["opening_cost_basis"] == "210000.00"
+    assert lots["Asset_Brokerage_Joint", "cash"]["opening_balance"] == "2500.00"
+    assert ("Asset_Brokerage_Joint", "vbtlx") not in lots     # sold before the date used
+
+    named = _import(test_data_dir, "holdings", str(quicken_portfolio_report), "--dry-run",
+                    "--outside-account", "Asset_Brokerage_Joint")
+    assert named.exit_code == 0, named.output
+
+
 def test_sim_import_holdings_offers_a_share_count_from_a_stored_price(
     test_data_dir: Path, fidelity_positions_export: Path, write_import_map: MapWriter,
     add_account_value: Callable[..., None], write_aux: Callable[[str, str], Path],

@@ -2235,6 +2235,35 @@ def quicken_net_worth_export(tmp_path: Path) -> Path:
 
 
 @pytest.fixture
+def quicken_portfolio_report(tmp_path: Path) -> Path:
+    """Quicken's "Portfolio Value & Cost Basis" report of one account, as of
+    2025-12-31 and 2026-08-18: cash, a fund held on both days, one sold
+    between them, one with no known basis, and one with no symbol."""
+    path = tmp_path / "portfolio.csv"
+    dashes = ",".join(["-------------------------"] * 11)
+    path.write_text(
+        "Portfolio Value & Cost Basis\n"
+        "Last 8 Months: 12/31/2025 - 8/18/2026\n"
+        "Joint Brokerage, All Securities\n"
+        "\n"
+        '"Security",,"Symbol","12/31/25 Cost Basis","12/31/25 Gain / Loss","12/31/25 Gain / Loss (%)",'
+        '"12/31/25 Market Value","8/18/26 Cost Basis","8/18/26 Gain / Loss","8/18/26 Gain / Loss (%)",'
+        '"8/18/26 Market Value"\n'
+        f"{dashes}\n"
+        '"Cash",,"","1,000.00","0.00","0.00%","1,000.00","2,500.00","0.00","0.00%","2,500.00"\n'
+        '"Total Stock Fund",,"VTSAX","200,000.00","50,000.00","25.00%","250,000.00",'
+        '"210,000.00","90,000.00","42.86%","300,000.00"\n'
+        '"Total Bond Fund",,"VBTLX","40,000.00","-1,000.00","-2.50%","39,000.00","","","",""\n'
+        '"Employer Stock",,"ACME","--","","--","5,000.00","--","","--","7,500.00"\n'
+        '"Stable Value Trust",,"","9,000.00","","","9,000.00","9,000.00","100.00","1.11%","9,100.00"\n'
+        f"{dashes}\n"
+        '"Total",,,"250,000.00","49,000.00","19.60%","304,000.00","221,500.00","90,100.00","40.68%","319,100.00 "\n',
+        encoding="utf-8",
+    )
+    return path
+
+
+@pytest.fixture
 def quicken_year_end_export(tmp_path: Path) -> Path:
     """A Quicken "Year End Export" of two of the same accounts, as of
     2025-12-31."""

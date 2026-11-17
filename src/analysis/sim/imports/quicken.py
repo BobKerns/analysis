@@ -6,8 +6,10 @@ grouped under account header rows, read as flows; a transaction report
 exported as it stands ("All Transactions") is one row for each, under a few
 lines about the report, and is read the same. A budget's export (issue
 #617), in its "Summary" form or its "Full" one with a column for each month,
-is an indented tree of categories, read as a budget. None is a flat table,
-so a column profile can't describe them.
+is an indented tree of categories, read as a budget. The "Portfolio Value &
+Cost Basis" report, which is all Quicken exports of what an investment
+account holds, has a set of columns for each of its dates and no account.
+None is a flat table, so a column profile can't describe them.
 """
 
 from __future__ import annotations
@@ -21,11 +23,11 @@ from pathlib import Path
 
 import pandas as pd
 
-from analysis.sim.imports.forms import Budget, BudgetLine, Flows, Holding, Snapshot, read_rows
+from analysis.sim.imports.forms import CASH, Budget, BudgetLine, Flows, Holding, Snapshot, read_rows
 
 __all__ = [
-    "NAME", "is_account_tree", "is_budget", "is_transaction_export", "read_account_tree",
-    "read_budget", "read_transactions",
+    "NAME", "is_account_tree", "is_budget", "is_portfolio", "is_transaction_export", "read_account_tree",
+    "read_budget", "read_portfolio", "read_transactions",
 ]
 
 NAME = "quicken"
@@ -68,7 +70,7 @@ def is_account_tree(path: Path) -> bool:
         rows = read_rows(path, 60)
     except (OSError, UnicodeDecodeError, csv.Error):
         return False
-    if any(_is_transaction_header(row) or _is_flat_header(row) for row in rows):
+    if any(_is_transaction_header(row) or _is_flat_header(row) or _portfolio_columns(row) for row in rows):
         return False
     sections = {row[0].strip().casefold() for row in rows if len(row) == 3 and row[0].strip()}
     return bool(sections & {"assets", "liabilities"})
@@ -125,6 +127,95 @@ def read_account_tree(path: Path) -> Snapshot:
             continue
         holdings.append(Holding(account=name, value_cents=cents))
     return Snapshot(source=NAME, holdings=tuple(holdings), as_of=as_of)
+
+
+# ---------- the Portfolio Value & Cost Basis report ----------
+
+_DATED_COLUMN = re.compile(r"(\d{1,2}/\d{1,2}/\d{2,4})\s+(.+)")
+_VALUE, _BASIS = "market value", "cost basis"
+_NONE = {"", "--"}
+_ALL_ACCOUNTS = "all accounts"
+
+
+def _portfolio_columns(row: list[str]) -> dict[dt.date, dict[str, int]]:
+    """By date, the column of each number a portfolio report's header row
+    names (``12/31/25 Market Value``); empty for any other row."""
+    cells = [cell.strip() for cell in row]
+    if len(cells) < 4 or cells[0].casefold() != "security" or "Symbol" not in cells:
+        return {}
+    found: dict[dt.date, dict[str, int]] = {}
+    for at, cell in enumerate(cells):
+        if (dated := _DATED_COLUMN.fullmatch(cell)) is None:
+            continue
+        day, month_first = dated.group(1), dated.group(1).rsplit("/", 1)[1]
+        try:
+            date = dt.datetime.strptime(day, "%m/%d/%Y" if len(month_first) == 4 else "%m/%d/%y").date()
+        except ValueError:
+            continue
+        found.setdefault(date, {})[dated.group(2).strip().casefold()] = at
+    return {date: columns for date, columns in found.items() if _VALUE in columns}
+
+
+def is_portfolio(path: Path) -> bool:
+    """Whether ``path`` looks like a "Portfolio Value & Cost Basis" report:
+    a ``Security`` header row with a dated ``Market Value`` column, near
+    the top."""
+    try:
+        return any(_portfolio_columns(row) for row in read_rows(path, 30))
+    except (OSError, UnicodeDecodeError, csv.Error):
+        return False
+
+
+def read_portfolio(path: Path, account: str) -> Snapshot:
+    """What one account holds, from a "Portfolio Value & Cost Basis" report
+    of that account alone: each security's value and cost basis, and the
+    account's cash.
+
+    The report names no account, and one of several adds them together, so
+    ``account`` says whose it is. It has a set of columns for each of its
+    dates: the snapshot is as of the last, with every date's in ``dated``.
+    A security with no value on a date, or none left, isn't held then."""
+    rows = read_rows(path)
+    header = next((at for at, row in enumerate(rows[:30]) if _portfolio_columns(row)), None)
+    if header is None:
+        raise ValueError(f"{path}: no header row with a dated Market Value column")
+    columns = _portfolio_columns(rows[header])
+    symbol_at = [cell.strip() for cell in rows[header]].index("Symbol")
+    dated: dict[dt.date, list[Holding]] = {date: [] for date in columns}
+    for number, row in enumerate(rows[header + 1:], start=header + 2):
+        name = row[0].strip() if row else ""
+        if not name or not name.strip("-") or name.casefold() == "total":
+            continue
+
+        def cents(at: int | None, what: str, row: list[str] = row, number: int = number) -> int | None:
+            text = row[at].strip() if at is not None and at < len(row) else ""
+            if text in _NONE:
+                return None
+            try:
+                return _dollars_to_cents(text)
+            except InvalidOperation:
+                raise ValueError(f"{path} row {number}: {text!r} is not a {what}") from None
+
+        cash = name.casefold() == "cash"
+        symbol = row[symbol_at].strip() if symbol_at < len(row) else ""
+        for date, its in columns.items():
+            value = cents(its[_VALUE], "market value")
+            if not value:
+                continue
+            dated[date].append(Holding(
+                account=account, value_cents=value, asset=CASH if cash else symbol or name,
+                cost_basis_cents=None if cash else cents(its.get(_BASIS), "cost basis"),
+                hints={} if cash else {"name": name}))
+    notes: list[str] = []
+    if any(cell.strip().casefold().startswith(_ALL_ACCOUNTS) for row in rows[:header] for cell in row[:1]):
+        notes.append(
+            f"{path.name} says it is of all accounts: its numbers are every account's added together, "
+            f"and all go to {account}. Export the report for one account at a time")
+    last = max(columns)
+    return Snapshot(
+        source=NAME, holdings=tuple(dated[last]), as_of=last, notes=tuple(notes),
+        complete=frozenset({account}),
+        dated={date: tuple(held) for date, held in dated.items()} if len(dated) > 1 else {})
 
 
 def read_transactions(path: Path) -> Flows:
