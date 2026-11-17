@@ -7,6 +7,9 @@ changed lots through a staged edit.
 
 from __future__ import annotations
 
+import dataclasses
+import datetime as dt
+
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
@@ -18,7 +21,7 @@ from analysis.sim.types import INVESTMENT_ASSET_SUBKINDS, InvestmentAssetSubkind
 from analysis.sim.units import dollars_to_cents
 
 __all__ = [
-    "Change", "HoldingsPlan", "Offer", "format_dollars", "is_investment_asset", "plan",
+    "Change", "HoldingsPlan", "Offer", "at", "format_dollars", "is_investment_asset", "plan",
     "roth_basis_note",
 ]
 
@@ -110,6 +113,48 @@ class _Landed:
     """Whether any holding in it has another symbol than the lot's."""
     basis_cents: int | None = 0
     by_symbol: bool = False
+
+
+def at(snapshot: Snapshot, since: dt.date) -> tuple[Snapshot, frozenset[str], tuple[str, ...]]:
+    """``snapshot`` with each balance its file can account for worked back
+    to what it was when ``since`` opened: the file's balance less what was
+    posted from that day to the file's date. Also the accounts worked back,
+    and a note for each of them and for each that has transactions which
+    don't cover those days.
+
+    A bank's download has the balance of the day it was made whatever range
+    of transactions was asked for, and a plan's opening balances are those
+    of its first day, so without this no download could set them."""
+    if snapshot.as_of is None or snapshot.as_of < since or not (snapshot.activity or snapshot.unaccounted):
+        return snapshot, frozenset(), ()
+    holdings: list[Holding] = []
+    back: set[str] = set()
+    notes: list[str] = []
+    for holding in snapshot.holdings:
+        activity = snapshot.activity.get(holding.account)
+        if activity is None or holding.asset:
+            holdings.append(holding)
+            if not holding.asset and (why := snapshot.unaccounted.get(holding.account)):
+                notes.append(f"{holding.account}: its balance can't be worked back to {since}: {why}")
+        elif activity.start > since or activity.end < snapshot.as_of:
+            holdings.append(holding)
+            notes.append(
+                f"{holding.account}: the file's transactions are those of {activity.start} to {activity.end}, "
+                f"so its balance can't be worked back to {since}; a download of every day from {since} to "
+                "the day it is made can be")
+        else:
+            # What was posted after the balance's date is no part of it.
+            net = sum(cents for day, cents in activity.posted if since <= day <= snapshot.as_of)
+            holdings.append(dataclasses.replace(holding, value_cents=holding.value_cents - net))
+            back.add(holding.account)
+            notes.append(
+                f"{holding.account}: its balance of {format_dollars(holding.value_cents)} as of "
+                f"{snapshot.as_of} is worked back to {since}: what was posted from that day comes to "
+                f"{format_dollars(net)}, so it opened the day with {format_dollars(holding.value_cents - net)}")
+    # Worked back in full, the snapshot is one of that day.
+    whole = back and all(each.account in back for each in holdings)
+    return (dataclasses.replace(snapshot, holdings=tuple(holdings), as_of=since if whole else snapshot.as_of),
+            frozenset(back), tuple(notes))
 
 
 def _lot_name(row: Mapping[str, str]) -> str:

@@ -33,6 +33,7 @@ from typing import TYPE_CHECKING
 import pandas as pd
 
 from analysis.sim.imports.forms import (
+    Activity,
     CASH,
     CORRECTS,
     FLOW_COLUMNS,
@@ -505,6 +506,25 @@ def _tickers(root: Element) -> dict[str, tuple[str, str]]:
     return found
 
 
+def _activity(path: Path, statement: Element) -> Activity | str:
+    """What ``statement`` lists as posted, and over which days, for working
+    its balance back; or why it can't be worked back, as the end of a
+    sentence: it doesn't say which days it lists, or has a correction (what
+    that corrects may be in another file, so the sum of this one's amounts
+    isn't what changed the balance)."""
+    listed = _find(statement, "BANKTRANLIST")
+    start, end = _text(listed, "DTSTART"), _text(listed, "DTEND")
+    if not (start and end):
+        return "the file doesn't say which days its transactions are of (no DTSTART and DTEND)"
+    if any(_text(each, "CORRECTFITID") for each in statement.iter("STMTTRN")):
+        return "the file has a correction of a transaction, so its amounts don't add up to the change"
+    return Activity(
+        _day(path, start, "a transaction list's DTSTART"), _day(path, end, "a transaction list's DTEND"),
+        tuple((_day(path, _text(each, "DTPOSTED"), "a transaction's DTPOSTED"),
+               _cents(path, _text(each, "TRNAMT"), "a transaction's TRNAMT"))
+              for each in statement.iter("STMTTRN")))
+
+
 def read_holdings(path: Path) -> Snapshot:
     """What ``path``'s statements say each account holds: a bank account's
     or a card's ledger balance (what a card owes is negative, though some
@@ -515,6 +535,8 @@ def read_holdings(path: Path) -> Snapshot:
     holdings: list[Holding] = []
     notes: list[str] = []
     days: set[dt.date] = set()
+    activity: dict[str, Activity] = {}
+    unaccounted: dict[str, str] = {}
     spending = _statements(root, *_SPENDING)
     investing = _statements(root, _INVESTMENT)
     names = _accounts(path, root, [*spending, *investing])
@@ -527,9 +549,16 @@ def read_holdings(path: Path) -> Snapshot:
         if stamp := _text(ledger, "DTASOF"):
             days.add(_day(path, stamp, "a balance's DTASOF"))
         kind = _kind(statement)
-        holdings.append(Holding(
-            account, _cents(path, _text(ledger, "BALAMT"), "a balance's BALAMT"),
-            hints={"type": kind.lower()} if kind else {}))
+        balance = _cents(path, _text(ledger, "BALAMT"), "a balance's BALAMT")
+        holdings.append(Holding(account, balance, hints={"type": kind.lower()} if kind else {}))
+        # A card's balance written above zero may be what is owed, and
+        # then its transactions' signs are the other way from its own.
+        posted = ("the file writes what the card owes above zero, so its transactions' signs can't be told"
+                  if statement.tag == "CCSTMTRS" and balance > 0 else _activity(path, statement))
+        if isinstance(posted, Activity):
+            activity[account] = posted
+        else:
+            unaccounted[account] = posted
     tickers = _tickers(root)
     complete: set[str] = set()
     for statement, account in zip(investing, names[len(spending):], strict=True):
@@ -621,4 +650,5 @@ def read_holdings(path: Path) -> Snapshot:
             f"{path}: its balances are as of different days ({', '.join(sorted(map(str, days)))}); "
             "download each account by itself")
     return Snapshot(source=NAME, holdings=tuple(holdings), as_of=next(iter(days), None), notes=tuple(notes),
-                    complete=frozenset(complete))
+                    complete=frozenset(complete), activity=activity,
+                    unaccounted=unaccounted)

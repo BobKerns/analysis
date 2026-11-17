@@ -12,6 +12,7 @@ from pathlib import Path
 import pandas as pd
 
 __all__ = [
+    "Activity",
     "CORRECTS", "FLOW_COLUMNS", "ORIGIN", "REFERENCE", "REMOVES", "Budget", "BudgetLine", "Flows", "Holding",
     "Snapshot", "read_rows",
 ]
@@ -53,6 +54,19 @@ class Holding:
 
 
 @dataclass(frozen=True)
+class Activity:
+    """What a file says was posted to an account, beside its balance: enough
+    to work the balance back to an earlier day (``holdings.at``)."""
+
+    start: dt.date
+    """The first day the file lists the account's transactions of."""
+    end: dt.date
+    """The last such day."""
+    posted: tuple[tuple[dt.date, int], ...]
+    """Each transaction's day and signed cents, money out negative."""
+
+
+@dataclass(frozen=True)
 class Snapshot:
     """Holdings as of one date."""
 
@@ -68,6 +82,15 @@ class Snapshot:
     it lists every one of, where it says so apart from the holdings: an
     account listed in full that holds only cash, or nothing, has sold
     what an earlier file had."""
+    activity: Mapping[str, Activity] = field(default_factory=dict)
+    """By account (as ``Holding.account``), what was posted to it up to the
+    file's date, where the file has that and the account's one holding is
+    its balance. A bank's download is as of the day it was made and never
+    of an earlier one; with this its balance on an earlier day is known."""
+    unaccounted: Mapping[str, str] = field(default_factory=dict)
+    """By account, why a file that could have such activity has none for
+    it, as the end of a sentence: said where the balance was wanted as of
+    an earlier day, so that it is never silently set as of the file's."""
 
 
 FLOW_COLUMNS = (

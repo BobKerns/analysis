@@ -21,6 +21,7 @@ from click.testing import CliRunner, Result
 from analysis.cli import main
 from analysis.expenses.baseline import Occasional
 from analysis.sim import cli
+from analysis.sim.imports import holdings as import_holdings
 from analysis.sim.imports import ofx as import_ofx
 from analysis.sim.imports import sources as import_sources
 from analysis.sim.imports import mapping as import_mapping
@@ -172,7 +173,7 @@ def test_sim_import_holdings_asks_for_unmapped_accounts_and_saves_the_answers(
         "Asset_Brokerage_Joint,,map,Asset_Brokerage_Joint,,\n")
     # In the file's order: the IRA, then the mortgage; a name that isn't a
     # choice is asked for again.
-    answers = "nope\nAsset_TraditionalIRA_Alice\nskip\n"
+    answers = "nope\nAsset_TraditionalIRA_Alice\n\nskip\n"
 
     dry = _import(test_data_dir, "holdings", str(quicken_net_worth_export), "--dry-run",
                   input=answers)
@@ -216,7 +217,7 @@ def test_sim_import_holdings_keeps_a_saved_mapping_another_scenario_may_use(
 
     # The answer is used, and the shared row is left as it was: N to replacing it.
     result = _import(test_data_dir, "holdings", str(quicken_net_worth_export),
-                     input="Asset_Brokerage_Joint\nn\n")
+                     input="Asset_Brokerage_Joint\n\nn\n")
     assert result.exit_code == 0, result.output
     assert "is mapped to Asset_Brokerage, which retire_alice doesn't have" in result.output
     assert "saved mappings" not in result.output
@@ -225,7 +226,7 @@ def test_sim_import_holdings_keeps_a_saved_mapping_another_scenario_may_use(
 
     # Y replaces it for every scenario.
     result = _import(test_data_dir, "holdings", str(quicken_net_worth_export),
-                     input="Asset_Brokerage_Joint\ny\n")
+                     input="Asset_Brokerage_Joint\n\ny\n")
     assert result.exit_code == 0, result.output
     assert "Asset_Brokerage_Joint,,map,Asset_Brokerage_Joint,," in \
         quicken_account_map.read_text(encoding="utf-8")
@@ -3247,6 +3248,116 @@ def test_sim_import_holdings_sets_a_balance_from_an_ofx_statement(
     # The card's file is another outside account, which nothing maps yet.
     card = _import(test_data_dir, "holdings", str(ofx_card_download))
     assert card.exit_code != 0 and "Example Card card ...1007" in card.output
+
+
+@pytest.mark.usefixtures("at_a_terminal")
+def test_sim_import_holdings_asks_which_lot_a_bank_balance_goes_into_and_adds_a_new_one(
+    test_data_dir: Path, ofx_bank_download: Path, ofx_bank_like_accounts_download: Path,
+) -> None:
+    # Enter takes the account's one lot, and the row names none, as before there was a question.
+    one = _import(test_data_dir, "holdings", str(ofx_bank_download), "--dry-run", input="Asset_Checking\n\n")
+    assert one.exit_code == 0, one.output
+    assert "lots: default; a new name adds a lot to Asset_Checking" in one.output
+    assert "lot of Asset_Checking [default]:" in one.output
+
+    # A bank's checking and savings as two lots of one account: each new
+    # name is asked about (a slip isn't a lot), then added with the balance.
+    result = _import(test_data_dir, "holdings", str(ofx_bank_like_accounts_download),
+                     input="Asset_Checking\nchecking\ny\nAsset_Checking\nsaving\nn\nsavings\ny\n")
+    assert result.exit_code == 0, result.output
+    assert "Add lot saving to Asset_Checking? [y/N]" in result.output
+    with (test_data_dir / "scenarios" / "retire_alice" / "account_lots.csv").open(encoding="utf-8") as f:
+        lots = {row["lot"]: row["opening_balance"] for row in csv.DictReader(f)
+                if row["account_name"] == "Asset_Checking"}
+    assert lots["checking"] == lots["savings"] == "4321.09" and "saving" not in lots
+    assert _saved(test_data_dir, "ofx") == [
+        "First Example Bank checking ...4321,,map,Asset_Checking,checking,",
+        "First Example Bank savings ...4321,,map,Asset_Checking,savings,"]
+
+
+def _downloaded_in_june(raw: bytes) -> bytes:
+    """``ofx_bank_download`` as made on June 15 with everything since
+    January 1: the move to savings in May, a purchase in June, and a bill
+    paid after the balance's date."""
+    return (raw.replace(b"<DTEND>20260228", b"<DTEND>20260630")
+            .replace(b"<DTASOF>20260228", b"<DTASOF>20260615")
+            .replace(b"<DTPOSTED>20260205", b"<DTPOSTED>20260510")
+            .replace(b"<DTPOSTED>20260220", b"<DTPOSTED>20260605")
+            .replace(b"<DTPOSTED>20260201", b"<DTPOSTED>20260620"))
+
+
+def test_sim_import_holdings_works_an_ofx_balance_back_to_the_scenario_s_start(
+    test_data_dir: Path, ofx_bank_download: Path, write_import_map: MapWriter, rewrite_download: Rewrite,
+) -> None:
+    write_import_map("ofx/accounts.csv", "First Example Bank checking ...4321,,map,Asset_Checking,,\n")
+    # The scenario starts in May: 1000.00 and 200.00 have left the account since.
+    result = _import(test_data_dir, "holdings", str(rewrite_download(ofx_bank_download, _downloaded_in_june)))
+
+    assert result.exit_code == 0, result.output
+    assert "ofx snapshot as of 2026-06-15" in result.output
+    assert ("note: First Example Bank checking ...4321: its balance of 4321.09 as of 2026-06-15 is worked "
+            "back to 2026-05-01: what was posted from that day comes to -1200.00, so it opened the day with "
+            "5521.09") in result.output
+    assert "warning: the file is as of" not in result.output
+    assert _lots(test_data_dir)["Asset_Checking"]["opening_balance"] == "5521.09"
+
+    # A download that starts after the scenario does can't say what it opened with.
+    short = rewrite_download(ofx_bank_download, lambda raw: _downloaded_in_june(raw).replace(
+        b"<DTSTART>20260101", b"<DTSTART>20260515"), name="short.qfx")
+    result = _import(test_data_dir, "holdings", str(short))
+    assert result.exit_code == 0, result.output
+    assert ("note: First Example Bank checking ...4321: the file's transactions are those of 2026-05-15 to "
+            "2026-06-30, so its balance can't be worked back to 2026-05-01; a download of every day from "
+            "2026-05-01 to the day it is made can be") in result.output
+    assert "warning: the file is as of 2026-06-15, and its balances are being set as of 2026-05-01" in result.output
+    assert _lots(test_data_dir)["Asset_Checking"]["opening_balance"] == "4321.09"
+
+
+def test_holdings_are_worked_back_only_where_the_file_accounts_for_the_days_between(
+    ofx_bank_download: Path, ofx_card_download: Path, ofx_brokerage_download: Path, rewrite_download: Rewrite,
+) -> None:
+    june = import_ofx.read_holdings(rewrite_download(ofx_bank_download, _downloaded_in_june))
+    account = "First Example Bank checking ...4321"
+
+    # Last year's end is the balance before January 1: everything up to the
+    # balance's date comes off, and what was posted after it doesn't.
+    year_end, back, _ = import_holdings.at(june, date(2026, 1, 1))
+    assert [each.value_cents for each in year_end.holdings] == [432109 - 325000]
+    assert back == {account} and year_end.as_of == date(2026, 1, 1)
+
+    # A file older than the day wanted, or one that ends before its balance's date, says nothing of it.
+    assert import_holdings.at(june, date(2026, 7, 1)) == (june, frozenset(), ())
+    ended = import_ofx.read_holdings(rewrite_download(ofx_bank_download, lambda raw: _downloaded_in_june(raw).replace(
+        b"<DTEND>20260630", b"<DTEND>20260601"), name="ended.qfx"))
+    unchanged, back, notes = import_holdings.at(ended, date(2026, 5, 1))
+    assert unchanged == ended and not back and "2026-01-01 to 2026-06-01" in notes[0]
+
+    # A correction may be of a transaction in another file, so the amounts don't add up to the change.
+    corrected = rewrite_download(ofx_bank_download, lambda raw: raw.replace(
+        b"<FITID>B0006", b"<FITID>B0007\n<CORRECTFITID>B0006\n<CORRECTACTION>REPLACE"), name="corrected.qfx")
+    refused = import_ofx.read_holdings(corrected)
+    assert not refused.activity
+    # Never silently: a balance wanted as of an earlier day says why it is the file's day's.
+    assert import_holdings.at(refused, date(2026, 1, 1)) == (refused, frozenset(), (
+        f"{account}: its balance can't be worked back to 2026-01-01: the file has a correction of a "
+        "transaction, so its amounts don't add up to the change",))
+    undated = import_ofx.read_holdings(rewrite_download(ofx_bank_download, lambda raw: raw.replace(
+        b"<DTSTART>20260101\n<DTEND>20260228\n", b""), name="undated.qfx"))
+    assert "no DTSTART and DTEND" in import_holdings.at(undated, date(2026, 1, 1))[2][0]
+    # What a card owes written above zero has the other sign from its transactions.
+    assert import_ofx.read_holdings(ofx_card_download).activity
+    positive = rewrite_download(ofx_card_download, lambda raw: raw.replace(b"-250.00", b"310.00"))
+    owed = import_ofx.read_holdings(positive)
+    assert not owed.activity and "above zero" in import_holdings.at(owed, date(2026, 2, 1))[2][0]
+    # Positions on an earlier day can't be had from a brokerage's file.
+    brokerage = import_ofx.read_holdings(ofx_brokerage_download)
+    assert not brokerage.activity
+
+    # With a holding that isn't worked back, the snapshot is still of the file's day.
+    mixed = dataclasses.replace(june, holdings=(*june.holdings, *brokerage.holdings))
+    partly, back, _ = import_holdings.at(mixed, date(2026, 5, 1))
+    assert back == {account} and partly.as_of == date(2026, 6, 15)
+    assert partly.holdings[0].value_cents == 552109 and partly.holdings[1:] == brokerage.holdings
 
 
 def test_sim_import_holdings_reads_an_ofx_brokerage_s_positions_by_symbol(

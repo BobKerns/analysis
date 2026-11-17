@@ -116,8 +116,10 @@ accounts hold. Export the snapshot as of the scenario's first day.
   one lot for each outside account. The account list stays
   short, every report shows the bank's total, and each lot still has its own
   balance, rate and refill rules. Map each outside account to its lot.
-- An account with several lots needs the lot named: the question asks for
-  it. One outside number can't fill two lots, so an outside account that
+- The question asks for the lot too. Press Enter for an account's one lot,
+  name one of its lots, or give a new name: after a yes, the lot is added
+  to the account and takes the balance. So a bank's second account can be
+  given its own lot as it is first imported. One outside number can't fill two lots, so an outside account that
   the scenario keeps as several lots is best answered `skip`, and its lots
   filled from a [brokerage file](#brokerage-files) or typed.
 - An outside account the scenario has no account for can be added from
@@ -194,7 +196,9 @@ Things to know:
   balances from the real files.
 - **The file's date should be the scenario's first day**, give or take a
   week. The balances are written as the opening ones whatever the date, so
-  an import of a file dated further away warns, naming both dates.
+  an import of a file dated further away warns, naming both dates. A bank's
+  or a card's [OFX download](#ofx-and-qfx-files) is the exception: its
+  balance is worked back to the first day from its own transactions.
 
 | Source | What to download | The account |
 | --- | --- | --- |
@@ -579,8 +583,25 @@ whichever bank reports it. A card paid from the bank is `transfer` there,
 as for any other bank file.
 
 The balance is what a bank's CSV download never has, so an OFX file is the
-easy way to set a checking or savings account's opening balance: download
-it as of the scenario's first day.
+easy way to set a checking or savings account's opening balance. The balance
+in the file is always the one on the day you download it: the range of dates
+a bank asks for only chooses which transactions the file has. So download
+with a range from the scenario's first day (or earlier) through today. The
+file then has everything posted since the scenario started, and the import
+works the balance back to that first day, saying what it did:
+
+```text
+note: First Example Bank checking ...4321: its balance of 4321.09 as of 2026-06-15 is worked back to 2026-05-01: what was posted from that day comes to -1200.00, so it opened the day with 5521.09
+```
+
+A download that doesn't reach back to the scenario's first day sets the
+balance as the file has it, with a warning that the dates differ and a note
+of the days the file covers. So does a card whose file writes what is owed
+as a positive amount, and a file with a bank's correction of a transaction.
+A brokerage's positions are never worked back, since the file can't say
+what the shares and prices were on an earlier day. With `--year-end` the
+balance is worked back to the end of the year before, from a download that
+starts on January 1 or earlier.
 
 The outside account's name is made from what the file says and nothing
 else. A file that doesn't name its institution (many banks' don't) gives
