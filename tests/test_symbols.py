@@ -280,30 +280,15 @@ def test_guided_edit_takes_new_weights_for_the_latest_set(test_data_dir: Path) -
     assert _allocations(test_data_dir) == ["TGT,2030-01,stock_us,50%", "TGT,2030-01,bond,50%"]
 
 
-def _hold(data_dir: Path, symbol: str) -> None:
-    """Give retire_alice a lot holding ``symbol``."""
-    path = data_dir / "scenarios" / "retire_alice" / "account_lots.csv"
-    header = path.read_text().splitlines()[0].split(",")
-    row = {"account_name": "Asset_Brokerage_Joint", "lot": "fund", "symbol": symbol}
-    with path.open("a") as fh:
-        fh.write(",".join(row.get(c, "") for c in header) + "\n")
+_BROKERAGE_LOT = {"lot": "fund", "symbol": "XOLD", "quantity": "10", "opening_balance": "100.00"}
 
 
-def _with_symbol(data_dir: Path) -> None:
-    (data_dir / "securities.csv").write_text("symbol,name\nXOLD,A mistake\nVTI,Total market\n")
-    (data_dir / "allocations.csv").write_text(
-        "symbol,as_of,asset_class,weight\nXOLD,,bond,100%\nXOLD,2030-01,cash,100%\nVTI,,stock_us,100%\n")
-    (data_dir / "prices" / "security_price__XOLD.csv").write_text("effective_date,price\n2026-01-02,10.00\n")
-    own = data_dir / "scenarios" / "retire_alice" / "prices"
-    own.mkdir(exist_ok=True)
-    (own / "security_price__XOLD.csv").write_text("effective_date,price\n2026-01-02,11.00\n")
-
-
-def test_delete_refuses_while_a_lot_holds_it_and_lists_them(test_data_dir: Path) -> None:
-    _with_symbol(test_data_dir)
-    _hold(test_data_dir, "XOLD")
+def test_delete_refuses_while_a_lot_holds_it_and_lists_them(
+    test_data_dir: Path, mistaken_symbol: str, set_brokerage_lots,
+) -> None:
+    set_brokerage_lots([_BROKERAGE_LOT])
     before = (test_data_dir / "allocations.csv").read_text()
-    result = _sim(test_data_dir, "delete", "XOLD", "--yes", "--prices")
+    result = _sim(test_data_dir, "delete", mistaken_symbol, "--yes", "--prices")
     assert result.exit_code != 0
     assert "XOLD is held by 1 lot(s)" in result.output
     assert "retire_alice: Asset_Brokerage_Joint (fund)" in result.output
@@ -311,30 +296,69 @@ def test_delete_refuses_while_a_lot_holds_it_and_lists_them(test_data_dir: Path)
     assert (test_data_dir / "prices" / "security_price__XOLD.csv").exists()
 
 
-def test_delete_removes_its_rows_and_asks_about_its_prices(test_data_dir: Path, load_test_copy) -> None:
-    _with_symbol(test_data_dir)
+def test_delete_refuses_a_lot_key_while_the_lot_exists(test_data_dir: Path, set_brokerage_lots) -> None:
+    set_brokerage_lots([{"lot": "stable", "opening_balance": "100.00"}])
+    (test_data_dir / "allocations.csv").write_text(
+        "symbol,as_of,asset_class,weight\nAsset_Brokerage_Joint:stable,,bond,100%\n")
+    result = _sim(test_data_dir, "delete", "Asset_Brokerage_Joint:stable", "--yes")
+    assert result.exit_code != 0
+    assert "retire_alice: Asset_Brokerage_Joint (stable)" in result.output
+    assert "Asset_Brokerage_Joint:stable" in (test_data_dir / "allocations.csv").read_text()
+
+
+def test_delete_removes_its_rows_and_asks_about_its_prices(
+    test_data_dir: Path, mistaken_symbol: str, load_test_copy,
+) -> None:
     research = test_data_dir / "research" / "XOLD"
     research.mkdir(parents=True)
-    result = _sim(test_data_dir, "delete", "xold", input="y\ny\n")
+    result = _sim(test_data_dir, "delete", "xold", input="y\ny\n")  # the prices, then the whole
     assert result.exit_code == 0, result.output
     assert "prices/security_price__XOLD.csv" in result.output  # named in the question
+    assert "delete its securities.csv row and 2 set(s) of weights in allocations.csv and 2 price file(s)?" \
+        in result.output
     assert (test_data_dir / "securities.csv").read_text().splitlines() == ["symbol,name", "VTI,Total market"]
     assert _allocations(test_data_dir) == ["VTI,,stock_us,100%"]
     assert "removed 2 set(s) of weights" in result.output
     assert not (test_data_dir / "prices" / "security_price__XOLD.csv").exists()
     assert not (test_data_dir / "scenarios" / "retire_alice" / "prices" / "security_price__XOLD.csv").exists()
+    assert not list(test_data_dir.rglob(".*.deleting"))
     assert "left in place: research/XOLD" in result.output
     assert research.is_dir()
     load_test_copy()  # what it left loads
 
 
-def test_delete_keep_prices_leaves_the_files(test_data_dir: Path) -> None:
-    _with_symbol(test_data_dir)
-    result = _sim(test_data_dir, "delete", "XOLD", "--yes", "--keep-prices")
+def test_delete_yes_asks_nothing_and_keeps_the_prices(test_data_dir: Path, mistaken_symbol: str) -> None:
+    result = _sim(test_data_dir, "delete", mistaken_symbol, "--yes")  # no input: a question would abort
     assert result.exit_code == 0, result.output
     assert "kept prices/security_price__XOLD.csv" in result.output
     assert (test_data_dir / "prices" / "security_price__XOLD.csv").exists()
     assert symbols.security_name(test_data_dir, "XOLD") is None
+
+
+def test_delete_of_price_files_only_that_keeps_them_deletes_nothing(test_data_dir: Path) -> None:
+    (test_data_dir / "prices" / "security_price__XOLD.csv").write_text("effective_date,price\n2026-01-02,10.00\n")
+    result = _sim(test_data_dir, "delete", "XOLD", "--keep-prices")
+    assert result.exit_code != 0
+    assert "nothing to delete" in result.output
+    assert "from securities.csv" not in result.output  # never asked about rows it doesn't have
+
+
+def test_delete_puts_the_price_files_back_when_a_csv_cannot_be_written(
+    test_data_dir: Path, mistaken_symbol: str, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    real_replace = symbols.os.replace
+
+    def replace(src, dst):
+        if Path(dst).name == "allocations.csv":
+            raise OSError("disk full")
+        real_replace(src, dst)
+
+    monkeypatch.setattr(symbols.os, "replace", replace)
+    result = _sim(test_data_dir, "delete", mistaken_symbol, "--yes", "--prices")
+    assert result.exit_code != 0 and "disk full" in result.output
+    assert (test_data_dir / "prices" / "security_price__XOLD.csv").exists()
+    assert (test_data_dir / "scenarios" / "retire_alice" / "prices" / "security_price__XOLD.csv").exists()
+    assert symbols.security_name(test_data_dir, "XOLD") == "A mistake"
 
 
 def test_delete_refuses_a_symbol_nothing_names(test_data_dir: Path) -> None:
@@ -343,8 +367,22 @@ def test_delete_refuses_a_symbol_nothing_names(test_data_dir: Path) -> None:
     assert "NOPE is not in securities.csv" in result.output
 
 
-def test_delete_without_confirmation_changes_nothing(test_data_dir: Path) -> None:
-    _with_symbol(test_data_dir)
-    result = _sim(test_data_dir, "delete", "XOLD", input="n\n")
+def test_delete_without_confirmation_changes_nothing(test_data_dir: Path, mistaken_symbol: str) -> None:
+    result = _sim(test_data_dir, "delete", mistaken_symbol, "--keep-prices", input="n\n")
     assert result.exit_code != 0
     assert symbols.security_name(test_data_dir, "XOLD") == "A mistake"
+
+
+def test_edit_writes_neither_file_when_the_weights_would_not_load(test_data_dir: Path) -> None:
+    (test_data_dir / "securities.csv").write_text("symbol,name\nTGT,Old name\n")
+    result = _sim(test_data_dir, "edit", "TGT", "--name", "New name", "--weight", "stock_us=60%")
+    assert result.exit_code != 0 and "add up to 60%" in result.output
+    assert symbols.security_name(test_data_dir, "TGT") == "Old name"
+
+
+def test_guided_edit_asks_again_for_a_month_that_does_not_parse(test_data_dir: Path) -> None:
+    answers = "\nn\nbond=100%\n2040\n2040-01\n"
+    result = _sim(test_data_dir, "edit", "TGT", input=answers)
+    assert result.exit_code == 0, result.output
+    assert "'2040' is not a YYYY-MM month" in result.output
+    assert _allocations(test_data_dir) == ["TGT,2040-01,bond,100%"]

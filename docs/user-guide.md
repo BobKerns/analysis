@@ -1246,8 +1246,9 @@ weights, keeping that set's date; with `--as-of` it replaces that month's set
 instead, or adds a new dated set. With no options it shows what the symbol
 has and asks. `sim symbol delete ABCDX` removes a symbol added by mistake:
 its name and weights, and, if you say so (or pass `--prices`), its price
-files. It refuses while a lot in any scenario still holds the symbol, and
-lists those lots.
+files; `--yes` asks nothing and keeps them unless `--prices` is given. It
+refuses while a lot in any scenario still holds the symbol, and lists those
+lots.
 
 If the price provider has no prices for the symbol (a 401(k)'s collective
 trust fund often has no public ticker), the name and weights are still
