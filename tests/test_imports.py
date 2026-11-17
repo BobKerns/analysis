@@ -101,6 +101,40 @@ def test_a_portfolio_report_needs_its_account_and_says_when_it_is_of_them_all(
     assert "Export the report for one account at a time" in quicken.read_portfolio(every, "Joint Brokerage").notes[0]
 
 
+def test_a_portfolio_report_s_opened_lines_are_read_by_tax_lot(quicken_tax_lot_report: Path) -> None:
+    found = quicken.read_portfolio(quicken_tax_lot_report, "Joint Brokerage")
+
+    assert not found.notes          # "1 Account" is the one account it should be of
+    assert [(h.asset, h.acquired, h.value_cents, h.cost_basis_cents) for h in found.holdings] == [
+        ("(cash)", None, 250000, None),
+        ("VTSAX", dt.date(2019, 3, 15), 19500000, 12000000),
+        ("VTSAX", dt.date(2022, 6, 1), 9300000, 8000000),
+        ("VTSAX", dt.date(2026, 2, 10), 1200000, 1000000),
+        ("ACME", None, 750000, None),
+    ]
+    # The name the report was saved under is a guess at the account's.
+    assert found.holdings[1].hints == {"name": "Total Stock Fund", "report": "Joint Brokerage"}
+    # A tax lot is held only on the dates it has numbers for.
+    assert [(h.asset, h.acquired) for h in found.dated[dt.date(2025, 12, 31)] if h.acquired] == [
+        ("VTSAX", dt.date(2019, 3, 15)), ("VTSAX", dt.date(2022, 6, 1)), ("VBTLX", dt.date(2020, 4, 1))]
+
+    # Lots that don't come to the security's total leave the rest with no date.
+    short = quicken_tax_lot_report.with_name("short.csv")
+    short.write_text("".join(
+        line for line in quicken_tax_lot_report.read_text(encoding="utf-8").splitlines(keepends=True)
+        if not line.startswith(",6/1/2022")), encoding="utf-8")
+    partly = quicken.read_portfolio(short, "Joint Brokerage")
+    assert [(h.acquired, h.value_cents, h.cost_basis_cents) for h in partly.holdings if h.asset == "VTSAX"] == [
+        (dt.date(2019, 3, 15), 19500000, 12000000), (dt.date(2026, 2, 10), 1200000, 1000000),
+        (None, 9300000, 8000000)]
+    assert "the tax lots of VTSAX come to 207,000.00 of its 300,000.00 as of 2026-08-18" in partly.notes[0]
+
+    several = quicken_tax_lot_report.with_name("several.csv")
+    several.write_text(
+        quicken_tax_lot_report.read_text(encoding="utf-8").replace("1 Account,", "3 Accounts,"), encoding="utf-8")
+    assert "says it is of 3 accounts" in quicken.read_portfolio(several, "Joint Brokerage").notes[0]
+
+
 def test_a_flat_transaction_report_is_read_row_by_row(quicken_flat_transaction_report: Path) -> None:
     assert quicken.is_transaction_export(quicken_flat_transaction_report)
     assert not quicken.is_account_tree(quicken_flat_transaction_report)
@@ -595,6 +629,41 @@ def test_plan_sends_each_holding_to_the_lot_of_its_symbol(test_data_dir: Path) -
         1: {"opening_balance": "5000.00", "opening_cost_basis": "6000.00"},
     }
     assert [w for w in result.warnings if "'gone'" in w and "sim account lot delete Brokerage gone" in w]
+
+
+def test_plan_sends_each_tax_lot_to_the_lot_acquired_that_day(test_data_dir: Path) -> None:
+    account_map = _mapped(test_data_dir, ("B1", "", mapping.AccountTarget("map", "Brokerage")))
+    snapshot = Snapshot("broker", (
+        Holding("B1", 7000_00, asset="AAA", cost_basis_cents=4000_00, acquired=dt.date(2020, 1, 2)),
+        Holding("B1", 5000_00, asset="AAA", cost_basis_cents=5500_00, acquired=dt.date(2024, 3, 4)),
+        Holding("B1", 900_00, asset="AAA", cost_basis_cents=800_00, acquired=dt.date(2026, 5, 6)),
+    ))
+    lots = [
+        {"account_name": "Brokerage", "lot": "aaa", "symbol": "AAA", "opening_balance": "11000.00"},
+        {"account_name": "Brokerage", "lot": "aaa-2020-01-02", "symbol": "AAA", "acquired": "2020-01-02",
+         "opening_balance": "1.00"},
+        {"account_name": "Brokerage", "lot": "aaa-2024-03-04", "symbol": "AAA", "acquired": "2024-03-04",
+         "opening_balance": "5000.00", "opening_cost_basis": "5500.00"},
+        {"account_name": "Brokerage", "lot": "sold", "symbol": "AAA", "acquired": "2021-01-01",
+         "opening_balance": "3.00"},
+    ]
+
+    result = holdings.plan(snapshot, account_map, _BROKERAGE, lots, prune=True)
+
+    # The lot with no date is emptied (the dated ones hold its total), and so
+    # is the tax lot the file no longer has; the one with no lot yet is new.
+    assert result.cells == {
+        0: {"opening_balance": "0.00"},
+        1: {"opening_balance": "7000.00", "opening_cost_basis": "4000.00"},
+        3: {"opening_balance": "0.00"},
+    }
+    assert [(h.acquired, t.account) for h, t in result.new] == [(dt.date(2026, 5, 6), "Brokerage")]
+
+    # A mapping that names a lot still takes them all in together.
+    account_map.set("B1", "AAA", mapping.AccountTarget("map", "Brokerage", "aaa"))
+    gathered = holdings.plan(snapshot, account_map, _BROKERAGE, lots)
+    assert gathered.complete
+    assert gathered.cells[0] == {"opening_balance": "12900.00", "opening_cost_basis": "10300.00"}
 
 
 def test_plan_clears_a_share_count_the_file_lacks_and_keeps_lots_it_names(test_data_dir: Path) -> None:

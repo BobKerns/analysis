@@ -172,6 +172,10 @@ def at(snapshot: Snapshot, since: dt.date) -> tuple[Snapshot, frozenset[str], tu
             frozenset(back), tuple(notes))
 
 
+def _acquired(row: Mapping[str, str]) -> str:
+    return row.get("acquired", "").strip()
+
+
 def _lot_name(row: Mapping[str, str]) -> str:
     return row.get("lot", "") or DEFAULT_LOT
 
@@ -210,6 +214,13 @@ def plan(
     with no symbol, and never into a fund's: with neither it is ``new``,
     or passed over when it is nothing. The one lot of a ``split`` account
     is not such a lot: it is being emptied into the new ones.
+
+    **Tax lots.** A holding with an acquisition date (``Holding.acquired``)
+    is one tax lot of its symbol: it goes to the account's lot of that
+    symbol acquired that day, and with none it is ``new``. A lot of the
+    symbol with no date, which the file then has nothing for, is emptied
+    as a ``split`` account's one lot is: the dated lots hold its total. A
+    mapping that names a lot still takes them all in together.
 
     **What is set.** A lot kept in shares (a quantity and a symbol, and no
     balance) has its ``quantity`` set; any other lot its balance, and its
@@ -264,6 +275,8 @@ def plan(
     in_file: set[int] = set()
     # The accounts the source says it lists in full.
     full: set[str] = set()
+    # Each (account, symbol) the file has tax lots of, by acquisition date.
+    by_date: set[tuple[str, str]] = set()
     # Roth lots: those filled while they have no basis, and those emptied.
     no_basis: list[int] = []
     emptied: list[int] = []
@@ -291,10 +304,17 @@ def plan(
             full.add(target.account)
         if holding.cost_basis_cents is not None and holding.asset not in UNLISTED:
             based.add(target.account)
+        # A tax lot's holding: it is the account's lot of its symbol and
+        # that acquisition date, unless the mapping gathers them into one.
+        when = holding.acquired.isoformat() if holding.acquired is not None and not target.lot else ""
         if holding.asset and holding.asset not in UNLISTED:
-            # The file has the symbol's lot, wherever the mapping sends the holding.
+            # The file has the symbol's lot, wherever the mapping sends the
+            # holding; a tax lot's is the one of its own date.
             in_file.update(i for i in of_account
-                           if result.rows[i].get("symbol", "").strip().upper() == holding.asset.upper())
+                           if result.rows[i].get("symbol", "").strip().upper() == holding.asset.upper()
+                           and (not when or _acquired(result.rows[i]) == when))
+            if when:
+                by_date.add((target.account, holding.asset.upper()))
         by_symbol = False
         if target.lot:
             # The default lot is a blank cell, whichever way the map spells it.
@@ -319,6 +339,11 @@ def plan(
         elif holding.asset:
             indexes = [i for i in of_account
                        if result.rows[i].get("symbol", "").strip().upper() == holding.asset.upper()]
+            if when:
+                indexes = [i for i in indexes if _acquired(result.rows[i]) == when]
+            elif len(indexes) > 1:
+                # Beside the symbol's tax lots, what has no date goes to its lot with none.
+                indexes = [i for i in indexes if not _acquired(result.rows[i])] or indexes
             by_symbol = True
             if not indexes:
                 alone = len(of_account) == 1 and not result.rows[of_account[0]].get("symbol", "").strip()
@@ -352,6 +377,14 @@ def plan(
         into.basis_cents = None if into.basis_cents is None or holding.cost_basis_cents is None \
             else into.basis_cents + holding.cost_basis_cents
 
+    # A symbol's lot with no date, where the file now has the symbol's tax
+    # lots and nothing of it without a date: the dated lots hold its total.
+    superseded = {
+        i for i, row in enumerate(result.rows)
+        if i not in landed and not _acquired(row)
+        and (row.get("account_name", ""), row.get("symbol", "").strip().upper()) in by_date}
+    replaced = {(result.rows[i]["account_name"], result.rows[i].get("symbol", "").strip().upper())
+                for i in superseded}
     for index, into in landed.items():
         row = result.rows[index]
         name, lot = row["account_name"], row.get("lot", "")
@@ -442,7 +475,8 @@ def plan(
             # The lot an account was split out of keeps the account's whole
             # prior-year balance, so its new lots start theirs at nothing:
             # seeded too, the account's would be counted twice (an RMD's base).
-            kept = index in fresh and name in split and bool(others)
+            kept = index in fresh and bool(others) and (
+                name in split or (name, row.get("symbol", "").strip().upper()) in replaced)
             put("prior_year_end_balance", "0.00" if kept else dollars, same=False,
                 note="the lot split from keeps the account's" if kept else "seeded from opening")
         if cells:
@@ -462,12 +496,13 @@ def plan(
             shared.setdefault(target.account, set()).add(outside)
     unsaid: set[str] = set()
     for index, row in enumerate(result.rows):
-        if year_end or row.get("account_name") not in listed or index in landed or index in in_file \
+        if year_end or row.get("account_name") not in listed or index in landed \
+                or (index in in_file and index not in superseded) \
                 or not (_cents(row.get("opening_balance", "")) or _number(row.get("quantity", ""))):
             continue
         # A lot the holdings were split out of is emptied whatever was asked:
         # its total is in the new lots now, and would be counted twice.
-        split_out = row["account_name"] in split and not row.get("symbol", "").strip()
+        split_out = (row["account_name"] in split and not row.get("symbol", "").strip()) or index in superseded
         if not split_out and row["account_name"] in shared:
             unsaid.add(row["account_name"])
             continue

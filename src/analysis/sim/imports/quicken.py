@@ -134,7 +134,8 @@ def read_account_tree(path: Path) -> Snapshot:
 _DATED_COLUMN = re.compile(r"(\d{1,2}/\d{1,2}/\d{2,4})\s+(.+)")
 _VALUE, _BASIS = "market value", "cost basis"
 _NONE = {"", "--"}
-_ALL_ACCOUNTS = "all accounts"
+_ACCOUNTS_SAID = re.compile(r"(all|\d+) accounts?\b", re.IGNORECASE)
+_PORTFOLIO_TITLE = "Portfolio Value & Cost Basis"
 
 
 def _portfolio_columns(row: list[str]) -> dict[dt.date, dict[str, int]]:
@@ -166,28 +167,47 @@ def is_portfolio(path: Path) -> bool:
         return False
 
 
+def _lot_day(row: list[str]) -> dt.date | None:
+    """The acquisition date of a tax lot's row, under its security's: a row
+    with no name and a date in the next cell. A security's lots are in the
+    export only where its line was opened in the report."""
+    if len(row) < 2 or row[0].strip():
+        return None
+    try:
+        return dt.datetime.strptime(row[1].strip(), "%m/%d/%Y").date()
+    except ValueError:
+        return None
+
+
 def read_portfolio(path: Path, account: str) -> Snapshot:
     """What one account holds, from a "Portfolio Value & Cost Basis" report
     of that account alone: each security's value and cost basis, and the
     account's cash.
 
     The report names no account, and one of several adds them together, so
-    ``account`` says whose it is. It has a set of columns for each of its
-    dates: the snapshot is as of the last, with every date's in ``dated``.
-    A security with no value on a date, or none left, isn't held then."""
+    ``account`` says whose it is; the name the report was saved under, which
+    its first line has, is in each holding's ``report`` hint as a guess at
+    it. It has a set of columns for each of its dates: the snapshot is as
+    of the last, with every date's in ``dated``. A security with no value
+    on a date, or none left, isn't held then.
+
+    Where a security's line was opened in the report, its tax lots follow
+    it, one row for each acquisition date: each is a holding of its own
+    with that date, and the security's own row is only their total. What
+    of the total the lots don't account for is a holding with no date.
+    """
     rows = read_rows(path)
     header = next((at for at, row in enumerate(rows[:30]) if _portfolio_columns(row)), None)
     if header is None:
         raise ValueError(f"{path}: no header row with a dated Market Value column")
     columns = _portfolio_columns(rows[header])
     symbol_at = [cell.strip() for cell in rows[header]].index("Symbol")
-    dated: dict[dt.date, list[Holding]] = {date: [] for date in columns}
-    for number, row in enumerate(rows[header + 1:], start=header + 2):
-        name = row[0].strip() if row else ""
-        if not name or not name.strip("-") or name.casefold() == "total":
-            continue
+    title = rows[0][0].strip() if rows and rows[0] else ""
+    saved_as = title[len(_PORTFOLIO_TITLE):].strip() if title.casefold().startswith(_PORTFOLIO_TITLE.casefold()) \
+        else ""
 
-        def cents(at: int | None, what: str, row: list[str] = row, number: int = number) -> int | None:
+    def amounts(row: list[str], number: int, date: dt.date) -> tuple[int | None, int | None]:
+        def cents(at: int | None, what: str) -> int | None:
             text = row[at].strip() if at is not None and at < len(row) else ""
             if text in _NONE:
                 return None
@@ -196,26 +216,72 @@ def read_portfolio(path: Path, account: str) -> Snapshot:
             except InvalidOperation:
                 raise ValueError(f"{path} row {number}: {text!r} is not a {what}") from None
 
-        cash = name.casefold() == "cash"
-        symbol = row[symbol_at].strip() if symbol_at < len(row) else ""
-        for date, its in columns.items():
-            value = cents(its[_VALUE], "market value")
-            if not value:
-                continue
-            dated[date].append(Holding(
-                account=account, value_cents=value, asset=CASH if cash else symbol or name,
-                cost_basis_cents=None if cash else cents(its.get(_BASIS), "cost basis"),
-                hints={} if cash else {"name": name}))
+        its = columns[date]
+        return cents(its[_VALUE], "market value"), cents(its.get(_BASIS), "cost basis")
+
+    # Each security's own row, and its tax lots' rows by acquisition date
+    # (two bought on one day are one lot here).
+    securities: list[tuple[str, str, int, list[str], dict[dt.date, list[tuple[int, list[str]]]]]] = []
+    for number, row in enumerate(rows[header + 1:], start=header + 2):
+        name = row[0].strip() if row else ""
+        if (acquired := _lot_day(row)) is not None and securities:
+            securities[-1][4].setdefault(acquired, []).append((number, row))
+        elif name and name.strip("-") and name.casefold() != "total":
+            securities.append((name, row[symbol_at].strip() if symbol_at < len(row) else "", number, row, {}))
+
+    dated: dict[dt.date, list[Holding]] = {date: [] for date in columns}
     notes: list[str] = []
-    if any(cell.strip().casefold().startswith(_ALL_ACCOUNTS) for row in rows[:header] for cell in row[:1]):
+    for name, symbol, number, row, lots in securities:
+        cash = name.casefold() == "cash"
+        asset = CASH if cash else symbol or name
+        hints = {**({} if cash else {"name": name}), **({"report": saved_as} if saved_as else {})}
+        for date in columns:
+            value, basis = amounts(row, number, date)
+            left, left_basis = value or 0, basis
+            for acquired, its_rows in lots.items():
+                each = [amounts(lot_row, lot_number, date) for lot_number, lot_row in its_rows]
+                held = sum(lot_value or 0 for lot_value, _ in each)
+                if not held:
+                    continue
+                cost = None if any(lot_basis is None for lot_value, lot_basis in each if lot_value) \
+                    else sum(lot_basis or 0 for lot_value, lot_basis in each if lot_value)
+                dated[date].append(Holding(
+                    account=account, value_cents=held, asset=asset, acquired=acquired,
+                    cost_basis_cents=None if cash else cost, hints=hints))
+                left -= held
+                left_basis = None if left_basis is None or cost is None else left_basis - cost
+            if not left:
+                continue
+            if lots and left != value and date == max(columns):
+                notes.append(
+                    f"{path.name}: the tax lots of {asset} come to {_plain_dollars((value or 0) - left)} of its "
+                    f"{_plain_dollars(value or 0)} as of {date}; the rest is taken as one holding with no date")
+            dated[date].append(Holding(
+                account=account, value_cents=left, asset=asset,
+                cost_basis_cents=None if cash else left_basis, hints=hints))
+    if (said := _accounts_said(rows[:header])) is not None:
         notes.append(
-            f"{path.name} says it is of all accounts: its numbers are every account's added together, "
+            f"{path.name} says it is of {said}: its numbers are those accounts' added together, "
             f"and all go to {account}. Export the report for one account at a time")
     last = max(columns)
     return Snapshot(
         source=NAME, holdings=tuple(dated[last]), as_of=last, notes=tuple(notes),
         complete=frozenset({account}),
         dated={date: tuple(held) for date, held in dated.items()} if len(dated) > 1 else {})
+
+
+def _plain_dollars(cents: int) -> str:
+    return f"{cents / 100:,.2f}"
+
+
+def _accounts_said(above: list[list[str]]) -> str | None:
+    """How a portfolio report's lines over its header describe its accounts
+    when they are more than one (``All Accounts``, ``3 Accounts``)."""
+    for row in above:
+        found = _ACCOUNTS_SAID.match(row[0].strip()) if row else None
+        if found is not None and found.group(1).casefold() not in ("1", "one"):
+            return found.group(0).casefold()
+    return None
 
 
 def read_transactions(path: Path) -> Flows:

@@ -9147,7 +9147,10 @@ def _ask_outside_account(
     """Which outside account ``path`` is, asked for: nothing in the file or
     its name says. One the source's mapping has, or a new name for it."""
     assert source.holdings is not None and source.holdings.read_named is not None
-    held = [h.asset for h in source.holdings.read_named(path, "?").holdings if h.asset]
+    read = source.holdings.read_named(path, "?").holdings
+    held = list(dict.fromkeys(h.asset for h in read if h.asset))
+    # What the file calls itself (the name a report was saved under), offered.
+    called = next((h.hints["report"] for h in read if h.hints.get("report")), None)
     known = list(dict.fromkeys(outside for outside, _ in saved.entries))
     click.echo(f"{path.name} doesn't say which {source.name} account it is"
                + (f"; it holds {_some(held)}." if held else "."))
@@ -9156,7 +9159,7 @@ def _ask_outside_account(
                + "whatever you call the account. It is asked for again each time"
                + (", unless the file's name has the account's number." if source.profile is not None else "."))
     while True:
-        if answer := _prompt_with_completion(f"{source.name} account", choices=known).strip():
+        if answer := _prompt_with_completion(f"{source.name} account", choices=known, default=called).strip():
             return answer
 
 
@@ -13578,10 +13581,10 @@ def import_holdings(
             lot_context.append(_lot_guide_context(data_dir_p, scen_name, lots))
         return lot_context[0]
 
-    def add_lot(account: str, name: str, symbol: str) -> None:
+    def add_lot(account: str, name: str, symbol: str, acquired: str = "") -> None:
         """A lot of ``account`` for ``symbol``, with nothing in it yet: the
-        plan fills it from the file."""
-        params: dict[str, object] = {"account": account, "lot": name, "symbol": symbol}
+        plan fills it from the file. ``acquired`` is a tax lot's day."""
+        params: dict[str, object] = {"account": account, "lot": name, "symbol": symbol, "acquired": acquired}
         if accounts[account][1] == registries.RETIREMENT_SUBKIND:
             agreed = {row.get("subkind", "") for row in rows if row.get("account_name") == account}
             if len(agreed) == 1 and "" not in agreed:
@@ -13730,6 +13733,8 @@ def import_holdings(
 
         result = replan()
         to_save = False
+        # Whether each (account, symbol) the file has by tax lot gets a lot for each.
+        tax_lots: dict[tuple[str, str], bool] = {}
         while not result.complete:
             progress = False
             if _interactive():
@@ -13778,10 +13783,11 @@ def import_holdings(
                 only = next(_lot.lot for _lot in lots if _lot.account == account)
                 together = False
                 if _interactive() and not new_lots:
+                    # A holding listed by tax lot is named once.
+                    listed = list(dict.fromkeys(h.asset for h, _ in covered))
                     click.echo(
                         f"{account} has one lot, {only!r}, and the {snapshot.source} file lists "
-                        f"{len(covered)} holding(s) in it: "
-                        + ", ".join(h.asset for h, _ in covered) + ".")
+                        f"{len(listed)} holding(s) in it: " + ", ".join(listed) + ".")
                     click.echo(
                         "  A lot for each lets the plan grow each as its own fund does, and "
                         f"empties {only!r}, whose total they then hold; one lot keeps the "
@@ -13804,21 +13810,60 @@ def import_holdings(
                 # symbol such lots have, so the plan knows what it holds.
                 unlisted = holding.asset in import_forms.UNLISTED
                 symbol = registries.CASH_SYMBOL if unlisted else holding.asset
+                # --new-lots can't name a lot for 'Pending activity'.
+                nameable = unlisted or _clean_symbol(holding.asset)
+                # A tax lot: one of the symbol's holdings, by the day it was acquired.
+                acquired = holding.acquired.isoformat() if holding.acquired is not None and nameable else ""
+                if account_map.lookup(holding.account, holding.asset) != target:
+                    # Its symbol's tax lots were gathered into one lot just now.
+                    continue
                 if any(row.get("account_name") == target.account
-                       and row.get("symbol", "").upper() == symbol.upper() for row in rows):
+                       and row.get("symbol", "").upper() == symbol.upper()
+                       and (not acquired or row.get("acquired", "").strip() == acquired) for row in rows):
                     # An earlier holding of the symbol (another row of the
                     # file, or another outside account) got the lot just now.
                     continue
-                # --new-lots can't name a lot for 'Pending activity'.
-                nameable = unlisted or _clean_symbol(holding.asset)
-                if _interactive() and not (new_lots and nameable):
-                    answer = _ask_holding_lot(holding, target, its_lots)
-                elif new_lots and nameable:
+
+                def free(base: str, its_lots: Sequence[str] = its_lots) -> str:
                     # A lot of another symbol may have the name already.
-                    base = holding.asset.strip("()").lower()
-                    answer = next(
+                    return next(
                         name for name in itertools.chain([base], (f"{base}-{n}" for n in itertools.count(2)))
                         if name not in its_lots)
+
+                base = holding.asset.strip("()").lower()
+                each_day = False
+                if acquired and _interactive() and not new_lots:
+                    key = (target.account, symbol.upper())
+                    if key not in tax_lots:
+                        days = sorted({h.acquired for h, t in result.new
+                                       if h.acquired is not None and h.asset == holding.asset and t == target})
+                        click.echo(
+                            f"The {snapshot.source} file lists {holding.asset} in {target.account} by tax lot: "
+                            f"{len(days)} with no lot here yet, acquired {days[0]}"
+                            + (f" to {days[-1]}" if len(days) > 1 else "") + ".")
+                        click.echo(
+                            "  A lot for each keeps its own cost basis and holding period (short or long "
+                            f"term), named {base}-DATE; otherwise they are added together into one lot.")
+                        tax_lots[key] = click.confirm(f"A lot for each tax lot of {holding.asset}?", default=True)
+                    each_day = tax_lots[key]
+                if each_day or (acquired and new_lots):
+                    answer = free(f"{base}-{acquired}")
+                elif _interactive() and not (new_lots and nameable):
+                    asked = holding
+                    if acquired:
+                        # The one lot would hold all of the symbol's tax lots.
+                        asked = import_forms.Holding(
+                            holding.account, asset=holding.asset, hints=holding.hints,
+                            value_cents=sum(h.value_cents for h, t in result.new
+                                            if h.asset == holding.asset and t == target))
+                    answer = _ask_holding_lot(asked, target, its_lots)
+                    if acquired and answer != "skip" and answer not in its_lots:
+                        # One lot for all of the symbol's tax lots: made
+                        # with no date, and named in the row so each finds it.
+                        add_lot(target.account, answer, symbol)
+                        its_lots = [*its_lots, answer]
+                elif new_lots and nameable:
+                    answer = free(base)
                 else:
                     continue
                 if answer == "skip" or answer in its_lots:
@@ -13828,7 +13873,7 @@ def import_holdings(
                     saved_map.set(holding.account, holding.asset, chosen)
                     to_save = True
                 else:
-                    add_lot(target.account, answer, symbol)
+                    add_lot(target.account, answer, symbol, acquired)
                 progress = True
             if not progress:
                 break

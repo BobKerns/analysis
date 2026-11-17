@@ -848,24 +848,51 @@ can't fill an account kept as several lots. For those, use the built-in
 has of what an account holds. The report names no account, and one of
 several accounts adds them together, so make one for each account:
 
-1. Open the built-in report and edit it down to the one account.
-2. Set its dates so that one of them is the scenario's first day (or
+1. Under *Reports*, open the built-in **Portfolio Value & Cost Basis**
+   report.
+2. In its account list, turn off every account but the one.
+3. Set its dates so that one of them is the scenario's first day (or
    December 31 for `--year-end`). The report has numbers for several dates;
    the import takes those of the date nearest the one the plan wants, and
    says which.
-3. Save it under the account's name, and export it as CSV.
+4. For tax lots, open each security's line (the triangle beside its name)
+   so that the purchase dates show under it in the *Security* column. Quicken
+   exports the dates only for the lines that are open. Leave a line closed
+   to import that security as one total: a money market fund, say, whose
+   every monthly dividend is a purchase of its own.
+5. Save the report under the account's name, and export it as CSV.
 
 ```sh
 sim import holdings "Joint Brokerage.csv"
 ```
 
-The import asks which Quicken account the file is, offering the ones the
-net worth report named (`--outside-account NAME` answers it), then sends
-each security to the account's lot of its symbol, with its value and cost
-basis, and the account's cash to its cash lot. The report has no share
+The import asks which Quicken account the file is, offering the name the
+report was saved under and the accounts the net worth report named
+(`--outside-account NAME` answers it), then sends each security to the
+account's lot of its symbol, with its value and cost basis, and the
+account's cash to its cash lot. The report has no share
 counts: at a terminal the import offers to work one out from a stored price.
 A [brokerage's own file](#brokerage-files) has the counts, and is the better
 source where you can get one.
+
+**Tax lots.** A security whose line was open comes as one row for each
+purchase date, and the import asks once for each security whether every
+one gets a lot of its own:
+
+```text
+The quicken file lists VTSAX in Asset_Brokerage_Joint by tax lot: 3 with no lot here yet, acquired 2019-03-15 to 2026-02-10.
+  A lot for each keeps its own cost basis and holding period (short or long term), named vtsax-DATE; otherwise they are added together into one lot.
+A lot for each tax lot of VTSAX? [Y/n]:
+```
+
+A yes (and `--new-lots`, which doesn't ask) makes lots named for the
+symbol and the date, such as `vtsax-2019-03-15`, each with its `acquired`
+date, value and cost basis. A later import finds each by its date, adds a
+lot for a new purchase, and with `--prune` empties one that was sold. A lot
+of the symbol with no date, from an earlier import of its total, is emptied
+too, since the dated lots now hold what it held. A no asks for one lot's
+name instead, and adds them together into it then and in later imports.
+Purchases on the same day are one lot.
 
 A data repo with Quicken mappings from before the `imports/` folder moves
 them with `scripts/migrate_527.py` (it reports first; `--write` does it).
