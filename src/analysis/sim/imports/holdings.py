@@ -125,7 +125,7 @@ def at(snapshot: Snapshot, since: dt.date) -> tuple[Snapshot, frozenset[str], tu
     A bank's download has the balance of the day it was made whatever range
     of transactions was asked for, and a plan's opening balances are those
     of its first day, so without this no download could set them."""
-    if snapshot.as_of is None or snapshot.as_of < since or not snapshot.activity:
+    if snapshot.as_of is None or snapshot.as_of < since or not (snapshot.activity or snapshot.unaccounted):
         return snapshot, frozenset(), ()
     holdings: list[Holding] = []
     back: set[str] = set()
@@ -134,6 +134,8 @@ def at(snapshot: Snapshot, since: dt.date) -> tuple[Snapshot, frozenset[str], tu
         activity = snapshot.activity.get(holding.account)
         if activity is None or holding.asset:
             holdings.append(holding)
+            if not holding.asset and (why := snapshot.unaccounted.get(holding.account)):
+                notes.append(f"{holding.account}: its balance can't be worked back to {since}: {why}")
         elif activity.start > since or activity.end < snapshot.as_of:
             holdings.append(holding)
             notes.append(

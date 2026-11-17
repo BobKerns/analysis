@@ -263,6 +263,7 @@ def read_holdings(
         notes=tuple(note for snapshot in snapshots for note in snapshot.notes),
         complete=frozenset(account for snapshot in snapshots for account in snapshot.complete),
         activity={account: activity for snapshot in snapshots for account, activity in snapshot.activity.items()},
+        unaccounted={account: why for snapshot in snapshots for account, why in snapshot.unaccounted.items()},
     )
 
 

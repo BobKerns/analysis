@@ -3335,11 +3335,20 @@ def test_holdings_are_worked_back_only_where_the_file_accounts_for_the_days_betw
     # A correction may be of a transaction in another file, so the amounts don't add up to the change.
     corrected = rewrite_download(ofx_bank_download, lambda raw: raw.replace(
         b"<FITID>B0006", b"<FITID>B0007\n<CORRECTFITID>B0006\n<CORRECTACTION>REPLACE"), name="corrected.qfx")
-    assert not import_ofx.read_holdings(corrected).activity
+    refused = import_ofx.read_holdings(corrected)
+    assert not refused.activity
+    # Never silently: a balance wanted as of an earlier day says why it is the file's day's.
+    assert import_holdings.at(refused, date(2026, 1, 1)) == (refused, frozenset(), (
+        f"{account}: its balance can't be worked back to 2026-01-01: the file has a correction of a "
+        "transaction, so its amounts don't add up to the change",))
+    undated = import_ofx.read_holdings(rewrite_download(ofx_bank_download, lambda raw: raw.replace(
+        b"<DTSTART>20260101\n<DTEND>20260228\n", b""), name="undated.qfx"))
+    assert "no DTSTART and DTEND" in import_holdings.at(undated, date(2026, 1, 1))[2][0]
     # What a card owes written above zero has the other sign from its transactions.
     assert import_ofx.read_holdings(ofx_card_download).activity
     positive = rewrite_download(ofx_card_download, lambda raw: raw.replace(b"-250.00", b"310.00"))
-    assert not import_ofx.read_holdings(positive).activity
+    owed = import_ofx.read_holdings(positive)
+    assert not owed.activity and "above zero" in import_holdings.at(owed, date(2026, 2, 1))[2][0]
     # Positions on an earlier day can't be had from a brokerage's file.
     brokerage = import_ofx.read_holdings(ofx_brokerage_download)
     assert not brokerage.activity

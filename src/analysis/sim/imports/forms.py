@@ -87,6 +87,10 @@ class Snapshot:
     file's date, where the file has that and the account's one holding is
     its balance. A bank's download is as of the day it was made and never
     of an earlier one; with this its balance on an earlier day is known."""
+    unaccounted: Mapping[str, str] = field(default_factory=dict)
+    """By account, why a file that could have such activity has none for
+    it, as the end of a sentence: said where the balance was wanted as of
+    an earlier day, so that it is never silently set as of the file's."""
 
 
 FLOW_COLUMNS = (
