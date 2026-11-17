@@ -79,7 +79,7 @@ _CODED: dict[str, Source] = {
         holdings=Reader(quicken.is_account_tree, quicken.read_account_tree,
                         'My Reports: "Net Worth Export" or "Year End Export"'),
         transactions=Reader(quicken.is_transaction_export, quicken.read_transactions,
-                            'My Reports: "Transaction Export"'),
+                            'My Reports: "Transaction Export", or the "All Transactions" report'),
         budget=Reader(quicken.is_budget, quicken.read_budget,
                       'Budget: Export, "Full" (a column for each month) or "Summary"'),
     ),

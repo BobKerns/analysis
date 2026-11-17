@@ -2,7 +2,9 @@
 
 The "Net Worth Export" and "Year End Export" reports (My Reports) share one
 indented-category CSV shape, read as holdings. The "Transaction Export" is
-grouped under account header rows, read as flows. A budget's export (issue
+grouped under account header rows, read as flows; a transaction report
+exported as it stands ("All Transactions") is one row for each, under a few
+lines about the report, and is read the same. A budget's export (issue
 #617), in its "Summary" form or its "Full" one with a column for each month,
 is an indented tree of categories, read as a budget. None is a flat table,
 so a column profile can't describe them.
@@ -28,6 +30,8 @@ __all__ = [
 
 NAME = "quicken"
 _DATE_FORMAT = "%Y-%m-%d"
+_FLAT_DATE_FORMAT = "%m/%d/%Y"
+_TRANSFER = "transfer:"
 _TRANSACTION_COLUMNS = {"Date", "Payee", "Category", "Amount"}
 
 
@@ -36,11 +40,22 @@ def _is_transaction_header(row: list[str]) -> bool:
         and _TRANSACTION_COLUMNS <= {cell.strip() for cell in row}
 
 
+def _is_flat_header(row: list[str]) -> bool:
+    """The header of a transaction report exported as it stands (not the
+    saved Transaction Export): one row for each transaction, with its
+    account in a column of its own, under a few lines saying what the
+    report is."""
+    cells = {cell.strip() for cell in row}
+    return {"Date", "Amount", "Account", "Category"} <= cells and bool(cells & {"Payee", "Payee/Security"}) \
+        and not (row and row[0].strip().casefold() == "account")
+
+
 def is_transaction_export(path: Path) -> bool:
-    """Whether ``path`` looks like a Transaction Export: an ``Account`` header
-    row with the transaction columns, near the top."""
+    """Whether ``path`` looks like a transaction report: an ``Account``
+    header row with the transaction columns, or a flat report's header,
+    near the top."""
     try:
-        return any(_is_transaction_header(row) for row in read_rows(path, 30))
+        return any(_is_transaction_header(row) or _is_flat_header(row) for row in read_rows(path, 30))
     except (OSError, UnicodeDecodeError, csv.Error):
         return False
 
@@ -53,7 +68,7 @@ def is_account_tree(path: Path) -> bool:
         rows = read_rows(path, 60)
     except (OSError, UnicodeDecodeError, csv.Error):
         return False
-    if any(_is_transaction_header(row) for row in rows):
+    if any(_is_transaction_header(row) or _is_flat_header(row) for row in rows):
         return False
     sections = {row[0].strip().casefold() for row in rows if len(row) == 3 and row[0].strip()}
     return bool(sections & {"assets", "liabilities"})
@@ -113,19 +128,25 @@ def read_account_tree(path: Path) -> Snapshot:
 
 
 def read_transactions(path: Path) -> Flows:
-    """Transaction rows of a Transaction Export.
+    """Transaction rows of a Transaction Export, or of a transaction
+    report exported as it stands.
 
-    Account headers, separator rows, and account totals are ignored. The
-    frame keeps Quicken's other fields beside the common ones.
+    Account headers, separator rows, and account totals are ignored, and so
+    are the lines over a flat report's header. The frame keeps Quicken's
+    other fields beside the common ones.
     """
     rows: list[dict[str, object]] = []
     current_account = ""
     header: list[str] | None = None
+    flat = False
 
     for source_row, row in enumerate(read_rows(path), start=1):
         if not row:
             continue
-        if row[0].strip().casefold() == "account":
+        if header is None and _is_flat_header(row):
+            header, flat = [column.strip() for column in row], True
+            continue
+        if not flat and row[0].strip().casefold() == "account":
             header = [column.strip() for column in row]
             continue
         if header is None:
@@ -133,6 +154,8 @@ def read_transactions(path: Path) -> Flows:
 
         values = row + [""] * (len(header) - len(row))
         first = values[0].strip()
+        if first and flat:
+            continue                    # a total, or a line about the report
         if first:
             if first.casefold().startswith("total") or first.startswith("-"):
                 continue
@@ -144,9 +167,17 @@ def read_transactions(path: Path) -> Flows:
         if not date_raw:
             continue
         try:
-            transaction_date = pd.to_datetime(date_raw, format=_DATE_FORMAT)
+            transaction_date = pd.to_datetime(date_raw, format=_FLAT_DATE_FORMAT if flat else _DATE_FORMAT)
         except (TypeError, ValueError):
             continue
+        category = str(record.get("Category", "")).strip()
+        transfer = str(record.get("Transfer", "")).strip()
+        if flat:
+            current_account = str(record.get("Account", "")).strip()
+            # A flat report has no Transfer column: a move between one's own
+            # accounts is in the category, as Transfer:[the other account].
+            if category.casefold().startswith(_TRANSFER):
+                transfer = category[len(_TRANSFER):].strip().strip("[]") or category
 
         amount_raw = str(record.get("Amount", "")).strip().replace(",", "")
         if not amount_raw:
@@ -164,10 +195,10 @@ def read_transactions(path: Path) -> Flows:
                 "entered": str(record.get("Entered", "")).strip(),
                 "posted": str(record.get("Posted", "")).strip(),
                 "action": str(record.get("Action", "")).strip(),
-                "payee": str(record.get("Payee", "")).strip(),
-                "category": str(record.get("Category", "")).strip(),
+                "payee": str(record.get("Payee", record.get("Payee/Security", ""))).strip(),
+                "category": category,
                 "tags": str(record.get("Tags", "")).strip(),
-                "transfer": str(record.get("Transfer", "")).strip(),
+                "transfer": transfer,
                 "memo": str(record.get("Memo/Notes", "")).strip(),
                 "amount_cents": amount_cents,
             }

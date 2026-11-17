@@ -829,6 +829,11 @@ Save two reports under *My Reports*, and export each as CSV:
 | Transactions (every account, itemized, with payee and category) | `sim import transactions` | the year to average |
 | A budget's export, Full | `sim import budget` | the year planned |
 
+The transactions report may be the saved one, grouped under each account,
+or the "All Transactions" report exported as it stands, with one row for
+each transaction and its account in a column. A move between your own
+accounts is taken from that report's `Transfer:` category.
+
 With no file named, `sim import transactions` reads
 `quicken/Transaction Export.csv` at the data repo's top level, along with the
 Amazon categorizer's monthly summaries in `state/`, which split Amazon
