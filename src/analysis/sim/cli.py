@@ -18511,6 +18511,8 @@ def person_show(
 # Conventional roles (ADR-003 §4.1), offered at the role prompt along with
 # any other role persons.csv already uses; the column itself is open.
 _CONVENTIONAL_ROLES = ("primary", "secondary")
+# What the role question takes for no role.
+_NO_ROLE = "none"
 
 _SHARED_PERSONS_NOTE = "persons.csv is shared: this changes every scenario"
 
@@ -18564,12 +18566,13 @@ def _check_sex(text: str) -> str:
 def _person_fields(
     current: dict[str, str], roles: list[str], *, guided: bool,
     display: str | None, birthdate: str | None, role: str | None, meta_json: str | None,
-    sex: str | None = None,
+    sex: str | None = None, default_role: str = "",
 ) -> dict[str, str]:
     """A person's display, birthdate, sex, role and meta_json: each one
     given, or when ``guided``, asked for with ``current``'s value as the
-    default; or else ``current``'s. A blank role is no role; a blank sex is
-    none (only a life_table lifespan needs one)."""
+    default; or else ``current``'s. A blank role is no role (asked for as
+    ``none``; ``default_role`` is what a new person's question offers); a
+    blank sex is none (only a life_table lifespan needs one)."""
     if guided:
         if display is None:
             display = click.prompt("display", default=current.get("display") or None)
@@ -18582,9 +18585,18 @@ def _person_fields(
                 list(registries.PERSON_SEXES), default=current.get("sex") or "",
             )
         if role is None:
+            click.echo(
+                "roles: primary (you or your spouse: the two the taxes and survivor rules are about), "
+                "secondary (another real person, such as a dependent), or none (a stand-in that owns "
+                "accounts, such as joint)"
+                + (f"; also in use: {', '.join(others)}" if (others := [
+                    each for each in roles if each not in _CONVENTIONAL_ROLES]) else ""))
+            # A default can't be answered with nothing, so no role is a word.
             role = _prompt_with_completion(
-                "role (blank for none)", roles, default=current.get("role") or "",
+                "role", [*roles, _NO_ROLE], default=current.get("role") or default_role or _NO_ROLE,
             )
+            if role.strip() == _NO_ROLE:
+                role = ""
         if meta_json is None:
             meta_json = click.prompt("meta_json", default=current.get("meta_json") or "{}")
     fields = {
@@ -18681,6 +18693,8 @@ def person_add(
     fields = _person_fields(
         {}, _role_choices(df), guided=display is None or birthdate is None,
         display=display, birthdate=birthdate, role=role, meta_json=meta_json, sex=sex,
+        # The usual answer, until the household has its two spouses.
+        default_role="primary" if (df["role"] == "primary").sum() < 2 else "",
     )
     row = pd.DataFrame([{"id": person_id, **fields}])
     _write_persons(data, scenario, pd.concat([df, row], ignore_index=True).fillna(""), before)
