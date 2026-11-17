@@ -323,8 +323,10 @@ covered, each category's total and what it comes to a month (over the
 months that had any spending, as the rules are worked out), what was left
 out and why (money in, moves between your own accounts, what the scenario
 models itself), and the outside categories that fell to `Other`. It needs
-no `--from` and no expense accounts yet, so it is a good first
-command with a new file. It asks nothing: a payee with no category yet is
+no `--from`, no expense accounts and no `categories.csv` yet, so it is a
+good first command with a new file: with no map, each of the outside
+program's categories is shown as itself, which is what the map is written
+from. It asks nothing: a payee with no category yet is
 counted in `Other`, with a note of the most paid, and a file that doesn't
 name its account is taken as its own name's.
 

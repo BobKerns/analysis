@@ -761,6 +761,15 @@ def test_sim_import_transactions_needs_a_category_map(
     assert result.exit_code != 0
     assert "category map not found" in result.output
     assert "imports/quicken/categories.csv" in result.output
+    assert "--summary shows the file's categories" in result.output
+
+    # A look needs none: the file's own categories are shown.
+    looked = _transactions(test_data_dir, quicken_transaction_export, "--summary")
+    assert looked.exit_code == 0, looked.output
+    assert "note: no category map yet" in looked.output
+    assert "Groceries" in looked.output and "Coffee Shops" in looked.output
+    assert "put in Other" not in looked.output
+    assert not (test_data_dir / "imports" / "quicken" / "categories.csv").exists()
 
 
 @pytest.mark.usefixtures("quicken_category_map")
