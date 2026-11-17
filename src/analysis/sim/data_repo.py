@@ -43,16 +43,6 @@ class InitError(Exception):
     """A data repo can't be created where asked."""
 
 
-def checkout_of(path: Path) -> Path | None:
-    """The code checkout ``path`` is in: the nearest folder at or above it
-    that holds this program's source, as activate-analysis tells one. None
-    outside any."""
-    for folder in (path, *path.parents):
-        if (folder / "pyproject.toml").is_file() and (folder / "src" / "analysis" / "sim" / "cli.py").is_file():
-            return folder
-    return None
-
-
 def is_data_repo(root: Path) -> bool:
     """Whether ``root`` already holds a data repo: the test link-data.sh uses."""
     return (root / "sim" / "persons.csv").exists()

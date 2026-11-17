@@ -235,13 +235,20 @@ _commit_option = click.option(
 )
 
 
-def _shown(path: Path) -> str:
+def _shown(path: Path, *, resolve: bool = True) -> str:
     """``path`` as the user would type it (#374): relative to the working
     directory when it's inside it, else ``~/...`` under the home folder,
     else absolute. A full temp or home path makes output wrap and hides
-    the part that matters."""
-    full = Path(path).expanduser().resolve()
-    for base, prefix in ((Path.cwd().resolve(), ""), (Path.home().resolve(), "~/")):
+    the part that matters.
+
+    Without ``resolve`` it is shown through a link and not as what the link
+    leads to: data/shared is how a checkout names its data repo, wherever
+    that is."""
+    full = Path(path).expanduser()
+    bases = ((Path.cwd(), ""), (Path.home(), "~/"))
+    if resolve:
+        full, bases = full.resolve(), tuple((base.resolve(), prefix) for base, prefix in bases)
+    for base, prefix in bases:
         try:
             rel = full.relative_to(base)
         except ValueError:
@@ -5188,23 +5195,28 @@ def init_command(
 
     Then it turns on background builds (ADR-004 §12), as `sim builder
     install` does, installing the data repo's git hooks. --no-builder
-    leaves the checkout alone (no link, no hooks), for scripts and tests;
-    so does ANALYSIS_NO_BUILDER set in the environment, as for setup.sh.
+    installs no hooks and links no DIR to data/shared, for scripts and
+    tests; so does ANALYSIS_NO_BUILDER set in the environment, as for
+    setup.sh. With no DIR the data repo is still made at data/shared,
+    which is where one was asked for.
     --no-commit skips the builder, which needs a git repository.
 
     Refuses a DIR that already holds a data repo, and with no DIR a
     data/shared that is already there.
     """
+    from analysis.checkout import checkout_of
     from analysis.sim import data_repo
 
     # The variable setup.sh honors too: a recording (the setup video, #374)
-    # shows `sim init` as typed, so it can't pass --no-builder, and must not
-    # link or hook anything in the checkout it records from.
+    # shows `sim init DIR` as typed, so it can't pass --no-builder, and must
+    # not link or hook anything in the checkout it records from. (With no
+    # DIR the data repo is the checkout's data/shared whatever this says:
+    # code and data are one to one, and that is where it was asked for.)
     no_builder = no_builder or bool(os.environ.get("ANALYSIS_NO_BUILDER"))
     # The checkout this is run in is the one the data repo is for (#654):
     # activate-analysis activates the code its data repo was made by, so a
     # `sim` from another worktree's venv would pair it with the wrong code.
-    here = data_repo.checkout_of(Path.cwd())
+    here = checkout_of(Path.cwd())
     if here is not None and here.resolve() != data_repo.CODE_REPO_DIR.resolve() \
             and not os.environ.get(_INIT_AGAIN):
         _init_in_checkout(here, [
@@ -5219,9 +5231,9 @@ def init_command(
         # The usual step: the data repo is the checkout's own data/shared.
         if shared.exists() or shared.is_symlink():
             raise click.ClickException(
-                f"{_typed(shared)} is already there"
+                f"{_shown(shared, resolve=False)} is already there"
                 + (f", leading to {_shown(shared.resolve())}" if shared.is_symlink() else "")
-                + f". To use it: source {_typed(shared / 'sim' / 'activate-analysis')}. For a new data "
+                + f". To use it: source {_shown(shared / 'sim' / 'activate-analysis', resolve=False)}. For a new data "
                 "repo elsewhere, give its DIR; to start over here, remove it first.")
         directory = shared
     root = directory.expanduser().resolve()
@@ -5260,16 +5272,18 @@ def init_command(
     elif not shared.exists() and not shared.is_symlink():
         shared.parent.mkdir(exist_ok=True)
         shared.symlink_to(root)
-        click.echo(f"linked {_typed(shared)} to {_shown(root)}")
+        click.echo(f"linked {_shown(shared, resolve=False)} to {_shown(root)}")
     elif shared.resolve() != root:
         click.echo(
-            f"  warning: {_typed(shared)} is already there and was left alone, so this checkout still uses "
+            f"  warning: {_shown(shared, resolve=False)} is already there and was left alone, so this "
+            "checkout still uses "
             f"{_shown(shared.resolve())}. To use the new data repo, remove it and run: "
             f"scripts/link-data.sh {_shown(root)}", err=True)
     if not no_builder and not no_commit and not failed:
         _init_builder(sim)
     linked = (shared.exists() or shared.is_symlink()) and shared.resolve() == root
-    activate = _typed(shared / "sim" / "activate-analysis") if linked else _shown(sim / "activate-analysis")
+    activate = _shown(shared / "sim" / "activate-analysis", resolve=False) if linked \
+        else _shown(sim / "activate-analysis")
     # Set apart and in bold: without it no later command finds the data
     # repo, and after the lines above it was easy to miss.
     click.echo()
@@ -5284,18 +5298,6 @@ def init_command(
 # Set for the `sim init` that one run from another checkout's venv starts,
 # so that a checkout whose `sim` is somehow another's can't start a third.
 _INIT_AGAIN = "ANALYSIS_INIT_AGAIN"
-
-
-def _typed(path: Path) -> str:
-    """``path`` as the user would type it, as ``_shown`` gives it, but
-    through a link and not as what the link leads to: data/shared is how a
-    checkout names its data repo, wherever that is."""
-    for base, prefix in ((Path.cwd(), ""), (Path.home(), "~/")):
-        try:
-            return prefix + str(path.relative_to(base))
-        except ValueError:
-            continue
-    return str(path)
 
 
 def _init_in_checkout(checkout: Path, args: list[str]) -> NoReturn:
