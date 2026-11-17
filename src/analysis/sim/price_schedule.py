@@ -395,7 +395,7 @@ def fetch(
         for result in results:
             if result.error:
                 first = (failing.get(result.symbol) or {}).get("since", now.timestamp())
-                failing[result.symbol] = {"error": result.error, "since": first,
+                failing[result.symbol] = {"error": result.error, "since": first, "at": now.timestamp(),
                                           "held": result.symbol in held}
                 lines.append(f"{result.symbol}: {result.error}"
                              + ("" if result.symbol in held else " (no lot holds it)"))
@@ -697,7 +697,10 @@ def describe(state: dict[str, Any], now: datetime) -> list[str]:
         days = int((now.timestamp() - failed.get("since", now.timestamp())) // 86400)
         since = f" for {days} days" if days >= 1 else ""
         flag = "" if failed.get("held") else " (no lot holds it)"
-        lines.append(f"price failing{since}: {symbol}: {failed.get('error')}{flag}")
+        # When it last failed, so a failure from before a fix reads as one
+        # (#648); state written before then has only the fetch's last try.
+        tried = when(failed.get("at") or state.get("attempted"))
+        lines.append(f"price failing{since}: {symbol} (last tried {tried}): {failed.get('error')}{flag}")
     return lines
 
 
