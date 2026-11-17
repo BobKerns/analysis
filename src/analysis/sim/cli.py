@@ -34,6 +34,8 @@ from analysis.amazon.notebook import load_monthly_summaries
 from analysis.expenses.baseline import (
     build_expense_baseline,
     build_scheduled_baseline_rows,
+    card_payment_row,
+    card_spending,
     category_slug,
     generated_row,
     months_covered,
@@ -43,6 +45,8 @@ from analysis.expenses.baseline import (
     OCCASIONAL_BASELINE_DAYS,
     BASELINE_GENERATED_TAG,
     INCOME_GENERATED_TAG,
+    Cards,
+    Payer,
     replace_generated_scheduled_rows,
 )
 from analysis.sim import (
@@ -8333,6 +8337,8 @@ def _check_scheduled_row(row: dict[str, str], context: calendar_guide.GuideConte
     missing = [
         column for column, required in scheduled_guide.KIND_COLUMNS[kind].items()
         if required and not row[column].strip()
+        # Blank, a payment into a liability pays what is owed (#641).
+        and not (column == "amount" and scheduled_guide.pays_liability(context, row))
     ]
     if missing:
         flags = ", ".join(f"--{column.replace('_', '-')}" for column in missing)
@@ -8431,7 +8437,8 @@ def _scheduled_options[F: Callable[..., object]](f: F) -> F:
 @click.option("--kind", "rule_kind", default="fixed_amount", show_default=True,
               type=click.Choice(sorted(registries.AMOUNT_RULE_KINDS)),
               help="How the amount is worked out (ADR-003 §2). AMOUNT is given only "
-                   "for fixed_amount, ss_benefit (PIA at FRA) and mortgage_payment (P&I).")
+                   "for fixed_amount, ss_benefit (PIA at FRA) and mortgage_payment (P&I); "
+                   "'' on a fixed_amount into a liability pays what is owed.")
 @click.option("--from-lot", type=completion.LotName("from_account"), default=None,
               help="Lot of the from account; asked for when a blank one would not say which.")
 @click.option("--to-lot", type=completion.LotName("to_account"), default=None,
@@ -8465,7 +8472,8 @@ def _scheduled_options[F: Callable[..., object]](f: F) -> F:
                    "and on_death.")
 @click.option("--claim-age", type=int, default=None, help="Required for ss_benefit.")
 @click.option("--rate", default=None,
-              help="mortgage_payment: annual rate, e.g. 6%. fill_bracket: the bracket to fill, e.g. 22%.")
+              help="mortgage_payment, card_interest: annual rate, e.g. 6%. "
+                   "fill_bracket: the bracket to fill, e.g. 22%.")
 @click.option("--interest-account", type=completion.ACCOUNT, default=None,
               help="Interest expense account: required for mortgage_payment.")
 @click.option("--tax-year", default=None,
@@ -8543,17 +8551,29 @@ def scheduled_add(
         endpoints, from_account or None, from_lot, to_account or None, to_lot,
     )
 
+    if priority is not None and rule_kind not in registries.DEFAULT_PRIORITIES:
+        raise click.ClickException(
+            f"a {rule_kind} rule takes no --priority: " + (
+                "it runs last in its month" if rule_kind == "fill_bracket"
+                else "it follows the month's payments"))
     if rule_kind == "fill_bracket":
-        if priority is not None:
-            raise click.ClickException(
-                "a fill_bracket rule takes no --priority: it runs last in its month")
         if (rate is None) == (amount is None):
             raise click.ClickException(
                 "a fill_bracket rule takes one of --rate (the bracket to fill, e.g. 22%) "
                 "or --amount (the taxable income to fill up to, in today's dollars)")
-    if amount is None and own_columns.get("amount"):
+    owed = scheduled_guide.pays_liability(
+        context, {"amount_rule_kind": rule_kind, "to_account": to_account})
+    if amount is None and owed:
+        amount = click.prompt(
+            f"{scheduled_guide.AMOUNT_LABEL[rule_kind]} (blank to pay what is owed)",
+            default="", show_default=False).strip()
+    elif amount is None and own_columns.get("amount"):
         amount = _prompt_with_completion(f"{scheduled_guide.AMOUNT_LABEL[rule_kind]} (e.g. 1234.56)")
-    if amount is not None and _parse_amount_cents(amount) <= 0:
+    if not amount and own_columns.get("amount") and not owed:
+        raise click.ClickException(
+            f"rule kind {rule_kind} needs an AMOUNT (only a payment into a liability may "
+            "leave it blank, to pay what is owed)")
+    if amount and _parse_amount_cents(amount) <= 0:
         raise click.ClickException("amount must be positive")
     if cadence is None:
         cadence = "annual" if rule_kind in scheduled_guide.ANNUAL_KINDS else "monthly"
@@ -8585,7 +8605,8 @@ def scheduled_add(
     guide = _scheduled_guide()
     for field_ in scheduled_guide.RULE.fields:
         if (field_.param in own_columns and own_columns[field_.param]
-                and not answers.get(field_.param)):
+                and not answers.get(field_.param)
+                and not (field_.param == "amount" and owed)):
             answers[field_.param] = guide.ask_field(
                 scheduled_guide.RULE, field_, context, {k: str(v) for k, v in answers.items()},
             )
@@ -9299,11 +9320,12 @@ def _categorize_by_payee(
 @click.option("--amazon-state-dir", type=click.Path(file_okay=False, path_type=Path),
               default=None,
               help="Amazon state directory (default: sibling data-repo/state).")
-@click.option("--from-account", type=completion.ENDPOINT, default=None,
-              help="Scenario account that funds all generated expense rows "
+@click.option("--from", "from_account", type=completion.ENDPOINT, default=None,
+              help="Scenario account or source chain that pays the generated expense rows, and "
+                   "each card's payment; what a file's card was charged is paid from the card "
                    "(asked at a terminal when left out; not needed with --summary).")
 @click.option("--from-lot", type=completion.LotName("from_account"), default="",
-              help="Lot of --from-account (required for investment accounts).")
+              help="Lot of --from (required for investment accounts).")
 @click.option("--start", default=None,
               help="First scheduled month YYYY-MM or YYYY-MM-DD (default: scenario start).")
 @click.option("--series", type=completion.SCHEDULED_SERIES, default="cpi", show_default=True,
@@ -9361,6 +9383,14 @@ def import_transactions(
     imports/expense_accounts.csv; at a terminal a category with no account
     there is asked for and saved.
 
+    What a file's account paid is charged to that account where it is one
+    of the scenario's credit cards: the outside account's row in
+    imports/<source>/accounts.csv names the card (sim import map; at a
+    terminal an account with no row is asked about while a card has none).
+    Each category then has a rule from the card beside its rule from --from,
+    and the card a rule that pays it in full each month from --from, written
+    once and then yours to change. Everything else is paid from --from.
+
     A source whose file has no categories (a bank's) gets them by payee,
     from imports/<source>/payees.csv: text found in the payee, and its
     category ('transfer' for a move between your own accounts or a card's
@@ -9411,7 +9441,7 @@ def import_transactions(
             f"{yearly_script} exists, and may hold your edits; --overwrite replaces it, "
             "or give another name")
     if summary and from_lot and from_account is None:
-        raise click.UsageError("--from-lot goes with --from-account")
+        raise click.UsageError("--from-lot goes with --from")
     # A summary needs no account to pay from, but one given for the yearly
     # script is checked as an import's is: the script would only fail on it.
     if not summary or from_account is not None:
@@ -9419,7 +9449,7 @@ def import_transactions(
         # since would be lost with a slip here. Given or asked for, the
         # account is held to what a transfer's from side takes.
         if from_account is None and not _interactive():
-            raise click.UsageError("Missing option '--from-account'.")
+            raise click.UsageError("Missing option '--from'.")
         with _intent_db(data_dir_p, scenario_name) as (con, _):
             if start is None:
                 # As loaded: a derived scenario's own scenario.csv may leave
@@ -9462,6 +9492,8 @@ def import_transactions(
     if flows.duplicates:
         click.echo(f"note: {flows.duplicates} transaction(s) that an earlier file had too, by "
                    "their reference, were left out")
+    cards, card_maps = _cards_charged(
+        data_dir_p, scenario_name, flows.transactions, ask=_interactive() and not summary)
     for note in flows.notes:
         click.echo(f"note: {note}")
     payee_maps: dict[str, import_mapping.PayeeMap] = {}
@@ -9580,7 +9612,8 @@ def import_transactions(
                        f"{_LEFT_OUT['modeled_separately']}: choosing actual gives it no rule, and "
                        "choosing budget may pay again what the scenario already does.")
     if summary:
-        occasional = _show_transactions_summary(baseline, scripted=yearly_script is not None)
+        occasional = _show_transactions_summary(
+            baseline, scripted=yearly_script is not None, cards=cards)
         if yearly_script is not None and occasional:
             with _intent_db(data_dir_p, scenario_name) as (con, _):
                 if start is None:
@@ -9591,7 +9624,7 @@ def import_transactions(
                 occasional, data_dir=data_dir_p.resolve(), scenario=scenario_name,
                 start=_validate_month_date(start)[:7], from_account=from_account, from_lot=from_lot,
                 series=series, expense_accounts=expense_accounts.accounts, accounts=account_names,
-                source=flows.sources[0], taken=rule_names, sim=_sim_command(),
+                source=flows.sources[0], taken=rule_names, sim=_sim_command(), cards=cards,
                 # As far as is known without asking: a saved choice, or --prefer.
                 from_budget={each.category for each in compared
                              if not each.only and _budget_or_actual_unasked(each, prefer) == "budget"})
@@ -9622,20 +9655,31 @@ def import_transactions(
         from_lot=from_lot,
         series=series,
         provenance={"source": flows.source, "files_sha256": import_flows_.file_digest(files)},
+        cards=cards,
     )
     if budget_file is not None:
         _warn_of_an_old_budget(budget.months, start)
         provenance = {"source": f"{budget_source} budget",
                       "files_sha256": import_flows_.file_digest([budget_file])}
+        # A budget doesn't say what pays: a category is paid as most of
+        # it was in the transactions (#641).
+        most = _paid_most(baseline, cards, (from_account, from_lot))
         rows += [
             generated_row(
                 _budget_rule_name(each), each.category, format_dollars(each.amount_cents),
-                from_account=from_account, from_lot=from_lot, to_account=mappings[each.category],
+                from_account=payer, from_lot=lot, to_account=mappings[each.category],
                 start=start, series=series, month_of_year=each.month, provenance=provenance)
-            for each in budgeted if each.category in from_budget and each.category not in ignored]
+            for each in budgeted if each.category in from_budget and each.category not in ignored
+            for payer, lot in [most.get(each.category, (from_account, from_lot))]]
         rows.sort(key=lambda row: row["name"])
     scheduled_path = scenario_dir / "scheduled.csv"
     counts = _show_generated_changes(scenario_dir, scenario_name, rows, (BASELINE_GENERATED_TAG,))
+    payments = _card_payments(scenario_dir, rows, cards, from_account, from_lot, start,
+                              _chain_accounts(data_dir_p, scenario_name) if cards else {})
+    for row in payments:
+        click.echo(f"  {row['name']}: pays {row['to_account']} in full each month from "
+                   f"{from_account} (added once; yours to change)")
+    rows += payments
     if dry_run:
         click.echo(f"(dry run) would replace the generated row(s) in {_shown(scheduled_path)} "
                    f"with {len(rows)}: {counts or 'none'}")
@@ -9645,10 +9689,15 @@ def import_transactions(
             click.echo("(dry run) the payee categories you gave were not saved")
         if chosen:
             click.echo("(dry run) your choices of budget or actual were not saved")
+        if card_maps:
+            click.echo("(dry run) the cards you named were not saved")
         return
     with _scenario_edit(data_dir_p, scenario_name) as edit:
         replace_generated_scheduled_rows(edit.path(scheduled_path), rows)
     # Once the rules are written: an edit that is refused saves nothing.
+    for card_map in card_maps:
+        card_map.save()
+        click.echo(f"saved the cards you named to {_shown(card_map.path)}")
     for source in sorted(payees_asked):
         payee_maps[source].save()
         click.echo(f"saved payee categories to {_shown(payee_maps[source].path)}")
@@ -9660,10 +9709,134 @@ def import_transactions(
         choices.save()
         click.echo(f"saved your choices of budget or actual to {_shown(choices.path)}")
     click.echo(
-        f"replaced {len(rows)} generated baseline row(s) in {_shown(scheduled_path)} "
+        f"replaced {len(rows) - len(payments)} generated baseline row(s) in {_shown(scheduled_path)} "
         f"for scenario {scenario_name} ({counts or 'none'})"
+        + (f", and added {len(payments)} card payment rule(s)" if payments else "")
     )
     click.echo(_FIRST_DRAFT)
+    if cards:
+        click.echo("Each card is paid in full each month. One that carries a balance wants an amount "
+                   "on its payment rule, and its interest: sim scheduled add --kind card_interest.")
+
+
+def _cards_charged(
+    data_dir: Path, scenario: str, transactions: pd.DataFrame, *, ask: bool,
+) -> tuple[dict[tuple[str, str], Payer], list[import_mapping.AccountMap]]:
+    """The outside accounts with spending in ``transactions`` that are
+    credit cards of the scenario (#641), each by its source and name, with
+    the card and lot its row in the source's accounts.csv maps it to; and
+    the account maps given a row here, to save once the rules are written.
+
+    With ``ask``, an account with no row is asked about, while the scenario
+    has a card that no outside account of any source is mapped to: once each
+    card has its account, a bank's file is known not to be one. The answer
+    may be any account of the scenario, which is saved as the outside
+    account's row, so one that is no card is asked about once and not at
+    every import. Away from a terminal the same accounts are noted instead."""
+    with _intent_db(data_dir, scenario) as (con, _):
+        lot_info = _lot_info(con)
+        every = [row[0] for row in con.execute("SELECT name FROM account ORDER BY name")]
+        scenario_cards = {row[0] for row in con.execute(
+            "SELECT name FROM account WHERE kind = 'liability' AND subkind = 'credit_card'")}
+    if not scenario_cards:
+        return {}, []
+    spending = transactions.loc[transactions["amount_cents"] < 0]
+    outside = sorted({(str(origin), str(account)) for origin, account in zip(
+        spending[import_forms.ORIGIN], spending["account"], strict=True)})
+    imports = import_mapping.imports_dir(data_dir)
+    unclaimed = scenario_cards - {
+        target.account
+        for path in imports.glob(f"*/{import_mapping.ACCOUNTS}")
+        for target in import_mapping.load_account_map(path).entries.values() if target.action == "map"}
+    maps: dict[str, import_mapping.AccountMap] = {}
+    changed: dict[str, import_mapping.AccountMap] = {}
+    found: dict[tuple[str, str], Payer] = {}
+    unknown: list[str] = []
+    for source, account in outside:
+        saved = maps.get(source) or maps.setdefault(source, import_mapping.load_account_map(
+            import_mapping.source_dir(data_dir, source) / import_mapping.ACCOUNTS))
+        target = saved.lookup(account)
+        if target is None and unclaimed and ask:
+            click.echo(f"{account!r} ({source}) has no row in {_shown(saved.path)}: is it one of "
+                       f"the scenario's credit cards ({', '.join(sorted(unclaimed))})? Its spending "
+                       "is then charged to the card. If it isn't one, name the account it is and it "
+                       "isn't asked about again, or leave blank to be asked next time.")
+            card = ""
+            while (card := _prompt_with_completion(
+                    "  account", choices=[*sorted(unclaimed), *every], default="").strip()) and card not in every:
+                click.echo(f"  a card ({', '.join(sorted(scenario_cards))}), another account of "
+                           f"{scenario}, or blank")
+            if card:
+                lot = ""
+                lots = lot_info.get(card)
+                while calendar_guide.lot_needed(lots) and lot not in (lots or (False, []))[1]:
+                    lot = _prompt_with_completion("  its lot", choices=list((lots or (False, []))[1])).strip()
+                target = import_mapping.AccountTarget("map", card, lot)
+                saved.set(account, "", target)
+                changed[source] = saved
+                unclaimed.discard(card)
+        elif target is None and unclaimed:
+            unknown.append(f"{account} ({source})")
+        if target is not None and target.action == "map" and target.account in scenario_cards:
+            found[(source, account)] = (target.account, target.lot)
+    if unknown:
+        click.echo(f"note: {', '.join(sorted(unclaimed))} has no outside account mapped to it, and "
+                   f"{', '.join(unknown)} is mapped to nothing: if one is the card's, name it with "
+                   "sim import map, and its spending is charged to the card.")
+    return found, list(changed.values())
+
+
+def _paid_most(baseline: BaselineResult, cards: Cards, otherwise: Payer) -> dict[str, Payer]:
+    """What paid the most of each category some card of ``cards`` paid part
+    of: the card, or ``otherwise`` (what pays the rest)."""
+    totals = {str(row["category"]): round(float(row["amount_total"]) * 100)
+              for row in baseline.category_totals.to_dict("records")}
+    found: dict[str, Payer] = {}
+    for category, by_card in card_spending(baseline, cards).items():
+        paid = {**by_card, otherwise: totals.get(category, 0) - sum(by_card.values())}
+        found[category] = max(sorted(paid), key=lambda payer: paid[payer])
+    return found
+
+
+def _card_payments(
+    scenario_dir: Path, rows: Sequence[Mapping[str, str]], cards: Cards,
+    from_account: str, from_lot: str, start: str, chains: Mapping[str, Collection[str]],
+) -> list[dict[str, str]]:
+    """A payment rule for each card of ``cards`` that is charged, by
+    ``rows`` or by a rule the scenario has (a yearly rule the script
+    added, whose payee is then left out of ``rows``), and that no rule the
+    scenario loads pays into yet (#641): the household's own payment, or
+    the one an earlier run wrote, stays as it is. A rule pays into a card
+    through a chain too (``chains``: each destination chain's accounts)."""
+    loaded = [found.row for found in _overlay_rows(scenario_dir, "scheduled.csv").values()]
+    paid = {account for row in loaded
+            for account in chains.get(row.get("to_account", ""), (row.get("to_account", ""),))}
+    # Not the generated rows the scenario has: ``rows`` replace them.
+    kept = [row for row in loaded if BASELINE_GENERATED_TAG not in row.get("tags", "").split()]
+    charged = {(row["from_account"], row.get("from_lot", "")) for row in [*rows, *kept]}
+    return [
+        card_payment_row(card, from_account=from_account, from_lot=from_lot, start=start)
+        for card in sorted(set(cards.values()))
+        if card in charged and card[0] not in paid]
+
+
+def _chain_accounts(data_dir: Path, scenario: str) -> dict[str, set[str]]:
+    """The accounts each of the scenario's chains reaches, by its name:
+    through its steps, and theirs."""
+    with _intent_db(data_dir, scenario) as (con, _):
+        reached = con.execute(
+            """WITH RECURSIVE reach(top, id) AS (
+                   SELECT id, id FROM chain WHERE account_id IS NULL
+                   UNION SELECT reach.top, chain_steps.draw_from_chain_id
+                   FROM reach JOIN chain_steps ON chain_steps.chain_id = reach.id)
+               SELECT top.name, account.name FROM reach
+               JOIN chain AS top ON top.id = reach.top
+               JOIN chain AS leaf ON leaf.id = reach.id
+               JOIN account ON account.id = leaf.account_id""").fetchall()
+    found: dict[str, set[str]] = {}
+    for chain, account in reached:
+        found.setdefault(chain, set()).add(account)
+    return found
 
 
 def _budget_rule_name(each: import_budget_.Planned) -> str:
@@ -9804,10 +9977,13 @@ def _sim_command() -> str:
     return str(beside) if beside.is_file() else shutil.which("sim") or "sim"
 
 
-def _show_transactions_summary(baseline: BaselineResult, *, scripted: bool = False) -> list[Occasional]:
+def _show_transactions_summary(
+    baseline: BaselineResult, *, scripted: bool = False, cards: Cards | None = None,
+) -> list[Occasional]:
     """What `sim import transactions` would make its rules from (#333);
     returns the candidates for yearly rules it listed. ``scripted`` says
-    they are being written as a script, which the advice then points to."""
+    they are being written as a script, which the advice then points to.
+    What each card of ``cards`` was charged is shown beside the totals (#641)."""
     used = baseline.transactions
     months = months_covered(baseline)
     observed = baseline.observed_months
@@ -9842,6 +10018,16 @@ def _show_transactions_summary(baseline: BaselineResult, *, scripted: bool = Fal
         for category, cents in (*totals.items(), ("all", sum(totals.values()))):
             click.echo(f"{category:<{width}}  {format_dollars(cents):>12}  "
                        f"{format_dollars(round(cents / observed)):>15}")
+        charged: dict[Payer, dict[str, int]] = {}
+        for category, by_card in card_spending(baseline, cards or {}).items():
+            for card, cents in by_card.items():
+                charged.setdefault(card, {})[category] = cents
+        for card, by_category in sorted(charged.items()):
+            click.echo(
+                f"charged to {':'.join(filter(None, card))}, and paid from it: "
+                f"{format_dollars(round(sum(by_category.values()) / observed))} a month ("
+                + ", ".join(f"{category} {format_dollars(round(cents / observed))}"
+                            for category, cents in sorted(by_category.items())) + ")")
     click.echo("This is a best-effort reading of the file, by the odds: review it, and correct a "
                "category or a payee in imports/ where it is wrong for your household.")
     occasional = occasional_payments(baseline)
@@ -9874,18 +10060,18 @@ def _show_transactions_summary(baseline: BaselineResult, *, scripted: bool = Fal
 @click.option("--data-dir",
               type=click.Path(exists=True, file_okay=False, path_type=Path),
               default=None)
-@click.option("--from-account", type=completion.ENDPOINT, required=True,
-              help="Scenario account that funds all generated expense rows.")
+@click.option("--from", "from_account", type=completion.ENDPOINT, required=True,
+              help="Scenario account or source chain that pays all generated expense rows.")
 @click.option("--from-lot", type=completion.LotName("from_account"), default="",
-              help="Lot of --from-account (required for investment accounts).")
+              help="Lot of --from (required for investment accounts).")
 @click.option("--income/--no-income", "use_income", default=None,
               help="Write income rules from the budget's income rows, or leave them out "
                    "(asked at a terminal when the budget has income).")
 @click.option("--income-to", type=completion.ACCOUNT, default=None,
-              help="Scenario account the budget's income is paid into (default: --from-account, "
+              help="Scenario account the budget's income is paid into (default: --from, "
                    "when that is an account and not a chain).")
 @click.option("--income-to-lot", type=completion.LotName("income_to"), default="",
-              help="Lot of --income-to (default: --from-lot, when income is paid into --from-account).")
+              help="Lot of --income-to (default: --from-lot, when income is paid into --from).")
 @click.option("--gross-income/--net-income", "gross_income", default=None,
               help="Whether the budget's income is before tax, and so taxed by the scenario, or "
                    "take-home pay, written untaxed (asked at a terminal; default: take-home).")

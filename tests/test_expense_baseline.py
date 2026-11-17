@@ -390,6 +390,19 @@ def test_build_expense_baseline_does_not_default_merge_targets_to_other(tmp_path
     ]
 
 
+def test_scheduled_baseline_rows_round_a_category_no_card_paid_from_its_dollars() -> None:
+    """Three cents over two months is a cent a month, as before cards were told apart:
+    a run on unchanged data shows no rule as changed."""
+    months = pd.to_datetime(["2026-01-01", "2026-02-01"])
+    empty = pd.DataFrame()
+    baseline = BaselineResult(
+        empty, empty,
+        pd.DataFrame({"summary_month_start": months, "category": "Food", "amount_total": [0.01, 0.02]}),
+        pd.DataFrame({"category": ["Food"], "amount_total": [0.03]}), ())
+    rows = build_scheduled_baseline_rows(baseline, {"Food": "food"}, "2026-05-31", "Asset_Checking")
+    assert baseline.observed_months == 2 and [row["amount"] for row in rows] == ["0.01"]
+
+
 def test_scheduled_baseline_rows_are_rerunnable_and_remove_stale_rows(tmp_path: Path) -> None:
     path = tmp_path / "quicken.csv"
     path.write_text(

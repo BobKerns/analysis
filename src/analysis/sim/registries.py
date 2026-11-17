@@ -27,6 +27,7 @@ ACCOUNT_SUBKINDS: dict[str, set[str]] = {
 AMOUNT_RULE_KINDS: set[str] = {
     "fixed_amount", "percent_of_balance", "rmd",
     "ss_benefit", "mortgage_payment", "on_death", "fill_bracket", "irmaa",
+    "card_interest",
 }
 
 # The rule kind income tax had before jurisdiction files (#507): a scheduled
@@ -93,10 +94,11 @@ on, a state (a postal code) and optionally a county, the series of its
 December 31. Rows merge by date over the lineage."""
 TAX_SCHEDULES: tuple[str, ...] = ("april",)
 """``april``: each April, the tax still due for the year before."""
-MONTH_PHASES: tuple[str, ...] = ("rules", "tax_settlement", "fill_bracket")
+MONTH_PHASES: tuple[str, ...] = ("rules", "card_interest", "tax_settlement", "fill_bracket")
 """The order a month posts in, after its strategy hooks, each phase whole
 before the next (#507). The scheduled rules come first, in priority order
-among themselves. The tax settlement (each April, the year before's tax)
+among themselves. A ``card_interest`` rule charges on what the month's
+payments left unpaid, so it follows them all (#641). The tax settlement (each April, the year before's tax)
 follows every rule, so no rule's order is tied to it. ``fill_bracket``'s
 conversions come last: an RMD can't be converted, so it must come out first,
 and the conversion's target needs the year's whole income."""
@@ -590,7 +592,8 @@ DEFAULT_PRIORITIES: dict[str, int] = {
     "irmaa": 200,
 }
 """Kinds with no entry here have no priority: a ``fill_bracket`` always runs
-after every other rule of its month (#252)."""
+after every other rule of its month (#252), and a ``card_interest`` after
+the month's payments (#641)."""
 
 # Aux file kind -> required columns (ADR-003 §4.4).
 # CSV money columns are written in decimal dollars (e.g. ``1234.56``); the loader

@@ -20,7 +20,7 @@ from collections.abc import Collection, Mapping
 from datetime import date
 from pathlib import Path
 
-from analysis.expenses.baseline import Occasional, category_slug
+from analysis.expenses.baseline import CARD_PAYMENT_TAG, Cards, Occasional, Payer, category_slug, payer_slug
 from analysis.sim.imports.holdings import format_dollars
 from analysis.sim.imports.mapping import EXCLUDED_PAYEES, NO_RULE, payee_key
 
@@ -79,6 +79,7 @@ def script(
     from_account: str | None, from_lot: str = "", series: str = "cpi",
     expense_accounts: Mapping[str, str], accounts: Collection[str] = (), source: str,
     taken: Collection[str] = (), sim: str = "sim", from_budget: Collection[str] = (),
+    cards: Cards | None = None,
 ) -> tuple[str, int, int]:
     """A POSIX shell script that adds a yearly rule for each month of the
     year each of ``occasional`` was last paid in, and leaves its payee out
@@ -99,6 +100,15 @@ def script(
     either case one of the scenario's accounts (``accounts``): the saved
     rows are shared by every scenario. Without one, and for
     ``from_account`` when None, a name is left to be filled in.
+
+    A payee every payment of which was charged to one card of ``cards``
+    (#641) has its rules paid from that card, named on their lines; any
+    other is paid from ``from_account``, as a payee paid from several is.
+    A card so charged gets a ``pay_card`` line, the rule that pays it in
+    full each month, by the name the import gives that rule: the import
+    writes one only for a card its monthly rules charge, and a card whose
+    only charges are these would be paid by nothing. The line is live when
+    a live rule charges the card, and left out when ``taken`` has the name.
 
     No rule is given a name in ``taken``, the scenario's scheduled names,
     nor one used earlier in the script: `sim scheduled add` refuses a
@@ -141,7 +151,7 @@ def script(
         "",
         f"DATA_DIR={quote(str(data_dir))}",
         f"SCENARIO={quote(scenario)}",
-        f"FROM={quote(from_account or _FILL_IN)}    # the account that pays",
+        f"FROM={quote(from_account or _FILL_IN)}    # the account that pays what no card was charged",
         f"FROM_LOT={quote(from_lot)}    # its lot, where it needs one",
         f"START={quote(start)}    # the rules' first month",
         f"SIM=${{SIM:-{quote(sim)}}}    # the command that wrote this script",
@@ -154,17 +164,29 @@ def script(
         "    # Not twice, when the script is run again.",
         '    grep -qxF -e "$2" "$excluded" || printf \'%s\\n\' "$2" >> "$excluded"',
         "}",
-        "yearly() {  # NAME TO_ACCOUNT AMOUNT MONTH_OF_YEAR PAID_IN DESCRIPTION",
+        "yearly() {  # NAME TO_ACCOUNT AMOUNT MONTH_OF_YEAR PAID_IN DESCRIPTION [CARD [CARD_LOT]]",
+        "    # Paid from the card it was charged to, where it names one; else from FROM.",
+        '    if [ $# -ge 7 ]; then from=$7; lot=${8:-}; else from=$FROM; lot=$FROM_LOT; fi',
         "    # A rule this script added before it stopped, when it is run again.",
         f'    if grep -q "^$1," "$DATA_DIR/scenarios/$SCENARIO/{_SCHEDULED}" 2>/dev/null; then',
         '        echo "already added: $1"; return 0',
         "    fi",
-        '    "$SIM" scheduled add "$START" "$FROM" "$2" "$3" --data-dir "$DATA_DIR" --scenario "$SCENARIO" \\',
-        '        ${FROM_LOT:+--from-lot "$FROM_LOT"} --name "$1" --cadence annual --month-of-year "$4" \\',
+        '    "$SIM" scheduled add "$START" "$from" "$2" "$3" --data-dir "$DATA_DIR" --scenario "$SCENARIO" \\',
+        '        ${lot:+--from-lot "$lot"} --name "$1" --cadence annual --month-of-year "$4" \\',
         f'        --series {quote(series)} --base-date "$5" --description "$6"',
+        "}",
+        "pay_card() {  # NAME CARD [CARD_LOT]: the card paid in full each month, from FROM",
+        f'    if grep -q "^$1," "$DATA_DIR/scenarios/$SCENARIO/{_SCHEDULED}" 2>/dev/null; then',
+        '        echo "already added: $1"; return 0',
+        "    fi",
+        '    "$SIM" scheduled add "$START" "$FROM" "$2" "" --data-dir "$DATA_DIR" --scenario "$SCENARIO" \\',
+        '        ${FROM_LOT:+--from-lot "$FROM_LOT"} ${3:+--to-lot "$3"} --name "$1" --cadence monthly \\',
+        f'        --tags {quote(CARD_PAYMENT_TAG)} --description "Card payment: $2 in full"',
         "}",
     ]
     named = set(taken)
+    # Each card the rules charge, and whether a live one does.
+    charged: dict[Payer, bool] = {}
     written = waiting = 0
     for each in occasional:
         when = ", ".join(f"{month:%b %Y} {format_dollars(cents)}" for month, cents in each.paid)
@@ -189,6 +211,11 @@ def script(
         # and dates would name the rule for one payment.
         slug = category_slug(payee_key(each.payee))[:32].strip("_") or category_slug(each.category)
         paid = latest_year(each)
+        payers = {(cards or {}).get(pair) for pair in each.accounts}
+        card = next(iter(payers)) if len(payers) == 1 else None
+        if card is None and payers - {None}:
+            lines.append("# Charged to a card only in part: the rules below pay from FROM.")
+        paid_from = "".join(f" {quote(part)}" for part in card or () if part)
         block: list[str] = []
         for month, cents in paid:
             base = f"yearly_{slug}"
@@ -202,9 +229,12 @@ def script(
             named.add(name)
             block.append(
                 f"yearly {quote(name)} {quote(account)} {format_dollars(cents)} {month.month} "
-                f"{month:%Y-%m} {quote(f'Yearly: {_comment(each.payee)} ({_comment(each.category)})')}")
+                f"{month:%Y-%m} {quote(f'Yearly: {_comment(each.payee)} ({_comment(each.category)})')}"
+                + paid_from)
         cell = quote(_csv_cell(payee_pattern(each.payee)))
         block += [f"leave_out {quote(origin)} {cell}" for origin in each.sources or (source,)]
+        if card is not None:
+            charged[card] = charged.get(card, False) or (each.repeats and not each.elsewhere)
         if each.elsewhere:
             lines += [
                 "# Commented out: this payee is paid in other categories too, and leaving it out would",
@@ -225,6 +255,15 @@ def script(
                 "#   none, to keep it spread over the months.",
                 *(f"# {line}" for line in block)]
             waiting += 1
+    payments = [(f"card_payment_{payer_slug(card)}", card, live) for card, live in sorted(charged.items())]
+    if payments := [each for each in payments if each[0] not in taken]:
+        lines += [
+            "",
+            "# The cards charged above want paying: each line adds the rule that pays one in full each",
+            "# month, as the transactions import does for a card its monthly rules charge. Delete a line",
+            "# if you already pay that card with a rule of your own; uncomment it with the card's rules.",
+            *(("" if live else "# ") + f"pay_card {quote(name)}" + "".join(f" {quote(part)}" for part in card if part)
+              for name, card, live in payments)]
     return "\n".join(lines) + "\n", written, waiting
 
 

@@ -49,7 +49,8 @@ class EngineError(RuntimeError):
 
 SUPPORTED_RULE_KINDS = frozenset(
     {"fixed_amount", "percent_of_balance",
-    "mortgage_payment", "ss_benefit", "rmd", "on_death", "fill_bracket", "irmaa"}
+    "mortgage_payment", "ss_benefit", "rmd", "on_death", "fill_bracket", "irmaa",
+    "card_interest"}
 )
 
 SUPPORTED_CALENDAR_KINDS = frozenset(
@@ -176,8 +177,9 @@ def run_scenario(
             ).fetchall()
         ]
         # A month posts in registries.MONTH_PHASES order: its rules (by
-        # priority among themselves), the tax settlement (None here), then
-        # fill_bracket's conversions.
+        # priority among themselves), card_interest on what their payments
+        # left, the tax settlement (None here), then fill_bracket's
+        # conversions.
         month_steps: list[list[Any] | None] = [
             step for phase in registries.MONTH_PHASES
             for step in ([None] if phase == "tax_settlement"
@@ -365,6 +367,10 @@ def run_scenario(
                 strategy_runtime.month_start(con, step_id, month, post_move)
 
             opening_balances = dict(balances)
+            # What a liability has been paid this month is every leg into it
+            # after this one (#641).
+            opening_event = con.execute(
+                "SELECT COALESCE(MAX(id), 0) FROM transfer_event").fetchone()[0]
 
             def settle_taxes(step_id=step_id, month_s=month_s, month=month) -> None:
                 shared: _SharedPrepares = {}
@@ -437,6 +443,23 @@ def run_scenario(
                     params.update(json.loads(ext_json))
 
                 match rule_kind:
+                    case "fixed_amount" if p_amount_cents is None:
+                        # A blank amount pays a liability what it was owed
+                        # when the month opened (#641).
+                        if to is None or account_kinds[to] != "liability":
+                            raise EngineError(
+                                f"scheduled_transaction id={tid} ({_name!r}): fixed_amount "
+                                "missing amount (only a payment into a liability may leave "
+                                "it blank, to pay what is owed)"
+                            )
+                        amount = _carried(con, opening_balances, balances, opening_event, to)
+                        if amount > 0:
+                            _post_fixed_amount(
+                                con, balances, account_kinds, step_id, month_s, refill_ctx,
+                                frm, to_chain, amount, tax_char, tid,
+                                tax_year=tax_year,
+                                what=f"scheduled_transaction id={tid} ({_name!r})",
+                            )
                     case "fixed_amount":
                         amount = _fixed_amount_at(
                             Txn._make(txn), month, aux, inflation_factor_cache,
@@ -539,6 +562,22 @@ def run_scenario(
                                 frm, to_chain, charge * fire_count, tax_char, tid,
                                 tax_year=tax_year,
                                 what=f"scheduled_transaction id={tid} ({_name!r})",
+                            )
+                    case "card_interest":
+                        if from_account is None or to is None:
+                            raise EngineError(
+                                f"card_interest id={tid} ({_name!r}): charges one "
+                                "liability's interest to one expense account, not through a chain"
+                            )
+                        interest = _mortgage_interest(
+                            _carried(con, opening_balances, balances, opening_event, from_account),
+                            int(p_rate_micros or 0),
+                        )
+                        if interest > 0:
+                            _post_transfer(
+                                con, balances, account_kinds, step_id, month_s,
+                                from_account, to, interest, tax_char, tid,
+                                refill_ctx=refill_ctx,
                             )
                     case "on_death":
                         _apply_on_death(
@@ -1711,7 +1750,8 @@ _SCHED_RULE_KIND = Txn._fields.index("amount_rule_kind")
 
 def _month_phase(txn: Sequence[Any]) -> str:
     """The ``registries.MONTH_PHASES`` phase a scheduled rule posts in."""
-    return "fill_bracket" if txn[_SCHED_RULE_KIND] == "fill_bracket" else "rules"
+    kind = txn[_SCHED_RULE_KIND]
+    return kind if kind in ("fill_bracket", "card_interest") else "rules"
 
 
 def _rule_fire_count(
@@ -1773,8 +1813,8 @@ def _rule_year_budget(
     it. Twelve months rather than the calendar year, so a run that starts in
     May still sees a whole year's plan; cut at ``run_end``, so a run ending
     mid-year doesn't budget months it never posts."""
-    if txn.amount_rule_kind != "fixed_amount":
-        return 0
+    if txn.amount_rule_kind != "fixed_amount" or txn.amount_cents is None:
+        return 0  # a blank amount pays a liability down (#641), which is no spending
     rule_start = _parse_scheduled_date(txn.start, txn.id, txn.name, "start")
     rule_end = (_parse_scheduled_date(txn.end, txn.id, txn.name, "end")
                 if txn.end is not None else None)
@@ -1788,6 +1828,22 @@ def _rule_year_budget(
         for m in _month_ends(month, last)
     )
     return _fixed_amount_at(txn, month, aux, cache) * fires if fires else 0
+
+
+def _carried(
+    con, opening_balances: Mapping[int, int], balances: Mapping[int, int],
+    opening_event: int, lot_id: int,
+) -> int:
+    """What is still owed of the debt liability lot ``lot_id`` opened the
+    month with (#641): its opening balance less every payment into it since
+    (the legs after ``opening_event``), and never more than it owes now. The
+    month's new charges are no part of it, so neither a payment in full nor
+    the interest depends on whether the charges have posted yet."""
+    paid = con.execute(
+        "SELECT COALESCE(SUM(amount), 0) FROM transfer_event WHERE id > ? AND to_lot_id = ?",
+        (opening_event, lot_id),
+    ).fetchone()[0]
+    return max(0, min(opening_balances.get(lot_id, 0) - paid, balances.get(lot_id, 0)))
 
 
 def _past_person_lifespan(

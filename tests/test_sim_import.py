@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pandas as pd
 import pytest
-from click.testing import CliRunner
+from click.testing import CliRunner, Result
 
 from analysis.cli import main
 from analysis.expenses.baseline import Occasional
@@ -298,7 +298,7 @@ def test_renames_follow_into_the_saved_mappings_and_say_so(
 # ---------- transactions ----------
 
 def _transactions(data: Path, export: Path, *args: str, input: str | None = None):  # noqa: A002
-    return _import(data, "transactions", str(export), "--from-account", "Asset_Checking", *args,
+    return _import(data, "transactions", str(export), "--from", "Asset_Checking", *args,
                    input=input)
 
 
@@ -389,7 +389,7 @@ def test_sim_import_transactions_yearly_script_adds_the_rules_and_leaves_the_pay
     script = tmp_path / "yearly rules.sh"
 
     result = _import(test_data_dir, "transactions", str(quicken_year_export), "--yearly-script", str(script),
-                     "--from-account", "Asset_Checking")
+                     "--from", "Asset_Checking")
 
     # It implies --summary: nothing is written but the script.
     assert result.exit_code == 0, result.output
@@ -471,14 +471,14 @@ def test_sim_import_transactions_yearly_script_leaves_what_it_cannot_know_to_be_
 
     # An account to pay from is checked as an import's is, though a summary needs none.
     unknown = _import(test_data_dir, "transactions", str(quicken_year_export), "--yearly-script", str(script),
-                      "--overwrite", "--from-account", "Asset_Nowhere")
+                      "--overwrite", "--from", "Asset_Nowhere")
     assert unknown.exit_code != 0 and "unknown from account or chain: 'Asset_Nowhere'" in unknown.output
     no_lot = _import(test_data_dir, "transactions", str(quicken_year_export), "--yearly-script", str(script),
-                     "--overwrite", "--from-account", "Asset_Brokerage_Joint")
+                     "--overwrite", "--from", "Asset_Brokerage_Joint")
     assert no_lot.exit_code != 0 and "needs its lot named with --from-lot" in no_lot.output
     lot_alone = _import(test_data_dir, "transactions", str(quicken_year_export), "--yearly-script", str(script),
                         "--overwrite", "--from-lot", "default")
-    assert lot_alone.exit_code == 2 and "--from-lot goes with --from-account" in lot_alone.output
+    assert lot_alone.exit_code == 2 and "--from-lot goes with --from" in lot_alone.output
     assert "EDIT IT BEFORE RUNNING IT" in script.read_text(encoding="utf-8")
 
     # Two months of transactions have no candidates, and write no script.
@@ -565,7 +565,7 @@ def test_yearly_script_counts_a_bill_that_moved_a_month_once() -> None:
 def test_yearly_script_keeps_a_payee_s_line_break_out_of_the_commands() -> None:
     text, _ = _script(_seen("Home\nRepair", "Roofing Co.\ntouch /tmp/x #", (date(2027, 5, 1), 900_000), repeats=False))
 
-    block = text.split("\nyearly() {")[1].split("\n}\n", 1)[1]
+    block = text.split("\npay_card() {")[1].split("\n}\n", 1)[1]
     assert all(line.startswith("#") for line in block.splitlines() if line)
     assert "'Yearly: Roofing Co. touch /tmp/x # (Home Repair)'" in block
 
@@ -663,7 +663,7 @@ def test_sim_import_transactions_needs_the_account_to_pay_from_before_it_reads_a
     result = _import(test_data_dir, "transactions", str(quicken_transaction_export))
 
     assert result.exit_code == 2
-    assert "Missing option '--from-account'" in result.output and "category map" not in result.output
+    assert "Missing option '--from'" in result.output and "category map" not in result.output
 
 
 @pytest.mark.usefixtures("quicken_category_map", "at_a_terminal")
@@ -688,9 +688,9 @@ def test_sim_import_transactions_holds_a_given_account_to_what_one_asked_for_wou
         return _import(test_data_dir, "transactions", str(quicken_transaction_export), *args)
 
     # Each is refused before the file is read: no expense accounts are saved, which would warn.
-    mistyped = run("--from-account", "Asset_Nowhere")
+    mistyped = run("--from", "Asset_Nowhere")
     assert mistyped.exit_code != 0 and "unknown from account or chain: 'Asset_Nowhere'" in mistyped.output
-    no_lot = run("--from-account", "Asset_Brokerage_Joint")
+    no_lot = run("--from", "Asset_Brokerage_Joint")
     assert no_lot.exit_code != 0 and "needs its lot named with --from-lot" in no_lot.output
     assert "warning" not in mistyped.output + no_lot.output
 
@@ -1361,7 +1361,7 @@ def test_sim_import_transactions_shows_the_rules_a_scenario_inherits(
     write_import_map("expense_accounts.csv", "Food,Expense_Living\nGifts,-\n")
 
     result = _import(test_data_dir, "transactions", str(quicken_transaction_export),
-                     "--from-account", "Asset_Checking", "--dry-run", scenario="child")
+                     "--from", "Asset_Checking", "--dry-run", scenario="child")
 
     assert result.exit_code == 0, result.output
     lines = {line.split()[0]: line.split()[1:] for line in result.output.splitlines()
@@ -1875,7 +1875,7 @@ def test_sim_import_transactions_makes_one_set_of_rules_from_several_sources(
     write_import_map("wells_fargo/payees.csv", _BANK_PAYEES)
 
     result = _import(test_data_dir, "transactions", str(bank_checking_export),
-                     str(quicken_transaction_export), "--from-account", "Asset_Checking")
+                     str(quicken_transaction_export), "--from", "Asset_Checking")
 
     assert result.exit_code == 0, result.output
     rules = _generated(test_data_dir)
@@ -1894,7 +1894,7 @@ def test_sim_import_transactions_reads_a_cards_categories_and_its_payees_over_th
     write_import_map("amex/payees.csv", "harbor cafe,Treats\n")
 
     result = _import(test_data_dir, "transactions", str(detailed), str(february),
-                     "--from-account", "Asset_Checking")
+                     "--from", "Asset_Checking")
 
     assert result.exit_code == 0, result.output
     assert "1 transaction(s) that an earlier file had too" in result.output
@@ -1913,13 +1913,13 @@ def test_sim_import_transactions_finds_a_short_card_files_rows_by_payee_beside_a
 
     # The short download's charge has no category, and isn't quietly left without one.
     refused = _import(test_data_dir, "transactions", str(detailed), str(short),
-                      "--from-account", "Asset_Checking")
+                      "--from", "Asset_Checking")
     assert refused.exit_code != 0
     assert "1 payee(s) with no category" in refused.output and "CORNER MARKET 204" in refused.output
 
     write_import_map("amex/payees.csv", "corner market,Food\n")
     result = _import(test_data_dir, "transactions", str(detailed), str(short),
-                     "--from-account", "Asset_Checking")
+                     "--from", "Asset_Checking")
     assert result.exit_code == 0, result.output
     # (80 + 40) in January and 60 in February.
     assert {name: rule["amount"] for name, rule in _generated(test_data_dir).items()} == {
@@ -1934,7 +1934,7 @@ _BOTH_ACCOUNTS = ("Food,Expense_Living\nGifts,Expense_Living\nUtilities,Expense_
 
 def _with_budget(data: Path, export: Path, budget: Path, *args: str, input: str | None = None):  # noqa: A002
     return _import(data, "transactions", str(export), "--budget", str(budget),
-                   "--from-account", "Asset_Checking", *args, input=input)
+                   "--from", "Asset_Checking", *args, input=input)
 
 
 def _amounts(data: Path) -> dict[str, tuple[str, str]]:
@@ -2122,7 +2122,7 @@ def test_sim_import_transactions_with_a_budget_refuses_a_choice_it_cannot_read(
 
 
 def _budget(data: Path, export: Path, *args: str, input: str | None = None):  # noqa: A002
-    return _import(data, "budget", str(export), "--from-account", "Asset_Checking", *args, input=input)
+    return _import(data, "budget", str(export), "--from", "Asset_Checking", *args, input=input)
 
 
 _BUDGET_ACCOUNTS = "Food,Expense_Living\nUtilities,Expense_Housing\nProperty Tax,Expense_Housing\n"
@@ -2251,7 +2251,7 @@ def test_sim_import_budget_from_a_chain_needs_an_income_account_only_for_income(
 ) -> None:
     write_import_map("expense_accounts.csv", _BUDGET_ACCOUNTS)
     write_import_map("income_accounts.csv", "Paycheck,Income_Salary_Alice\n")
-    chain = ("budget", str(quicken_budget_full_export), "--from-account", "asset_checking_liquidity")
+    chain = ("budget", str(quicken_budget_full_export), "--from", "asset_checking_liquidity")
 
     spending = _import(test_data_dir, *chain)
     assert spending.exit_code == 0, spending.output
@@ -2273,7 +2273,7 @@ def test_sim_import_budget_pays_income_into_the_lot_the_spending_comes_from(
     write_import_map("income_accounts.csv", "Paycheck,Income_Salary_Alice\n")
 
     result = _import(test_data_dir, "budget", str(quicken_budget_full_export), "--income",
-                     "--from-account", "Asset_Brokerage_Joint", "--from-lot", "default")
+                     "--from", "Asset_Brokerage_Joint", "--from-lot", "default")
 
     assert result.exit_code == 0, result.output
     assert [(row["to_account"], row["to_lot"]) for row in _income_rules(test_data_dir)] == [
@@ -2296,6 +2296,269 @@ def test_a_rename_gives_an_income_category_named_like_the_account_a_row(
     assert result.exit_code == 0, result.output
     assert (test_data_dir / "imports" / "income_accounts.csv").read_text(encoding="utf-8") \
         == "category,account\nPaycheck,Income_Pay_Alice\n"
+
+
+# ---------- a card's charges are paid from the card (issue #641) ----------
+
+_CARD_ROW = "Rewards Card,,map,Liability_Card,,\n"
+
+
+def _rules(data: Path) -> dict[str, dict[str, str]]:
+    path = data / "scenarios" / "retire_alice" / "scheduled.csv"
+    with path.open(newline="", encoding="utf-8") as f:
+        return {r["name"]: r for r in csv.DictReader(f)}
+
+
+@pytest.fixture
+def card_import(
+    test_data_dir: Path, quicken_card_export: Path, credit_card: str, quicken_category_map: Path,
+    write_import_map: MapWriter,
+) -> Callable[..., Result]:
+    """``sim import transactions`` of ``quicken_card_export`` into the
+    private copy, which has the ``credit_card``, paid from checking."""
+    write_import_map("expense_accounts.csv", "Food,Expense_Living\nGifts,Expense_Living\n")
+
+    def run(*args: str, input: str | None = None) -> Result:  # noqa: A002
+        return _import(test_data_dir, "transactions", str(quicken_card_export),
+                       *(() if "--summary" in args else ("--from", "Asset_Checking")), *args, input=input)
+    return run
+
+
+def test_sim_import_transactions_charges_a_cards_spending_to_the_card_and_pays_it_in_full(
+    test_data_dir: Path, card_import: Callable[..., Result], write_import_map: MapWriter,
+    load_test_copy: Callable[[], object],
+) -> None:
+    write_import_map("quicken/accounts.csv", _CARD_ROW)
+
+    result = card_import()
+
+    assert result.exit_code == 0, result.output
+    # Two months: food 400 from checking and 440 on the card; the gift on the card alone.
+    assert {name: (rule["from_account"], rule["amount"]) for name, rule in _generated(test_data_dir).items()} == {
+        "baseline_expense_food": ("Asset_Checking", "200.00"),
+        "baseline_expense_food__liability_card": ("Liability_Card", "220.00"),
+        "baseline_expense_gifts__liability_card": ("Liability_Card", "30.00"),
+    }
+    payment = _rules(test_data_dir)["card_payment_liability_card"]
+    assert (payment["from_account"], payment["to_account"], payment["amount"], payment["cadence"],
+            payment["tags"]) == ("Asset_Checking", "Liability_Card", "", "monthly", "generated:card_payment")
+    assert "card_payment_liability_card: pays Liability_Card in full each month from Asset_Checking" \
+        in result.output
+    assert "sim scheduled add --kind card_interest" in result.output
+    load_test_copy()
+
+
+def test_sim_import_transactions_writes_a_cards_payment_once_and_leaves_the_households_own(
+    test_data_dir: Path, card_import: Callable[..., Result], write_import_map: MapWriter,
+    update_scheduled: Callable[..., None],
+) -> None:
+    write_import_map("quicken/accounts.csv", _CARD_ROW)
+    assert card_import().exit_code == 0
+    update_scheduled("card_payment_liability_card", amount="150.00")
+
+    again = card_import()
+
+    assert again.exit_code == 0, again.output
+    assert "card_payment_liability_card" not in again.output
+    assert _rules(test_data_dir)["card_payment_liability_card"]["amount"] == "150.00"
+    assert len(_generated(test_data_dir)) == 3
+
+
+def test_sim_import_transactions_adds_no_payment_to_a_card_a_rule_already_pays(
+    test_data_dir: Path, card_import: Callable[..., Result], write_import_map: MapWriter,
+    append_scheduled_row: Callable[..., None],
+) -> None:
+    write_import_map("quicken/accounts.csv", _CARD_ROW)
+    append_scheduled_row(name="my_card_bill", from_account="Asset_Savings", to_account="Liability_Card",
+                         amount_rule_kind="fixed_amount", amount="500.00", tax_character="none",
+                         start="2026-05-31")
+
+    result = card_import()
+
+    assert result.exit_code == 0, result.output
+    assert "card_payment_liability_card" not in _rules(test_data_dir)
+
+
+def test_sim_import_transactions_dry_run_shows_the_card_and_writes_nothing(
+    test_data_dir: Path, card_import: Callable[..., Result], write_import_map: MapWriter,
+) -> None:
+    write_import_map("quicken/accounts.csv", _CARD_ROW)
+
+    result = card_import("--dry-run")
+
+    assert result.exit_code == 0, result.output
+    assert "baseline_expense_food__liability_card" in result.output
+    assert "card_payment_liability_card: pays Liability_Card in full" in result.output
+    assert not _generated(test_data_dir) and "card_payment_liability_card" not in _rules(test_data_dir)
+
+
+def test_sim_import_transactions_notes_a_card_with_no_account_away_from_a_terminal(
+    test_data_dir: Path, card_import: Callable[..., Result],
+) -> None:
+    result = card_import()
+
+    assert result.exit_code == 0, result.output
+    assert ("note: Liability_Card has no outside account mapped to it, and Checking (quicken), "
+            "Rewards Card (quicken) is mapped to nothing") in result.output
+    assert {name: rule["from_account"] for name, rule in _generated(test_data_dir).items()} == {
+        "baseline_expense_food": "Asset_Checking", "baseline_expense_gifts": "Asset_Checking"}
+
+
+@pytest.mark.usefixtures("at_a_terminal")
+def test_sim_import_transactions_asks_which_account_is_a_card_until_each_card_has_one(
+    test_data_dir: Path, card_import: Callable[..., Result],
+) -> None:
+    # Checking isn't one (blank); the card is, and after it nothing is left to ask.
+    result = card_import(input="\nLiability_Card\n")
+
+    assert result.exit_code == 0, result.output
+    assert "'Checking' (quicken) has no row" in result.output
+    assert _generated(test_data_dir)["baseline_expense_gifts__liability_card"]["from_account"] == "Liability_Card"
+    saved = test_data_dir / "imports" / "quicken" / "accounts.csv"
+    assert saved.read_text(encoding="utf-8").splitlines()[1:] == ["Rewards Card,,map,Liability_Card,,"]
+
+    again = card_import()
+    assert again.exit_code == 0 and "has no row" not in again.output
+
+
+@pytest.mark.usefixtures("at_a_terminal")
+def test_sim_import_transactions_asks_once_about_an_account_named_as_no_card(
+    test_data_dir: Path, card_import: Callable[..., Result], credit_card: str,
+    retire_alice_csv: Callable[[str], Path],
+) -> None:
+    # A second card that no file has: without it named, checking would be asked about at every import.
+    accounts = retire_alice_csv("accounts.csv")
+    lines = accounts.read_text(encoding="utf-8").splitlines()
+    accounts.write_text("\n".join([*lines, next(
+        line for line in lines if line.startswith(f"{credit_card},")).replace(credit_card, "Liability_Card_Two")])
+        + "\n", encoding="utf-8")
+
+    result = card_import(input="Asset_Checking\nLiability_Card\n")
+
+    assert result.exit_code == 0, result.output
+    saved = test_data_dir / "imports" / "quicken" / "accounts.csv"
+    assert saved.read_text(encoding="utf-8").splitlines()[1:] == [
+        "Checking,,map,Asset_Checking,,", "Rewards Card,,map,Liability_Card,,"]
+    again = card_import()
+    assert again.exit_code == 0 and "has no row" not in again.output
+
+
+def test_card_payments_see_a_payment_through_a_chain_and_a_card_only_yearly_rules_charge(
+    test_data_dir: Path, credit_card: str, append_scheduled_row: Callable[..., None],
+) -> None:
+    scenario = test_data_dir / "scenarios" / "retire_alice"
+    cards = {("quicken", "Rewards Card"): (credit_card, "")}
+
+    def payments(chains: Mapping[str, Collection[str]]) -> list[str]:
+        return [row["name"] for row in cli._card_payments(
+            scenario, [], cards, "Asset_Checking", "", "2026-05-31", chains)]
+
+    # Nothing charges the card: nothing to pay.
+    assert payments({}) == []
+    # A yearly rule the script added charges it, though this run's monthly rules don't.
+    append_scheduled_row(name="yearly_mutual_insurance", from_account=credit_card, to_account="Expense_Living",
+                         amount_rule_kind="fixed_amount", amount="900.00", tax_character="none",
+                         start="2026-05-31", cadence="annual", month_of_year="3")
+    assert payments({}) == ["card_payment_liability_card"]
+    # The chains are the scenario's own, each with the accounts it reaches.
+    assert cli._chain_accounts(test_data_dir, "retire_alice")["asset_checking_liquidity"] >= {
+        "Asset_Savings", "Asset_TraditionalIRA_Alice"}
+    # The household pays it through a chain that reaches it: its own payment stays the only one.
+    append_scheduled_row(name="my_card_bill", from_account="Asset_Checking", to_account="pay_card",
+                         amount_rule_kind="fixed_amount", amount="300.00", tax_character="none",
+                         start="2026-05-31")
+    assert payments({"pay_card": {credit_card}}) == []
+
+
+@pytest.mark.slow
+def test_yearly_script_run_charges_the_card_and_adds_its_payment(
+    test_data_dir: Path, credit_card: str, tmp_path: Path, load_test_copy: Callable[[], object],
+) -> None:
+    charged = dataclasses.replace(
+        _seen("Insurance", "Mutual Insurance", (date(2026, 3, 1), 90_000)), accounts=(("card", "Rewards Card"),))
+    text, _, _ = import_yearly.script(
+        [charged], data_dir=test_data_dir, scenario="retire_alice", start="2026-05",
+        from_account="Asset_Checking", expense_accounts={"Insurance": "Expense_Living"},
+        accounts=["Expense_Living"], source="card", cards={("card", "Rewards Card"): (credit_card, "")},
+        sim=str(Path(sys.executable).parent / "sim"))
+    script = tmp_path / "yearly.sh"
+    script.write_text(text, encoding="utf-8")
+
+    ran = subprocess.run(["sh", str(script)], capture_output=True, text=True, check=False)
+
+    assert ran.returncode == 0, ran.stdout + ran.stderr
+    rules = _rules(test_data_dir)
+    assert rules["yearly_mutual_insurance"]["from_account"] == credit_card
+    payment = rules["card_payment_liability_card"]
+    assert (payment["from_account"], payment["to_account"], payment["amount"], payment["tags"]) == (
+        "Asset_Checking", credit_card, "", "generated:card_payment")
+    load_test_copy()
+    # Run again, it adds neither a second time.
+    rerun = subprocess.run(["sh", str(script)], capture_output=True, text=True, check=False)
+    assert rerun.stdout.splitlines() == [
+        "already added: yearly_mutual_insurance", "already added: card_payment_liability_card"]
+
+
+def test_sim_import_transactions_summary_shows_what_each_card_was_charged(
+    card_import: Callable[..., Result], write_import_map: MapWriter,
+) -> None:
+    write_import_map("quicken/accounts.csv", _CARD_ROW)
+
+    result = card_import("--summary")
+
+    assert result.exit_code == 0, result.output
+    assert ("charged to Liability_Card, and paid from it: 250.00 a month (Food 220.00, Gifts 30.00)"
+            in result.output)
+
+
+def test_sim_import_transactions_pays_a_budgets_category_as_most_of_it_was_paid(
+    test_data_dir: Path, card_import: Callable[..., Result], write_import_map: MapWriter,
+    quicken_budget_full_export: Path,
+) -> None:
+    write_import_map("quicken/accounts.csv", _CARD_ROW)
+    write_import_map("expense_accounts.csv", _BOTH_ACCOUNTS)
+
+    result = card_import("--budget", str(quicken_budget_full_export), "--prefer", "budget")
+
+    assert result.exit_code == 0, result.output
+    # The card paid 440 of food's 840, so the budget's food is the card's.
+    assert _generated(test_data_dir)["baseline_expense_food"]["from_account"] == "Liability_Card"
+    assert _generated(test_data_dir)["baseline_expense_utilities"]["from_account"] == "Asset_Checking"
+    assert _rules(test_data_dir)["card_payment_liability_card"]["amount"] == ""
+
+
+def test_yearly_script_pays_a_payee_from_the_card_all_of_it_was_charged_to() -> None:
+    cards = {("card", "Rewards Card"): ("Liability_Card", "")}
+    charged = dataclasses.replace(
+        _seen("Insurance", "Mutual Insurance", (date(2027, 3, 1), 90_000)),
+        accounts=(("card", "Rewards Card"),))
+    partly = dataclasses.replace(
+        _seen("Taxes", "County Tax", (date(2027, 4, 1), 210_000)),
+        accounts=(("card", "Rewards Card"), ("bank", "Checking")))
+    text, _, _ = import_yearly.script(
+        [charged, partly], data_dir=Path("/data"), scenario="retire_alice", start="2028-01",
+        from_account="Asset_Checking", expense_accounts={}, accounts=["Insurance", "Taxes"],
+        source="bank", cards=cards)
+
+    assert "yearly yearly_mutual_insurance Insurance 900.00 3 2027-03 " \
+           "'Yearly: Mutual Insurance (Insurance)' Liability_Card\n" in text
+    assert "# Charged to a card only in part: the rules below pay from FROM.\n" in text
+    assert "yearly yearly_county_tax Taxes 2100.00 4 2027-04 'Yearly: County Tax (Taxes)'\n" in text
+    assert "if [ $# -ge 7 ]; then from=$7; lot=${8:-}; else from=$FROM; lot=$FROM_LOT; fi" in text
+    # The card these rules charge is paid: the import writes a payment only for a card its
+    # monthly rules charge.
+    assert text.rstrip().endswith("\npay_card card_payment_liability_card Liability_Card")
+    # Not when the scenario has the rule, and commented out with the rules that wait.
+    again, _, _ = import_yearly.script(
+        [charged], data_dir=Path("/data"), scenario="retire_alice", start="2028-01",
+        from_account="Asset_Checking", expense_accounts={}, accounts=["Insurance"],
+        source="bank", cards=cards, taken=["card_payment_liability_card"])
+    assert "\npay_card " not in again and "# pay_card " not in again
+    waiting, _, _ = import_yearly.script(
+        [dataclasses.replace(charged, repeats=False)], data_dir=Path("/data"), scenario="retire_alice",
+        start="2028-01", from_account="Asset_Checking", expense_accounts={}, accounts=["Insurance"],
+        source="bank", cards=cards)
+    assert waiting.rstrip().endswith("\n# pay_card card_payment_liability_card Liability_Card")
 
 
 # ---------- OFX and QFX (#618) ----------

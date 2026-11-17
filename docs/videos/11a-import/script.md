@@ -453,7 +453,7 @@ Enter
 Sleep 2s
 Show
 Sleep 500ms
-Type "sim import transactions ~/Downloads/transactions-2025.csv --from-account Asset_Checking"
+Type "sim import transactions ~/Downloads/transactions-2025.csv --from Asset_Checking"
 Sleep 400ms
 Enter
 Sleep 7s

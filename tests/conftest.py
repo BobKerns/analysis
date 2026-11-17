@@ -2374,6 +2374,51 @@ def quicken_transaction_export(tmp_path: Path) -> Path:
 
 
 @pytest.fixture
+def quicken_card_export(tmp_path: Path) -> Path:
+    """A Quicken "Transaction Export" of two accounts over two months of
+    2026: "Checking" pays for groceries (400 in all) and the card's bill;
+    "Rewards Card" is charged groceries and coffee (440) and a gift (60)."""
+    path = tmp_path / "card_export.csv"
+    path.write_text(
+        '"Account",,Date,Entered,Posted,Action,Payee,Category,Tags,Transfer,Memo/Notes,Amount\n'
+        '"Checking",,,,,,,,,,,\n'
+        ',,"2026-01-02","","","","Market","Groceries","","","","-300.00"\n'
+        ',,"2026-02-02","","","","Market","Groceries","","","","-100.00"\n'
+        ',,"2026-02-20","","","","Rewards Card","","","[Rewards Card]","","-40.00"\n'
+        '"Total Checking",,,,,,,,,,,"-440.00"\n'
+        '"Rewards Card",,,,,,,,,,,\n'
+        ',,"2026-01-09","","","","Cafe","Coffee Shops","","","","-40.00"\n'
+        ',,"2026-02-03","","","","Market","Groceries","","","","-400.00"\n'
+        ',,"2026-02-14","","","","Florist","Gifts","","","","-60.00"\n'
+        ',,"2026-02-20","","","","Checking","","","[Checking]","","40.00"\n'
+        '"Total Rewards Card",,,,,,,,,,,"-460.00"\n',
+        encoding="utf-8",
+    )
+    return path
+
+
+@pytest.fixture
+def credit_card(
+    retire_alice_csv: Callable[[str], Path], add_account_value: Callable[..., None],
+) -> str:
+    """Add ``Liability_Card`` to the private retire_alice copy: a credit card
+    owing $1,000, with ``Expense_Interest_Card`` for its interest. Returns
+    the card's name."""
+    accounts = pd.read_csv(retire_alice_csv("accounts.csv"), dtype=str, keep_default_na=False)
+    for name, kind, subkind in (
+        ("Liability_Card", "liability", "credit_card"),
+        ("Expense_Interest_Card", "expense", "interest_expense"),
+    ):
+        accounts.loc[len(accounts)] = {
+            **dict.fromkeys(accounts.columns, ""), "name": name, "kind": kind, "subkind": subkind,
+            "owner": "joint", "tax_treatment": "none", "meta_json": "{}",
+        }
+    accounts.to_csv(retire_alice_csv("accounts.csv"), index=False)
+    add_account_value("Liability_Card", opening_balance="1000.00")
+    return "Liability_Card"
+
+
+@pytest.fixture
 def quicken_year_export(tmp_path: Path) -> Path:
     """A Quicken "Transaction Export" of a whole year, 2026: groceries
     every month, a car insurance premium in March and September, one
