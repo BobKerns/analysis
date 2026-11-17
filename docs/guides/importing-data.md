@@ -124,7 +124,10 @@ accounts hold. Export the snapshot as of the scenario's first day.
   filled from a [brokerage file](#brokerage-files) or typed.
 - An outside account the scenario has no account for can be added from
   the question: answer with a new name, and it asks what `sim account add`
-  asks (kind, subkind, owner) and adds the account before going on. It
+  asks (kind, subkind, owner) and adds the account before going on. For an
+  outside account that is one balance it also asks what to call the
+  account's lot: Enter for `default`, or a name of your own such as
+  `checking`, which saves renaming it when the account gets a second. It
   asks first whether to add it, and takes Enter as no, since a new name
   may be a slip; `back` at the account's kind returns to the question. A dry
   run adds nothing, so it offers only the accounts there are. A name the

@@ -958,7 +958,8 @@ def test_sim_import_holdings_adds_an_account_named_at_the_mapping_question(
         "quicken/accounts.csv",
         "Asset_Checking,,map,Asset_Checking,,\nAsset_Brokerage_Joint,,skip,,,\nLiability_Mortgage,,skip,,,\n")
     # The outside IRA is a new savings account here: its name, yes, then what `sim account add` asks.
-    answers = "Asset_Savings_New\ny\nasset\ncash\njoint\n"
+    # Its lot is named as it is made, so it needn't be renamed when the account has two.
+    answers = "Asset_Savings_New\ny\nasset\ncash\njoint\nsavings\n"
 
     result = _import(test_data_dir, "holdings", str(quicken_net_worth_export), input=answers)
 
@@ -969,8 +970,10 @@ def test_sim_import_holdings_adds_an_account_named_at_the_mapping_question(
     with retire_alice_csv("accounts.csv").open(newline="", encoding="utf-8") as f:
         added = next(row for row in csv.DictReader(f) if row["name"] == "Asset_Savings_New")
     assert (added["kind"], added["subkind"], added["owner"]) == ("asset", "cash", "joint")
-    assert _lots(test_data_dir)["Asset_Savings_New"]["opening_balance"] == "510000.00"
-    assert "Asset_TraditionalIRA_Alice,,map,Asset_Savings_New,," in saved.read_text(encoding="utf-8")
+    assert "name of Asset_Savings_New's lot (a name of your own, such as checking) [default]:" in result.output
+    lot = _lots(test_data_dir)["Asset_Savings_New"]
+    assert (lot["lot"], lot["opening_balance"]) == ("savings", "510000.00")
+    assert "Asset_TraditionalIRA_Alice,,map,Asset_Savings_New,savings," in saved.read_text(encoding="utf-8")
 
 
 @pytest.mark.usefixtures("at_a_terminal")
@@ -983,7 +986,8 @@ def test_sim_import_holdings_asks_again_for_a_slip_at_a_new_account_s_questions(
         "Asset_Checking,,map,Asset_Checking,,\nAsset_Brokerage_Joint,,skip,,,\nLiability_Mortgage,,skip,,,\n")
     # An expense account's name can't take the balance or be added; then a
     # new name, with a slip at its subkind and one at its owner.
-    answers = "Expense_Living\nAsset_Savings_New\ny\nasset\nnothing\ncash\nnobody\njoint\n"
+    # Enter at the lot's name leaves it the default one, which the row needn't name.
+    answers = "Expense_Living\nAsset_Savings_New\ny\nasset\nnothing\ncash\nnobody\njoint\n\n"
 
     result = _import(test_data_dir, "holdings", str(quicken_net_worth_export), input=answers)
 
@@ -3273,6 +3277,21 @@ def test_sim_import_holdings_asks_which_lot_a_bank_balance_goes_into_and_adds_a_
     assert _saved(test_data_dir, "ofx") == [
         "First Example Bank checking ...4321,,map,Asset_Checking,checking,",
         "First Example Bank savings ...4321,,map,Asset_Checking,savings,"]
+
+
+def test_sim_import_says_a_file_that_is_not_text_is_no_exported_report(
+    test_data_dir: Path, quicken_transaction_export: Path, rewrite_download: Rewrite,
+) -> None:
+    # A program's own data file, given where a report was meant, under each named source.
+    binary = rewrite_download(quicken_transaction_export, lambda _: b"\xbc\x01\x00\xfe data", name="family.qxf")
+    for command in ("transactions", "holdings", "budget"):
+        result = _import(test_data_dir, command, str(binary), "--source", "quicken", "--from", "Asset_Checking")
+        if command == "holdings":
+            result = _import(test_data_dir, command, str(binary), "--source", "quicken")
+        assert result.exit_code != 0, result.output
+        assert "codec" not in result.output
+        assert f"{binary} isn't a text file, so it isn't a report exported as CSV" in result.output
+        assert "'sim import sources' lists what each source reads" in result.output
 
 
 def _downloaded_in_june(raw: bytes) -> bytes:
