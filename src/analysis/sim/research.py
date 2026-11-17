@@ -648,18 +648,41 @@ class RunResult:
     seconds: float = 0.0
 
 
+# Where Claude Code's installers put ``claude``. The builder's hourly timer
+# runs with launchd's or cron's bare PATH (/usr/bin:/bin:/usr/sbin:/sbin),
+# which has none of them (#644).
+CLAUDE_PLACES = ("~/.local/bin/claude", "~/.claude/local/claude", "/opt/homebrew/bin/claude",
+                 "/usr/local/bin/claude")
+
+
+def find_claude(recorded: str | None = None, *, path: bool = True) -> str | None:
+    """Claude Code's ``claude``: on PATH (unless ``path`` is false), else at
+    ``recorded`` (where ``sim builder install`` found it), else in one of
+    :data:`CLAUDE_PLACES`; None when it's in none of them."""
+    if path and (found := shutil.which("claude")):
+        return found
+    for place in ([recorded] if recorded else []) + list(CLAUDE_PLACES):
+        candidate = Path(place).expanduser()
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return str(candidate)
+    return None
+
+
 def run_skill(
     subject: str, key: str, work_dir: Path, plugin_dir: Path, *, kind: str | None = None,
-    timeout_minutes: float = DEFAULT_TIMEOUT_MINUTES, claude: str = "claude",
+    timeout_minutes: float = DEFAULT_TIMEOUT_MINUTES, claude: str | None = None,
     progress: Callable[[str], None] = print,
 ) -> RunResult:
     """Run the skill for ``kind`` (either, when ``None``) on ``subject``, a
     ticker or a name, with ``work_dir`` as its folder and ``key`` starting
     its files, reporting each tool call through ``progress``. Stops the run
-    after ``timeout_minutes``."""
-    executable = shutil.which(claude)
+    after ``timeout_minutes``. ``claude`` is where Claude Code was last found
+    (:func:`find_claude`), for a caller whose PATH may lack it."""
+    executable = find_claude(claude)
     if executable is None:
-        raise ResearchError(f"{claude!r} isn't on PATH; install Claude Code (docs/guides/finance-research.md)")
+        raise ResearchError("'claude' isn't on PATH or in Claude Code's usual places; install Claude "
+                            "Code (docs/guides/finance-research.md). For the background builder, run "
+                            "`sim builder install` again from a shell where `claude` works.")
     command = claude_command(subject, key, plugin_dir, work_dir, executable, kind)
     start = time.monotonic()
     # stderr goes to a file: a pipe nobody reads until the end could fill and

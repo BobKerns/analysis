@@ -1438,6 +1438,11 @@ cycle takes longer; research one that can't wait by hand. `sim builder
 status` shows the last symbol researched, the next one due, the month's
 cost and any that fail; `sim builder install --no-research` turns it off.
 
+The hourly timer doesn't get your shell's PATH, so `sim builder install`
+records where it finds `claude`; if research fails with "'claude' isn't on
+PATH", run `sim builder install` again from a shell where `claude` works.
+`sim builder status` shows the `claude` the research will run.
+
 A symbol nothing can price, or an obsolete one, can be marked so neither
 the price fetch nor the research takes it:
 

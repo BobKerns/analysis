@@ -17,7 +17,7 @@ import pytest
 from click.testing import CliRunner
 
 from analysis.cli import main
-from analysis.sim import builder, prices, research_schedule, symbols
+from analysis.sim import builder, prices, research, research_schedule, symbols
 from analysis.sim.research_schedule import RunReport
 
 NY = research_schedule.MARKET
@@ -292,7 +292,7 @@ def test_status_shows_the_last_run_its_cost_and_the_next(
     research_schedule.research(data, _worktree(data), now=NOW, runner=_runner(research_bundles))
     lines = research_schedule.describe(research_schedule.read_state(data), data, NOW)
     assert lines[0].startswith("research: last ABCDX on ") and "wrote new weights; $1.25" in lines[0]
-    assert lines[1] == "research next: nothing due"
+    assert lines[2] == "research next: nothing due"
     assert any(line.startswith("research cost, last 30 days: $1.25 over 1 run(s)") for line in lines)
 
 
@@ -303,6 +303,30 @@ def test_install_records_whether_to_research(code_repo, data_repo_sim: Path, mon
     assert _config(data_repo_sim)["research"] is False
     builder.install(data_repo_sim)  # again: kept
     assert _config(data_repo_sim)["research"] is False
+
+
+def test_install_records_where_claude_is_for_the_timer(
+    code_repo, data_repo_sim: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    del code_repo
+    monkeypatch.setattr(builder, "pair_problems", lambda *_: [])
+    monkeypatch.setattr(research, "CLAUDE_PLACES", ())
+    claude = tmp_path / "bin" / "claude"
+    claude.parent.mkdir()
+    claude.write_text("#!/bin/sh\n")
+    claude.chmod(0o755)
+    bare = "/usr/bin:/bin:/usr/sbin:/sbin"  # launchd's, for git
+    monkeypatch.setenv("PATH", f"{claude.parent}:{bare}")
+    assert f"runs Claude Code at {claude}" in builder.install(data_repo_sim)
+    assert _config(data_repo_sim)["claude"] == str(claude)
+    # The timer's bare PATH lacks it: install again from there keeps it, and status finds it.
+    monkeypatch.setenv("PATH", bare)
+    builder.install(data_repo_sim)
+    assert _config(data_repo_sim)["claude"] == str(claude)
+    lines = research_schedule.describe({}, data_repo_sim, NOW, claude=str(claude))
+    assert f"research runs: {claude}" in lines
+    assert any(line.startswith("research can't find claude")
+               for line in research_schedule.describe({}, data_repo_sim, NOW))
 
 
 # -- `sim symbol research` commits ------------------------------------------------------

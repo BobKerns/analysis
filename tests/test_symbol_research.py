@@ -525,9 +525,33 @@ def test_a_bundle_folder_with_no_files_is_a_clear_error(test_data_dir: Path, tmp
 def test_without_claude_on_path_it_says_so(test_data_dir: Path, monkeypatch: pytest.MonkeyPatch,
                                            tmp_path: Path) -> None:
     monkeypatch.setenv("PATH", str(tmp_path))
+    monkeypatch.setattr(research, "CLAUDE_PLACES", ())
     result = _sim(test_data_dir, "ABCDX", "--yes", "--no-open")
     assert result.exit_code != 0
-    assert "isn't on PATH" in result.output
+    assert "isn't on PATH or in Claude Code's usual places" in result.output
+
+
+def test_claude_is_found_off_path_where_it_was_recorded_or_installed(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    def executable(where: Path) -> Path:
+        where.parent.mkdir(parents=True, exist_ok=True)
+        where.write_text("#!/bin/sh\n")
+        where.chmod(0o755)
+        return where
+
+    monkeypatch.setenv("PATH", str(tmp_path / "empty"))  # as under launchd or cron (#644)
+    home = executable(tmp_path / "home" / ".local" / "bin" / "claude")
+    monkeypatch.setattr(research, "CLAUDE_PLACES", (str(home),))
+    recorded = executable(tmp_path / "elsewhere" / "claude")
+    assert research.find_claude(str(recorded)) == str(recorded)
+    assert research.find_claude(str(tmp_path / "gone" / "claude")) == str(home)
+    on_path = executable(tmp_path / "bin" / "claude")
+    monkeypatch.setenv("PATH", str(on_path.parent))
+    assert research.find_claude(str(recorded)) == str(on_path)
+    assert research.find_claude(str(recorded), path=False) == str(recorded)
+    monkeypatch.setattr(research, "CLAUDE_PLACES", ())
+    assert research.find_claude(None, path=False) is None
 
 
 # --- add_symbol(replace=True) ------------------------------------------------

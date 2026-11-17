@@ -47,6 +47,7 @@ The state shared by the data repo's worktrees is in git's common directory:
 from __future__ import annotations
 
 import contextlib
+import functools
 import os
 import shutil
 import subprocess
@@ -389,9 +390,11 @@ class RunReport:
 Runner = Callable[[str, Path, Path, Callable[[str], None]], RunReport]
 
 
-def run_with_claude(symbol: str, work: Path, data: Path, progress: Callable[[str], None]) -> RunReport:
+def run_with_claude(symbol: str, work: Path, data: Path, progress: Callable[[str], None], *,
+                    claude: str | None = None) -> RunReport:
     """Run the finance-research plugin on ``symbol``, as ``sim symbol
-    research`` does, with the plugin rendered from ``data``'s research.yaml."""
+    research`` does, with the plugin rendered from ``data``'s research.yaml.
+    ``claude`` is where ``sim builder install`` found Claude Code (#644)."""
     from analysis import research_plugin
     from analysis.sim import research
 
@@ -399,7 +402,7 @@ def run_with_claude(symbol: str, work: Path, data: Path, progress: Callable[[str
         try:
             config = research_plugin.read_config(research_plugin.config_path(data))
             plugin = research_plugin.render(config, Path(tmp) / "plugin")
-            done = research.run_skill(symbol, symbol, work, plugin, progress=progress)
+            done = research.run_skill(symbol, symbol, work, plugin, claude=claude, progress=progress)
         except (research.ResearchError, research_plugin.ResearchConfigError) as exc:
             return RunReport(False, str(exc))
     return RunReport(done.ok, done.message, done.cost_usd, done.seconds)
@@ -505,20 +508,20 @@ def _settle(top: Path) -> str | None:
 
 def research(
     data_dir: Path, worktree: Path, *, now: datetime | None = None, symbol: str | None = None,
-    runner: Runner | None = None, progress: Callable[[str], None] = print,
+    runner: Runner | None = None, progress: Callable[[str], None] = print, claude: str | None = None,
 ) -> ResearchOutcome:
     """Research the first due symbol (or ``symbol``) in ``worktree`` and
     commit its bundle, and any weights it changed, on ``builder/research``.
     Merging is the daemon's, between builds (:func:`merge_pending`). The
     outcome, its cost and a failure go in the state, for ``sim builder
-    status``."""
+    status``. ``claude`` is where ``sim builder install`` found Claude Code."""
     from analysis.sim import research as research_mod
 
     now = now or datetime.now(UTC)
     top = price_schedule._top(data_dir)
     rel = str(data_dir.resolve().relative_to(top.resolve()))
     day = (day_of(now) or now.astimezone(MARKET).date()).isoformat()
-    runner = runner or run_with_claude
+    runner = runner or functools.partial(run_with_claude, claude=claude)
     with _locked(top) as mine:
         if not mine:
             return ResearchOutcome(["another research of this data repo is running"])
@@ -620,8 +623,12 @@ def merge_pending(data_dir: Path, worktree: Path) -> list[str]:
 # -- reporting ------------------------------------------------------------------------------
 
 
-def describe(state: dict[str, Any], data_dir: Path, now: datetime) -> list[str]:
-    """``sim builder status``'s lines about research."""
+def describe(state: dict[str, Any], data_dir: Path, now: datetime, *,
+             claude: str | None = None) -> list[str]:
+    """``sim builder status``'s lines about research; ``claude`` is where
+    ``sim builder install`` found Claude Code."""
+    from analysis.sim import research as research_mod
+
     def when(stamp: float | None) -> str:
         if not stamp:
             return "never"
@@ -639,6 +646,11 @@ def describe(state: dict[str, Any], data_dir: Path, now: datetime) -> list[str]:
                      f"({what}; {dollars(last.get('cost'))})")
     else:
         lines.append("research: none yet")
+    # As the hourly timer finds it, without this shell's PATH (#644).
+    found = research_mod.find_claude(claude, path=False)
+    lines.append(f"research runs: {found}" if found else
+                 "research can't find claude outside your shell's PATH: run `sim builder install` "
+                 "again from a shell where `claude` works")
     start = datetime.combine(now.astimezone(MARKET).date(), START, MARKET).astimezone()
     following = due_symbols(data_dir, state, now)
     if following:

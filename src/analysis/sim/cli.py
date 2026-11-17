@@ -20977,7 +20977,7 @@ def builder_research(symbol: str | None, if_due: bool, data_dir: Path | None) ->
 
     try:
         outcome = research_schedule.research(resolved, paths.research_worktree, symbol=symbol,
-                                             progress=say)
+                                             progress=say, claude=config.get("claude"))
     except (research_schedule.ResearchScheduleError, price_schedule.PriceScheduleError) as exc:
         if writer is not None:
             writer.event(f"research failed: {exc}")
@@ -21091,7 +21091,7 @@ def builder_status(data_dir: Path | None) -> None:
 
     if research_schedule.enabled(config):
         for line in research_schedule.describe(research_schedule.read_state(resolved), resolved,
-                                               datetime.now(UTC)):
+                                               datetime.now(UTC), claude=config.get("claude")):
             click.echo(line)
     elif research_schedule.switched_off():
         click.echo(f"research: off ({research_schedule.SWITCH_ENV}=off)")

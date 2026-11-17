@@ -1476,10 +1476,15 @@ def install(data_dir: Path, branch: str | None = None, prices: bool | None = Non
     roll = bool(before.get("roll", True)) if roll is None else roll
     roll_window = roll_window or str(before.get("roll_window") or roll_schedule.DEFAULT_WINDOW)
     research = bool(before.get("research", True)) if research is None else research
+    from analysis.sim.research import find_claude
+
+    # Found on this shell's PATH now, for the hourly timer, whose PATH lacks
+    # it (#644); kept from before when this shell can't find it.
+    claude = find_claude(before.get("claude"))
     _write_json(paths.config, {
         "data_dir": str(data_dir), "code_dir": str(code), "branch": branch,
         "prices": prices, "roll": roll, "roll_window": roll_window, "research": research,
-        "installed": time.time(),
+        "claude": claude, "installed": time.time(),
     })
     done = [f"recorded the pair in {paths.config}",
             f"builds only from code matching the local {branch} branch",
@@ -1488,6 +1493,10 @@ def install(data_dir: Path, branch: str | None = None, prices: bool | None = Non
             if roll else "doesn't roll scenarios forward",
             "researches a symbol a day whose research is over a month old, from 06:07 New York time"
             if research else "doesn't research symbols"]
+    if research:
+        done.append(f"runs Claude Code at {claude}" if claude else
+                    "can't find claude (Claude Code): research will fail until it's installed "
+                    "and `sim builder install` is run again")
     hooks.mkdir(parents=True, exist_ok=True)
     for name in HOOK_NAMES:
         hook = hooks / name
