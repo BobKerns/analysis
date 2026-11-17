@@ -1698,6 +1698,66 @@ def test_sim_import_holdings_asks_whose_a_quicken_portfolio_report_is(
     assert named.exit_code == 0, named.output
 
 
+def test_sim_import_holdings_makes_a_lot_of_each_quicken_tax_lot(
+    test_data_dir: Path, quicken_tax_lot_report: Path, quicken_account_map: Path,
+    add_account_value: Callable[..., None],
+) -> None:
+    # A lot of the fund with no date, from an import before the tax lots were listed.
+    add_account_value("Asset_Brokerage_Joint", lot="stock", symbol="VTSAX", opening_balance="1000.00")
+    args = ("holdings", str(quicken_tax_lot_report), "--new-lots", "--outside-account", "Asset_Brokerage_Joint")
+
+    result = _import(test_data_dir, *args)
+
+    assert result.exit_code == 0, result.output
+    lots = _all_lots(test_data_dir)
+    assert {lot: (row["acquired"], row["opening_balance"], row["opening_cost_basis"])
+            for (account, lot), row in lots.items() if row["symbol"] == "VTSAX"} == {
+        "vtsax-2019-03-15": ("2019-03-15", "195000.00", "120000.00"),
+        "vtsax-2022-06-01": ("2022-06-01", "93000.00", "80000.00"),
+        "vtsax-2026-02-10": ("2026-02-10", "12000.00", "10000.00"),
+        # The dated lots hold its total now.
+        "stock": ("", "0.00", ""),
+    }
+    assert lots["Asset_Brokerage_Joint", "acme"]["acquired"] == ""     # its line wasn't opened
+    assert not [lot for _, lot in lots if lot.startswith("vbtlx")]     # sold before the date used
+
+    again = _import(test_data_dir, *args)
+    assert again.exit_code == 0, again.output
+    assert "updated 0 lot(s)" in again.output and _all_lots(test_data_dir) == lots
+
+
+def test_sim_import_holdings_asks_whether_each_tax_lot_gets_a_lot(
+    test_data_dir: Path, quicken_tax_lot_report: Path, quicken_account_map: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(cli, "_interactive", lambda: True)
+    original = (test_data_dir / "scenarios" / "retire_alice" / "account_lots.csv").read_text(encoding="utf-8")
+
+    # Enter takes the name the report was saved under as the outside account's.
+    result = _import(test_data_dir, "holdings", str(quicken_tax_lot_report),
+                     input="\nAsset_Brokerage_Joint\n\n\n\n\n")
+
+    assert result.exit_code == 0, result.output
+    assert "quicken account [Joint Brokerage]:" in result.output
+    assert "the quicken file lists 2 holding(s) in it: VTSAX, ACME." in result.output
+    assert "lists VTSAX in Asset_Brokerage_Joint by tax lot: 3 with no lot here yet, " \
+        "acquired 2019-03-15 to 2026-02-10." in result.output
+    assert result.output.count("A lot for each tax lot of VTSAX?") == 1
+    lots = _all_lots(test_data_dir)
+    assert lots["Asset_Brokerage_Joint", "vtsax-2022-06-01"]["acquired"] == "2022-06-01"
+    assert "Joint Brokerage,,map,Asset_Brokerage_Joint,," in _saved(test_data_dir, "quicken")
+
+    # A no gathers them into one lot, named in the mapping so each finds it.
+    (test_data_dir / "scenarios" / "retire_alice" / "account_lots.csv").write_text(original, encoding="utf-8")
+    one = _import(test_data_dir, "holdings", str(quicken_tax_lot_report),
+                  input="\n\n\nn\nfunds\n\n")
+    assert one.exit_code == 0, one.output
+    assert "has no lot of 'Joint Brokerage / VTSAX' (Total Stock Fund), 300000.00." in one.output
+    fund = _all_lots(test_data_dir)["Asset_Brokerage_Joint", "funds"]
+    assert (fund["acquired"], fund["opening_balance"], fund["opening_cost_basis"]) == ("", "300000.00", "210000.00")
+    assert "Joint Brokerage,VTSAX,map,Asset_Brokerage_Joint,funds," in _saved(test_data_dir, "quicken")
+
+
 def test_sim_import_holdings_offers_a_share_count_from_a_stored_price(
     test_data_dir: Path, fidelity_positions_export: Path, write_import_map: MapWriter,
     add_account_value: Callable[..., None], write_aux: Callable[[str, str], Path],
@@ -3519,3 +3579,4 @@ def test_sim_import_holdings_gives_a_new_account_s_cash_a_lot_of_its_own(
     assert ("note: the ofx file has no cost basis for Asset_New_Brokerage's new lot(s) vtsax, vmfxx. A run stops "
             "at the first withdrawal from a taxable lot with none") in result.output
     assert _saved(test_data_dir, "ofx") == ["Example Brokerage investment ...5678,,map,Asset_New_Brokerage,,"]
+
