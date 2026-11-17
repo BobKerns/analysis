@@ -127,6 +127,15 @@ Either way, this then gives you a working environment:
 source data/shared/sim/activate-analysis
 ```
 
+A checkout's data repo is always found at its `data/shared`. In a checkout
+that has none yet, `sim init` with no arguments makes one right there, and
+`sim init DIR` makes it at `DIR` and links `data/shared` to it. Sourced
+through `data/shared`, `activate-analysis` activates the code of the checkout
+you are in, so several worktrees can share one data repo and each run its
+own code. If you run `sim init` while another checkout's venv is active, it
+runs the `sim init` of the checkout you are in instead (making its `.venv`
+first if needed), so the data repo isn't paired with the wrong code.
+
 With a data repo linked, it then turns on background scenario builds
 (`sim builder install`; [ADR-004](architecture/ADR-004-reproducibility-and-activation.md) §12):
 commits, checkouts, merges and rebases in either repo rebuild, in the

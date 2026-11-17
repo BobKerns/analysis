@@ -42,10 +42,28 @@ ANALYSIS_DATA_DIR="$(cd "$(dirname "$_ANALYSIS_SELF")" && pwd)"
 export ANALYSIS_DATA_REPO_NAME="${ANALYSIS_DATA_REPO_NAME:-$(basename "$ANALYSIS_DATA_DIR")}"
 
 _ANALYSIS_POINTER_FILE="$ANALYSIS_DATA_DIR/.analysis"
-_ANALYSIS_REPO_CANDIDATE="${ANALYSIS_REPO_DIR-}"
+_ANALYSIS_REMEMBERED=""
+if [ -f "$_ANALYSIS_POINTER_FILE" ]; then
+	IFS= read -r _ANALYSIS_REMEMBERED < "$_ANALYSIS_POINTER_FILE"
+fi
 
-if [ -z "$_ANALYSIS_REPO_CANDIDATE" ] && [ -f "$_ANALYSIS_POINTER_FILE" ]; then
-	IFS= read -r _ANALYSIS_REPO_CANDIDATE < "$_ANALYSIS_POINTER_FILE"
+# The code checkout this was sourced through (<checkout>/data/shared/sim)
+# comes first (#654): several worktrees can link one data repo, and each
+# then gets its own code, whichever was activated last or made the data
+# repo. Then ANALYSIS_REPO_DIR, then the checkout remembered in .analysis.
+_ANALYSIS_REPO_CANDIDATE=""
+case "$ANALYSIS_DATA_DIR" in
+	*/data/shared/sim)
+		if _analysis_validate_repo_dir "${ANALYSIS_DATA_DIR%/data/shared/sim}"; then
+			_ANALYSIS_REPO_CANDIDATE="${ANALYSIS_DATA_DIR%/data/shared/sim}"
+		fi
+		;;
+esac
+if [ -z "$_ANALYSIS_REPO_CANDIDATE" ]; then
+	_ANALYSIS_REPO_CANDIDATE="${ANALYSIS_REPO_DIR-}"
+fi
+if [ -z "$_ANALYSIS_REPO_CANDIDATE" ]; then
+	_ANALYSIS_REPO_CANDIDATE="$_ANALYSIS_REMEMBERED"
 fi
 
 if ! _analysis_validate_repo_dir "$_ANALYSIS_REPO_CANDIDATE"; then
@@ -59,6 +77,18 @@ if ! _analysis_validate_repo_dir "$_ANALYSIS_REPO_CANDIDATE"; then
 fi
 
 export ANALYSIS_REPO_DIR="$_ANALYSIS_REPO_CANDIDATE"
+
+# Said only when it isn't the code this data repo last ran with: the wrong
+# checkout's code is otherwise found out much later, by what it lacks.
+if [ -n "$_ANALYSIS_REMEMBERED" ] && [ "$_ANALYSIS_REMEMBERED" != "$ANALYSIS_REPO_DIR" ]; then
+	echo "activate-analysis: using the code in $ANALYSIS_REPO_DIR (it was $_ANALYSIS_REMEMBERED)" >&2
+fi
+# `sim init` copied this file from the code's templates/, where it changes.
+if [ -f "$ANALYSIS_REPO_DIR/templates/activate-analysis" ] && \
+	! cmp -s "$_ANALYSIS_SELF" "$ANALYSIS_REPO_DIR/templates/activate-analysis"; then
+	echo "activate-analysis: this copy differs from the code's; to take the code's:" >&2
+	echo "  cp $ANALYSIS_REPO_DIR/templates/activate-analysis $ANALYSIS_DATA_DIR/" >&2
+fi
 
 # Persist pointer and ensure it is ignored by the data repo.
 printf '%s\n' "$ANALYSIS_REPO_DIR" > "$_ANALYSIS_POINTER_FILE" || \
@@ -173,7 +203,7 @@ deactivate-analysis() {
 	fi
 	unset ANALYSIS_DATA_DIR ANALYSIS_USER ANALYSIS_DATA_REPO_NAME ANALYSIS_REPO_DIR
 	unset _ANALYSIS_SELF
-	unset _ANALYSIS_POINTER_FILE _ANALYSIS_REPO_CANDIDATE
+	unset _ANALYSIS_POINTER_FILE _ANALYSIS_REPO_CANDIDATE _ANALYSIS_REMEMBERED
 	unset _ANALYSIS_PROMPT_SUBST_WAS_SET
 	unset -f _analysis_fail _analysis_validate_repo_dir _analysis_enable_completion
 	unset -f analysis_prompt_info deactivate-analysis

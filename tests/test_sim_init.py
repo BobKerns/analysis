@@ -32,6 +32,9 @@ def code_repo(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
     code = tmp_path / "code"
     code.mkdir()
     monkeypatch.setattr(data_repo, "CODE_REPO_DIR", code)
+    # Not in the checkout the tests run from: `sim init` would take that as
+    # the one to set up, and run its own sim.
+    monkeypatch.chdir(tmp_path)
     return code
 
 
@@ -87,12 +90,12 @@ def test_init_leaves_os_junk_files_behind(tmp_path: Path, junk_in_templates: tup
     assert sorted(p.name for p in (sim / "scenarios").iterdir()) == ["base"]
 
 
-def test_init_asks_for_what_its_options_leave_out(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.chdir(tmp_path)
-    result = _init(input="repo\nalice\nAlice Example\n1960-05-01\nf\nSingle\n")
+def test_init_asks_for_what_its_options_leave_out(code_repo: Path) -> None:
+    # No directory is asked for: the data repo is the checkout's data/shared.
+    result = _init("--no-builder", input="alice\nAlice Example\n1960-05-01\nf\nSingle\n")
 
     assert result.exit_code == 0, result.output
-    sim = tmp_path / "repo" / "sim"
+    sim = code_repo / "data" / "shared" / "sim"
     assert _rows(sim / "persons.csv") == [{
         "id": "alice", "display": "Alice Example", "birthdate": "1960-05-01", "sex": "f",
         "role": "primary", "meta_json": "{}",
@@ -217,15 +220,95 @@ def test_init_leaves_an_existing_data_shared_alone(
     assert "background builds not turned on" in result.output
 
 
-@pytest.mark.parametrize("flag", ["--no-builder", "--no-commit"])
 def test_init_without_a_builder_touches_neither_repo(
-    tmp_path: Path, code_repo: Path, installs: list[Path], flag: str,
+    tmp_path: Path, code_repo: Path, installs: list[Path],
 ) -> None:
-    result = _init(str(tmp_path / "repo"), *_ALICE, flag)
+    result = _init(str(tmp_path / "repo"), *_ALICE, "--no-builder")
 
     assert result.exit_code == 0, result.output
     assert not (code_repo / "data").exists()
     assert installs == []
+
+
+def test_init_without_a_commit_links_data_shared_and_installs_no_builder(
+    tmp_path: Path, code_repo: Path, installs: list[Path],
+) -> None:
+    result = _init(str(tmp_path / "repo"), *_ALICE, "--no-commit")
+
+    assert result.exit_code == 0, result.output
+    assert (code_repo / "data" / "shared").resolve() == (tmp_path / "repo").resolve()
+    assert installs == []
+
+
+def test_init_with_no_directory_makes_the_checkout_s_data_shared(
+    tmp_path: Path, code_repo: Path, installs: list[Path], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(code_repo)
+    result = _init(*_ALICE)
+
+    assert result.exit_code == 0, result.output
+    shared = code_repo / "data" / "shared"
+    assert (shared / "sim" / "persons.csv").is_file() and not shared.is_symlink()
+    assert (shared / "sim" / ".analysis").read_text() == f"{code_repo}\n"
+    assert installs == [shared.resolve() / "sim"]
+    assert "\n\n    source data/shared/sim/activate-analysis\n\n" in result.output
+
+    # One is there already: said, with how to use it, and left as it is.
+    again = _init(*_ALICE)
+    assert again.exit_code != 0
+    assert "data/shared is already there" in again.output
+    assert "source data/shared/sim/activate-analysis" in again.output
+
+
+def test_init_names_the_data_repo_through_data_shared_wherever_it_is(
+    tmp_path: Path, code_repo: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(code_repo)
+    result = _init(str(tmp_path / "elsewhere"), *_ALICE)
+
+    assert result.exit_code == 0, result.output
+    assert "linked data/shared to" in result.output
+    assert "\n\n    source data/shared/sim/activate-analysis\n\n" in result.output
+
+    # A checkout that already has a data repo keeps it, and is told so.
+    other = _init(str(tmp_path / "other"), *_ALICE)
+    assert other.exit_code == 0, other.output
+    assert "data/shared is already there and was left alone" in other.output
+    assert f"scripts/link-data.sh {tmp_path / 'other'}" in other.output
+    assert f"source {tmp_path / 'other' / 'sim' / 'activate-analysis'}" in other.output
+
+
+def test_init_from_another_checkout_s_sim_runs_the_sim_of_the_checkout_it_is_in(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    here = tmp_path / "worktree"
+    (here / "src" / "analysis" / "sim").mkdir(parents=True)
+    (here / "pyproject.toml").touch()
+    (here / "src" / "analysis" / "sim" / "cli.py").touch()
+    (here / "deep").mkdir()
+    monkeypatch.chdir(here / "deep")
+    monkeypatch.setenv("VIRTUAL_ENV", "/another/checkout/.venv")
+    ran: list[tuple[list[str], str | None, dict[str, str]]] = []
+
+    def run(command: list[str], *, cwd: Path | None = None, env: dict[str, str], check: bool) -> object:  # noqa: ARG001
+        ran.append((command, str(cwd) if cwd else None, env))
+        if command[0] == "uv":
+            (here / ".venv" / "bin").mkdir(parents=True)
+            (here / ".venv" / "bin" / "sim").touch()
+        return subprocess.CompletedProcess(command, 7 if command[0] != "uv" else 0)
+    monkeypatch.setattr(subprocess, "run", run)
+    monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
+
+    result = _init("repo", "--id", "alice", "--no-commit")
+
+    # Its venv is made first, then its own sim takes the same arguments; its result is this one's.
+    assert result.exit_code == 7, result.output
+    assert [(command, cwd) for command, cwd, _ in ran] == [
+        (["uv", "sync", "--group", "dev"], str(here)),
+        ([str(here / ".venv" / "bin" / "sim"), "init", "repo", "--id", "alice", "--no-commit"], None)]
+    assert all("VIRTUAL_ENV" not in env and env["ANALYSIS_INIT_AGAIN"] == "1" for _, _, env in ran)
+    assert "running that checkout's sim init" in result.output
+    assert not (here / "deep" / "repo").exists()
 
 
 def test_init_with_no_builder_in_the_environment_touches_neither_repo(
@@ -313,3 +396,60 @@ def test_account_list_shows_each_accounts_own_growth(tmp_path: Path, monkeypatch
     assert rows["Asset_Brokerage"].annual_rate_micros is None
     assert rows["Asset_Checking"].rate_series is None
     assert rows["Income_Salary"].rate_series is None
+
+
+# ---------- activate-analysis ----------
+
+def _checkout(path: Path) -> Path:
+    """A folder activate-analysis takes for a code checkout, whose venv
+    says which it is when activated."""
+    for module in ("cli.py", "amazon/cli.py", "sim/cli.py"):
+        (path / "src" / "analysis" / module).parent.mkdir(parents=True, exist_ok=True)
+        (path / "src" / "analysis" / module).touch()
+    (path / "pyproject.toml").touch()
+    (path / ".venv" / "bin").mkdir(parents=True)
+    (path / ".venv" / "bin" / "activate").write_text(f"ACTIVATED={path.name}\n")
+    (path / "templates").mkdir()
+    shutil.copy(data_repo.TEMPLATES_DIR / "activate-analysis", path / "templates")
+    return path
+
+
+def test_activate_takes_the_code_of_the_checkout_it_is_sourced_through(tmp_path: Path) -> None:
+    data = tmp_path / "data"
+    (data / "sim").mkdir(parents=True)
+    shutil.copy(data_repo.TEMPLATES_DIR / "activate-analysis", data / "sim")
+    (data / "sim" / "persons.csv").write_text("id,display\nalice,Alice Example\n")
+    (data / "sim" / ".analysis_user").write_text("alice\n")
+    main_checkout, worktree = _checkout(tmp_path / "main"), _checkout(tmp_path / "worktree")
+    for checkout in (main_checkout, worktree):
+        (checkout / "data").mkdir()
+        (checkout / "data" / "shared").symlink_to(data)
+    # The data repo was made by, and last used with, the main checkout.
+    (data / "sim" / ".analysis").write_text(f"{main_checkout}\n")
+
+    def activate(script: str, cwd: Path, **env: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            ["bash", "-c", f'source {script} && echo "$ACTIVATED $ANALYSIS_REPO_DIR"'], cwd=cwd,
+            env={"PATH": "/usr/bin:/bin", "HOME": str(tmp_path), **env}, capture_output=True, text=True, check=False)
+
+    # From the worktree, though the data repo remembers the main checkout and the shell still names it.
+    there = activate("data/shared/sim/activate-analysis", worktree, ANALYSIS_REPO_DIR=str(main_checkout))
+    assert there.stdout == f"worktree {worktree}\n", there.stderr
+    assert f"using the code in {worktree} (it was {main_checkout})" in there.stderr
+    assert (data / "sim" / ".analysis").read_text() == f"{worktree}\n"
+    # Again says nothing: it is the code it last ran with, and its copy is the code's.
+    again = activate(str(worktree / "data" / "shared" / "sim" / "activate-analysis"), tmp_path)
+    assert again.stdout == f"worktree {worktree}\n"
+    assert "using the code" not in again.stderr and "differs" not in again.stderr
+
+    # Sourced by its own path, the data repo has no checkout around it: the shell's, else the remembered one.
+    named = activate(str(data / "sim" / "activate-analysis"), tmp_path, ANALYSIS_REPO_DIR=str(main_checkout))
+    assert named.stdout == f"main {main_checkout}\n", named.stderr
+    remembered = activate(str(data / "sim" / "activate-analysis"), tmp_path)
+    assert remembered.stdout == f"main {main_checkout}\n", remembered.stderr
+
+    # A copy the code has since changed is said, with how to refresh it.
+    (worktree / "templates" / "activate-analysis").write_text("# newer\n")
+    stale = activate("data/shared/sim/activate-analysis", worktree)
+    assert "this copy differs from the code's" in stale.stderr
+    assert f"cp {worktree}/templates/activate-analysis {worktree}/data/shared/sim/" in stale.stderr
