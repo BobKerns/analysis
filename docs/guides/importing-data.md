@@ -131,7 +131,10 @@ accounts hold. Export the snapshot as of the scenario's first day.
   time, until nothing is left. A new name adds a lot; `rest` for an amount
   gives that lot whatever the others leave. In a brokerage account it also
   asks a new lot's symbol and the day it was bought, and each part's cost
-  basis in a taxable one. The split is saved in
+  basis in a taxable one. A fund that isn't traded, such as a retirement
+  plan's own, can take its CUSIP or a name you make up as its symbol: one
+  that doesn't look like a ticker is confirmed first, in case it is a slip,
+  and then marked `no_fetch`, so that nothing looks for its prices. The split is saved in
   `imports/<source>/lot_splits.csv`. The next import uses it as it is when
   one lot takes the rest, or when the number hasn't changed. Otherwise it
   asks again, with the last amounts as the defaults.
@@ -193,7 +196,8 @@ Things to know:
   custodian's Form 5498s add up to it.
 - **A new symbol is only a label** until the plan knows it. `sim symbol add`
   gives it a name, its asset classes and its prices; until then its lot
-  grows as its account does.
+  grows as its account does. For a made-up symbol or a CUSIP, add
+  `--never-fetch`, so that nothing looks for its prices.
 - **A lot the file doesn't mention is kept**, with a warning: it may have
   been sold. `--prune` empties every such lot (balance, shares and basis to
   zero), and `sim account lot delete` removes one for good. When two

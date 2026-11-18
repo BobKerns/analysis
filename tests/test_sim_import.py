@@ -3554,21 +3554,31 @@ def test_sim_import_holdings_splits_a_brokerage_total_into_lots_with_a_symbol_an
         "Asset_TraditionalIRA_Alice,,skip,,,\nLiability_Mortgage,,skip,,,\n")
     # What stays in `default`, with its basis; then a new lot of one fund,
     # with the day it was bought (asked again when it isn't a day), for the rest.
-    answers = "default\n100000\n80000\nvtsax\ny\nvtsax\nsoon\nvtsax\n2020-03-02\nrest\n150000\n\n"
+    # The fund isn't traded, so its symbol is its CUSIP: any name without a space is one.
+    answers = ("default\n100000\n80000\nplan\ny\n92290 8769\n92290876\nn\n922908769\ny\nsoon\n2020-03-02\n"
+               "rest\n150000\n\n")
     result = _import(test_data_dir, "holdings", str(quicken_net_worth_export), input=answers)
     assert result.exit_code == 0, result.output
     assert "date must be YYYY-MM-DD: 'soon'" in result.output
     lots = _all_lots(test_data_dir)
-    kept, new = lots["Asset_Brokerage_Joint", "default"], lots["Asset_Brokerage_Joint", "vtsax"]
+    assert "a symbol has no spaces: '92290 8769'" in result.output and "--never-fetch" in result.output
+    # Not a ticker: asked about, since it may be a slip (one digit short, declined), and taken on a yes.
+    assert "92290876 doesn't look like a ticker, and isn't a symbol the plan knows." in result.output
+    # Nothing can fetch a price for it, so it is marked.
+    assert "922908769: marked no_fetch in securities.csv" in result.output
+    with (test_data_dir / "securities.csv").open(newline="", encoding="utf-8") as f:
+        assert {row["symbol"]: row["no_fetch"] for row in csv.DictReader(f) if row["no_fetch"] == "1"} == {
+            "922908769": "1"}
+    kept, new = lots["Asset_Brokerage_Joint", "default"], lots["Asset_Brokerage_Joint", "plan"]
     assert (kept["opening_balance"], kept["opening_cost_basis"]) == ("100000.00", "80000.00")
-    assert (new["symbol"], new["acquired"], new["quantity"]) == ("VTSAX", "2020-03-02", "")
+    assert (new["symbol"], new["acquired"], new["quantity"]) == ("922908769", "2020-03-02", "")
     assert (new["opening_balance"], new["opening_cost_basis"]) == ("210000.00", "150000.00")
     assert (test_data_dir / "imports" / "quicken" / "lot_splits.csv").read_text(encoding="utf-8").splitlines()[1:] == [
-        "Asset_Brokerage_Joint,,default,100000.00,80000.00", "Asset_Brokerage_Joint,,vtsax,,150000.00"]
+        "Asset_Brokerage_Joint,,default,100000.00,80000.00", "Asset_Brokerage_Joint,,plan,,150000.00"]
 
     # A lot renamed afterwards is followed in the split.
     renamed = CliRunner().invoke(main, [
-        "sim", "account", "lot", "rename", "Asset_Brokerage_Joint", "vtsax", "index",
+        "sim", "account", "lot", "rename", "Asset_Brokerage_Joint", "plan", "index",
         "--scenario", "retire_alice", "--data-dir", str(test_data_dir)])
     assert renamed.exit_code == 0, renamed.output
     assert "imports/quicken/lot_splits.csv" in renamed.output

@@ -19,6 +19,7 @@ from collections.abc import Callable, Collection, Generator, Iterable, Mapping, 
 from contextlib import ExitStack, contextmanager, redirect_stdout
 import itertools
 import os
+import re
 import sqlite3
 import subprocess
 import tempfile
@@ -9089,9 +9090,20 @@ def _ask_holding_target(
     return import_mapping.AccountTarget("map", answer, lot)
 
 
+_TICKER_LIKE = re.compile(r"[A-Z]{1,5}([.-][A-Z]{1,2})?")
+"""What an exchange's symbol looks like. Anything else may still be a lot's
+symbol (a CUSIP, a name made up for a plan's own fund), once it is meant."""
+
+
+def _not_traded(symbol: str, known: Collection[str]) -> bool:
+    """Whether ``symbol`` is new to the plan and clearly no exchange's: no
+    price can be fetched for it, so it is confirmed and marked ``no_fetch``."""
+    return bool(symbol) and symbol not in known and _TICKER_LIKE.fullmatch(symbol) is None
+
+
 def _ask_lot_split(
     label: str, total: int, account: str, its_lots: Sequence[str], before: Sequence[import_mapping.LotPart],
-    *, basis: bool, investment: bool, new_ok: bool,
+    *, basis: bool, investment: bool, new_ok: bool, known: Collection[str] = (),
 ) -> tuple[list[import_mapping.LotPart], list[tuple[str, str, str]]]:
     """How one outside number (``label``, ``total`` cents) divides among
     lots of ``account``, asked for a lot at a time until nothing is left or
@@ -9101,7 +9113,10 @@ def _ask_lot_split(
     ``before`` is the split the last import saved: its lots and amounts are
     the defaults. ``basis`` asks each part's cost basis (a taxable brokerage
     account's lots keep one); ``investment`` asks a new lot's symbol and
-    day; ``new_ok`` is whether a new name can be a new lot.
+    day; ``new_ok`` is whether a new name can be a new lot. ``known`` are
+    the symbols the plan has: another that doesn't look like a ticker is
+    asked about, since it may be a slip, and taken on a yes (the caller then
+    marks it ``no_fetch``: see ``_not_traded``).
     """
     before = list(before)
     while True:
@@ -9136,14 +9151,24 @@ def _ask_lot_split(
                     continue
                 symbol = acquired = ""
                 while investment:
-                    symbol = _prompt_with_completion(f"symbol of {name} (blank for none)", default="").strip().upper()
+                    # Any name without a space: a ticker, a CUSIP, or one made up
+                    # for a fund that isn't traded.
+                    symbol = _prompt_with_completion(
+                        f"symbol of {name} (a ticker, a CUSIP or a name of your own; blank for none)",
+                        choices=list(known), default="").strip().upper()
+                    if any(c.isspace() for c in symbol):
+                        click.echo(f"  a symbol has no spaces: {symbol!r}")
+                    elif not _not_traded(symbol, known) or click.confirm(
+                            f"  {symbol} doesn't look like a ticker, and isn't a symbol the plan knows. Fine for a "
+                            "fund that isn't traded (a CUSIP, or a name of your own): it is then marked "
+                            "no_fetch, so nothing looks for its prices. Use it?", default=True):
+                        break
+                while investment:
                     acquired = _prompt_with_completion(
                         f"day {name} was acquired, YYYY-MM-DD (blank for none)", default="").strip()
                     try:
                         if acquired:
                             _check_day(acquired)
-                        if any(c.isspace() for c in symbol):
-                            raise click.ClickException(f"a symbol has no spaces: {symbol!r}")
                         break
                     except click.ClickException as error:
                         click.echo(f"  {error.format_message()}")
@@ -13878,6 +13903,8 @@ def import_holdings(
         result = replan()
         to_save = False
         split_asked = False
+        # Symbols taken for funds that aren't traded: marked no_fetch with the lots.
+        never_fetch: set[str] = set()
         # Whether each (account, symbol) the file has by tax lot gets a lot for each.
         tax_lots: dict[tuple[str, str], bool] = {}
         while not result.complete:
@@ -13949,11 +13976,13 @@ def import_holdings(
                     if before:
                         click.echo(f"{why}.")
                     subkind = accounts[target.account][1]
+                    known_symbols = {*context().securities, *context().growing, *registries.SYMBOL_ASSET_CLASS}
                     while True:
                         parts, added = _ask_lot_split(
                             label, total, target.account, its_lots, before,
                             basis=subkind == InvestmentAssetSubkind.BROKERAGE_TAXABLE,
                             investment=subkind in INVESTMENT_ASSET_SUBKINDS,
+                            known=known_symbols,
                             # Last year's file can't say what a new lot holds now.
                             new_ok=not year_end)
                         try:
@@ -13961,6 +13990,8 @@ def import_holdings(
                                 if name not in its_lots:
                                     add_lot(target.account, name, symbol, acquired)
                                     its_lots.append(name)
+                                    if _not_traded(symbol, known_symbols):
+                                        never_fetch.add(symbol)
                             break
                         except click.ClickException as e:
                             click.echo(f"  not added: {e.format_message()}")
@@ -14186,7 +14217,9 @@ def import_holdings(
             click.echo(
                 f"note: the plan doesn't know {', '.join(strangers)} yet, so each lot grows "
                 "as its account does; 'sim symbol add SYMBOL' gives one its name, its "
-                "asset classes and its prices")
+                "asset classes and its prices (with --never-fetch for one that isn't traded, such "
+                "as a plan's own fund under a made-up symbol or a CUSIP: nothing then looks "
+                "for its prices)")
     counts = (f"{len(result.skipped)} skipped, {len(result.ineligible)} ineligible, "
               f"{result.lots_unchanged} unchanged")
     if result.pruned:
@@ -14197,6 +14230,8 @@ def import_holdings(
         click.echo(f"(dry run) {result.lots_changed} lot(s) would change, {counts}")
         if to_save or split_asked:
             click.echo("(dry run) the mappings you gave were not saved")
+        for symbol in sorted(never_fetch):
+            click.echo(f"(dry run) {symbol} would be marked no_fetch in securities.csv")
         return
 
     overrides = 0
@@ -14242,6 +14277,13 @@ def import_holdings(
     if split_asked:
         lot_splits.save()
         click.echo(f"saved the split to {_shown(splits_path)}")
+    for symbol in sorted(never_fetch):
+        try:
+            symbols.edit_symbol(data_dir_p, symbol, no_fetch=True)
+            click.echo(f"{symbol}: marked no_fetch in securities.csv")
+        except (ValueError, OSError) as e:
+            click.echo(f"warning: {symbol} was not marked no_fetch: {e}\n"
+                       f"  'sim symbol edit {symbol} --never-fetch' marks it", err=True)
     for account, character in characters.items():
         _echo_growth_character(account, character)
     inherited = f"; {overrides} as override(s) of inherited lots" if overrides else ""
