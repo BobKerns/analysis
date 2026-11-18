@@ -23,7 +23,9 @@ from pathlib import Path
 
 import pandas as pd
 
-from analysis.sim.imports.forms import CASH, Budget, BudgetLine, Flows, Holding, Snapshot, read_rows
+from analysis.sim.imports.forms import (
+    CASH, Budget, BudgetLine, Flows, Holding, Snapshot, format_dollars, read_rows,
+)
 
 __all__ = [
     "NAME", "is_account_tree", "is_budget", "is_portfolio", "is_transaction_export", "read_account_tree",
@@ -233,6 +235,8 @@ def read_portfolio(path: Path, account: str) -> Snapshot:
 
     dated: dict[dt.date, list[Holding]] = {date: [] for date in columns}
     notes: list[str] = []
+    # What is said of one date's numbers: of those of the date imported.
+    of_date: dict[dt.date, list[str]] = {date: [] for date in columns}
     for name, symbol, number, row, lots in securities:
         cash = name.casefold() == "cash"
         asset = CASH if cash else symbol or name
@@ -254,10 +258,10 @@ def read_portfolio(path: Path, account: str) -> Snapshot:
                 left_basis = None if left_basis is None or cost is None else left_basis - cost
             if not left:
                 continue
-            if lots and left != value and date == max(columns):
-                notes.append(
-                    f"{path.name}: the tax lots of {asset} come to {_plain_dollars((value or 0) - left)} of its "
-                    f"{_plain_dollars(value or 0)} as of {date}; the rest is taken as one holding with no date")
+            if lots and left != value:
+                of_date[date].append(
+                    f"{path.name}: the tax lots of {asset} come to {format_dollars((value or 0) - left)} of its "
+                    f"{format_dollars(value or 0)} as of {date}; the rest is taken as one holding with no date")
             dated[date].append(Holding(
                 account=account, value_cents=left, asset=asset,
                 cost_basis_cents=None if cash else left_basis, hints=hints))
@@ -266,14 +270,14 @@ def read_portfolio(path: Path, account: str) -> Snapshot:
             f"{path.name} says it is of {said}: its numbers are those accounts' added together, "
             f"and all go to {account}. Export the report for one account at a time")
     last = max(columns)
+    several = len(dated) > 1
+    if not several:
+        notes += of_date[last]
     return Snapshot(
         source=NAME, holdings=tuple(dated[last]), as_of=last, notes=tuple(notes),
         complete=frozenset({account}),
-        dated={date: tuple(held) for date, held in dated.items()} if len(dated) > 1 else {})
-
-
-def _plain_dollars(cents: int) -> str:
-    return f"{cents / 100:,.2f}"
+        dated={date: tuple(held) for date, held in dated.items()} if several else {},
+        dated_notes={date: tuple(said) for date, said in of_date.items() if said} if several else {})
 
 
 def _accounts_said(above: list[list[str]]) -> str | None:

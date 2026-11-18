@@ -14,7 +14,7 @@ from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
 
-from analysis.sim.imports.forms import UNLISTED, Holding, Snapshot
+from analysis.sim.imports.forms import UNLISTED, Holding, Snapshot, format_dollars
 from analysis.sim.imports.mapping import AccountMap, AccountTarget
 from analysis.sim.registries import CASH_SYMBOL, DEFAULT_LOT, RETIREMENT_LOT_SUBKINDS
 from analysis.sim.types import INVESTMENT_ASSET_SUBKINDS, InvestmentAssetSubkind
@@ -28,13 +28,6 @@ __all__ = [
 def is_investment_asset(kind: str, subkind: str) -> bool:
     """Whether an account's ``prior_year_end_balance`` is meaningful to set."""
     return kind == "asset" and subkind in INVESTMENT_ASSET_SUBKINDS
-
-
-def format_dollars(cents: int) -> str:
-    """Format integer cents as the dollars-and-cents string account_lots.csv expects."""
-    sign = "-" if cents < 0 else ""
-    dollars, rem = divmod(abs(cents), 100)
-    return f"{sign}{dollars}.{rem:02d}"
 
 
 @dataclass(frozen=True)
@@ -125,9 +118,10 @@ def nearest(snapshot: Snapshot, wanted: dt.date) -> Snapshot:
     day = min(snapshot.dated, key=lambda each: (abs((each - wanted).days), -each.toordinal()))
     others = ", ".join(str(each) for each in sorted(snapshot.dated) if each != day)
     return dataclasses.replace(
-        snapshot, holdings=snapshot.dated[day], as_of=day, dated={},
-        notes=(*snapshot.notes, f"the file has numbers as of several dates; those of {day} are used, "
-                                f"the nearest to {wanted} (not {others})"))
+        snapshot, holdings=snapshot.dated[day], as_of=day, dated={}, dated_notes={},
+        notes=(*snapshot.notes, *snapshot.dated_notes.get(day, ()),
+               f"the file has numbers as of several dates; those of {day} are used, "
+               f"the nearest to {wanted} (not {others})"))
 
 
 def at(snapshot: Snapshot, since: dt.date) -> tuple[Snapshot, frozenset[str], tuple[str, ...]]:

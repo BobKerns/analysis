@@ -91,6 +91,9 @@ class Snapshot:
     """The holdings as of each date the file has them for, ``as_of`` among
     them, where it has more than one: a report over a period, with a set
     of columns for each of its dates (``holdings.nearest`` picks one)."""
+    dated_notes: Mapping[dt.date, tuple[str, ...]] = field(default_factory=dict)
+    """With ``dated``, what is to be said of one date's holdings only: the
+    notes of the date picked join ``notes``."""
     unaccounted: Mapping[str, str] = field(default_factory=dict)
     """By account, why a file that could have such activity has none for
     it, as the end of a sentence: said where the balance was wanted as of
@@ -178,6 +181,13 @@ class Budget:
     months: tuple[dt.date, ...] = ()
     """The first day of each month of the period, in order; empty when the
     file doesn't say which months it covers."""
+
+
+def format_dollars(cents: int) -> str:
+    """Format integer cents as the dollars-and-cents string account_lots.csv expects."""
+    sign = "-" if cents < 0 else ""
+    dollars, rem = divmod(abs(cents), 100)
+    return f"{sign}{dollars}.{rem:02d}"
 
 
 def read_rows(path: Path, limit: int | None = None) -> list[list[str]]:

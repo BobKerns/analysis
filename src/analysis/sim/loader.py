@@ -2959,10 +2959,11 @@ def _validate_lot_money(
             issues.append(f"{where}: missing account_name")
             continue
         lot = row.get("lot") or registries.DEFAULT_LOT
-        if ":" in lot:
-            issues.append(
-                f"{where} ({name}): lot '{lot}' may not contain ':'"
-            )
+        # ':' joins an account to its lot. A comma would need quoting in
+        # every CSV the name goes into, and one found here is as likely a
+        # row whose cells a hand edit shifted.
+        issues.extend(
+            f"{where} ({name}): lot '{lot}' may not contain '{mark}'" for mark in ":," if mark in lot)
         if name not in account_names:
             issues.append(
                 f"{where} ({name}): account_name not in accounts.csv"

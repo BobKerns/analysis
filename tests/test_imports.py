@@ -127,7 +127,13 @@ def test_a_portfolio_report_s_opened_lines_are_read_by_tax_lot(quicken_tax_lot_r
     assert [(h.acquired, h.value_cents, h.cost_basis_cents) for h in partly.holdings if h.asset == "VTSAX"] == [
         (dt.date(2019, 3, 15), 19500000, 12000000), (dt.date(2026, 2, 10), 1200000, 1000000),
         (None, 9300000, 8000000)]
-    assert "the tax lots of VTSAX come to 207,000.00 of its 300,000.00 as of 2026-08-18" in partly.notes[0]
+    # Said of the date whose numbers are imported, not of the report's last.
+    assert not partly.notes
+    assert "the tax lots of VTSAX come to 207000.00 of its 300000.00 as of 2026-08-18" \
+        in holdings.nearest(partly, dt.date(2026, 8, 1)).notes[0]
+    earlier = holdings.nearest(partly, dt.date(2026, 1, 1)).notes
+    assert "the tax lots of VTSAX come to 170000.00 of its 250000.00 as of 2025-12-31" in earlier[0]
+    assert len(earlier) == 2 and "those of 2025-12-31 are used" in earlier[1]
 
     several = quicken_tax_lot_report.with_name("several.csv")
     several.write_text(
