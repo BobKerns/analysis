@@ -8,11 +8,11 @@ flows, or both, each with a test of whether a file is in its layout so
 
 from __future__ import annotations
 
-import contextlib
+import functools
 import datetime as dt
 import itertools
 from collections import Counter
-from collections.abc import Callable, Generator, Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
@@ -49,6 +49,30 @@ class Reader[T]:
     of the source's don't: such a file is read with ``read_named``."""
     read_named: Callable[[Path, str], T] | None = None
     """Reads a file as the outside account given."""
+
+    def __post_init__(self) -> None:
+        # Every caller of either, now and later, gets the same answer for a
+        # file that isn't text.
+        object.__setattr__(self, "read", _text_only(self.read))
+        if self.read_named is not None:
+            object.__setattr__(self, "read_named", _text_only(self.read_named))
+
+
+def _text_only[**P, T](read: Callable[P, T]) -> Callable[P, T]:
+    """``read`` (of a path first), saying of a file that isn't text that it
+    is that, and not the codec's complaint about a byte. It is most often
+    the outside program's own data file (Quicken's ``.qxf``), given where a
+    report it exports was meant."""
+    @functools.wraps(read)
+    def reading(*args: P.args, **kwargs: P.kwargs) -> T:
+        try:
+            return read(*args, **kwargs)
+        except UnicodeDecodeError:
+            raise SourceError(
+                f"{args[0]} isn't a text file, so it isn't a report exported as CSV. A program's own data or "
+                "transfer file (such as Quicken's .qxf or .qdf) can't be read: export a report from the program "
+                "instead ('sim import sources' lists what each source reads)") from None
+    return reading
 
 
 @dataclass(frozen=True)
@@ -238,21 +262,6 @@ def _resolve(
     return next(iter(found.values()))
 
 
-@contextlib.contextmanager
-def _reading(path: Path) -> Generator[None]:
-    """Reading ``path`` as a named source: a file that isn't text is said to
-    be that, and not as the codec's complaint about a byte. It is most
-    often the outside program's own data file (Quicken's ``.qxf``), given
-    where a report it exports was meant."""
-    try:
-        yield
-    except UnicodeDecodeError:
-        raise SourceError(
-            f"{path} isn't a text file, so it isn't a report exported as CSV. A program's own data or "
-            "transfer file (such as Quicken's .qxf or .qdf) can't be read: export a report from the program "
-            "instead ('sim import sources' lists what each source reads)") from None
-
-
 def unnamed(
     paths: Sequence[Path], name: str | None = None, imports: Path | None = None,
 ) -> tuple[Source, list[Path]]:
@@ -276,16 +285,14 @@ def read_holdings(
     if account is None:
         snapshots = []
         for path in paths:
-            with _reading(path):
-                snapshots.append(source.holdings.read(path))
+            snapshots.append(source.holdings.read(path))
     elif source.holdings.read_named is None:
         raise SourceError(
             f"a {source.name} file names its accounts itself, so --outside-account doesn't apply")
     elif len(paths) > 1:
         raise SourceError("--outside-account names one file's account; import the files one at a time")
     else:
-        with _reading(paths[0]):
-            snapshots = [source.holdings.read_named(paths[0], account)]
+        snapshots = [source.holdings.read_named(paths[0], account)]
     dates = {snapshot.as_of for snapshot in snapshots if snapshot.as_of is not None}
     if len(dates) > 1:
         raise SourceError(
@@ -310,6 +317,7 @@ def read_holdings(
         unaccounted={account: why for snapshot in snapshots for account, why in snapshot.unaccounted.items()},
         # Only a file read alone keeps its other dates: two files' agree on one.
         dated=snapshots[0].dated if len(snapshots) == 1 else {},
+        dated_notes=snapshots[0].dated_notes if len(snapshots) == 1 else {},
     )
 
 
@@ -372,11 +380,9 @@ def read_flows(
         described = None if source.profile is None else source.profile.transactions
         if number in unnamed and described is not None:
             said = named.get(number) or (ask_account(path, source.name) if ask_account else None)
-            with _reading(path):
-                read = described.read(path, said)
+            read = described.read(path, said)
         else:
-            with _reading(path):
-                read = source.transactions.read(path)
+            read = source.transactions.read(path)
         frame = read.transactions
         notes += read.notes
         frame = frame.assign(**{ORIGIN: source.name})
@@ -570,7 +576,6 @@ def read_budget(path: Path, name: str | None = None, imports: Path | None = None
     source = _resolve([path], name, "budget", imports)
     assert source.budget is not None
     try:
-        with _reading(path):
-            return source.budget.read(path)
+        return source.budget.read(path)
     except ValueError as error:
         raise SourceError(str(error)) from None

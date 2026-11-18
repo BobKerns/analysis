@@ -18709,10 +18709,11 @@ def _person_fields(
             role = _prompt_with_completion(
                 "role", [*roles, _NO_ROLE], default=current.get("role") or default_role or _NO_ROLE,
             )
-            if role.strip() == _NO_ROLE:
-                role = ""
         if meta_json is None:
             meta_json = click.prompt("meta_json", default=current.get("meta_json") or "{}")
+    if role is not None and role.strip() == _NO_ROLE:
+        # However it was given, so that no person's role is the word itself.
+        role = ""
     fields = {
         "display": (display if display is not None else current.get("display", "")).strip(),
         "birthdate": _check_birthdate(

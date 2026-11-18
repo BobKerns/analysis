@@ -77,6 +77,19 @@ def test_person_add_asks_for_what_is_missing(
     assert "role [primary]:" in result.output and _persons(test_data_dir)["dave"]["role"] == ""
 
 
+def test_person_role_none_as_an_option_is_no_role_too(
+    sim: Callable[..., Result], test_data_dir: Path,
+) -> None:
+    added = sim("person", "add", "carol", "--display", "Carol (fake)", "--birthdate", "1995-02-03",
+                "--sex", "f", "--role", "none")
+    assert added.exit_code == 0, added.output
+    assert _persons(test_data_dir)["carol"]["role"] == ""
+    assert sim("person", "edit", "carol", "--role", "secondary").exit_code == 0
+    edited = sim("person", "edit", "carol", "--role", "none")
+    assert edited.exit_code == 0, edited.output
+    assert _persons(test_data_dir)["carol"]["role"] == ""
+
+
 @pytest.mark.parametrize(("args", "message"), [
     (("alice", "--display", "A", "--birthdate", "1990-01-01"), "already exists"),
     (("carol", "--display", "C", "--birthdate", "1990-01"), "YYYY-MM-DD"),
