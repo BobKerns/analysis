@@ -1380,6 +1380,23 @@ def set_brokerage_lots(retire_alice_csv: Callable[[str], Path]) -> Callable[[lis
 
 
 @pytest.fixture(scope="function")
+def mistaken_symbol(test_data_dir: Path) -> str:
+    """A symbol, ``XOLD``, added to the private data copy and held by no lot:
+    named in securities.csv (beside ``VTI``), two sets of weights in
+    allocations.csv (beside VTI's), a shared price file and retire_alice's
+    own. For ``sim symbol delete`` (#191); hold it with
+    ``set_brokerage_lots``. Returns the symbol."""
+    (test_data_dir / "securities.csv").write_text("symbol,name\nXOLD,A mistake\nVTI,Total market\n")
+    (test_data_dir / "allocations.csv").write_text(
+        "symbol,as_of,asset_class,weight\nXOLD,,bond,100%\nXOLD,2030-01,cash,100%\nVTI,,stock_us,100%\n")
+    (test_data_dir / "prices" / "security_price__XOLD.csv").write_text("effective_date,price\n2026-01-02,10.00\n")
+    own = test_data_dir / "scenarios" / "retire_alice" / "prices"
+    own.mkdir(exist_ok=True)
+    (own / "security_price__XOLD.csv").write_text("effective_date,price\n2026-01-02,11.00\n")
+    return "XOLD"
+
+
+@pytest.fixture(scope="function")
 def savings_lots(retire_alice_csv: Callable[[str], Path]) -> tuple[str, str]:
     """Split the private retire_alice copy's Asset_Savings, an ordinary (not
     investment) account, into lots ``emergency`` and ``travel``, neither

@@ -5376,14 +5376,28 @@ def switch_command(scenario: str | None, data_dir: Path | None) -> None:
 
 
 @sim_group_command.command("items")
-@click.option("--account", type=completion.ACCOUNT, default=None,
-              help="Account name in the selected run (asked for when left out).")
-@click.option("--lot", type=completion.LotName("account"), default=None,
-              help="Only events touching this lot of the account (default: every lot).")
-@click.option("--start", required=True, help="First month (YYYY-MM or YYYY-MM-DD).")
-@click.option("--end", default=None, help="Last month (YYYY-MM or YYYY-MM-DD); overrides --months.")
-@click.option("--months", default=1, show_default=True, type=click.IntRange(min=1),
-              help="Number of months to include when --end is omitted.")
+@click.option("--account", "accounts", type=completion.ACCOUNT, multiple=True,
+              help="Only events with this account at either end (repeatable; default: the whole ledger).")
+@click.option("--lot", type=completion.LotName("accounts"), default=None,
+              help="With one --account: only events touching this lot of it (default: every lot).")
+@click.option("--start", default=None, help="First month (YYYY-MM or YYYY-MM-DD; default: the run's first).")
+@click.option("--end", default=None,
+              help="Last month (YYYY-MM or YYYY-MM-DD; default: the run's last, or --months after --start).")
+@click.option("--months", default=None, type=click.IntRange(min=1),
+              help="With --start and no --end: how many months to show (default 1).")
+@click.option("--reason", "reasons", type=click.Choice(registries.REASON_KINDS), multiple=True,
+              help="Only events posted for this reason (repeatable): a rule, an opening balance, "
+                   "year-to-date catch-up, a refill or overflow, a strategy's or a tax payment.")
+@click.option("--rule", "rules", type=completion.RULE_FILTER, multiple=True,
+              help="Only events this scheduled rule (or tax jurisdiction) posted (repeatable).")
+@click.option("--tax-character", "tax_characters", type=click.Choice(sorted(registries.TAX_CHARACTERS)),
+              multiple=True, help="Only events of this tax character (repeatable).")
+@click.option("--tag", "tags", type=completion.TAG_FILTER, multiple=True,
+              help="Only events carrying this tag ('role:name', or 'role:*'), on their rule or, "
+                   "when the rule has none in that role, on its income or expense account, as "
+                   "`sim report --by tag:ROLE` groups them (repeatable: all must match).")
+@click.option("--limit", default=500, show_default=True, type=click.IntRange(min=0),
+              help="Show at most this many events (0: all of them); the title still counts every one.")
 @click.option("--runfile", type=click.Path(exists=True, dir_okay=False, path_type=Path),
               default=None, help="Run file (default: selected scenario's latest run).")
 @click.option("--scenario", type=completion.SCENARIO, default=None,
@@ -5393,25 +5407,54 @@ def switch_command(scenario: str | None, data_dir: Path | None) -> None:
 @click.option("--runs-dir", type=click.Path(file_okay=False, path_type=Path), default=None,
               help="Directory to search for the latest run.")
 def items(
-    account: str | None,
+    accounts: tuple[str, ...],
     lot: str | None,
-    start: str,
+    start: str | None,
     end: str | None,
-    months: int,
+    months: int | None,
+    reasons: tuple[str, ...],
+    rules: tuple[str, ...],
+    tax_characters: tuple[str, ...],
+    tags: tuple[str, ...],
+    limit: int,
     runfile: Path | None,
     scenario: str | None,
     data_dir: Path | None,
     runs_dir: Path | None,
 ) -> None:
-    """Show ledger events for one account with their originating rules."""
-    start = month_end_iso(_validate_month_date(start))
+    """Show a run's ledger events, filtered, with the rules that posted them.
+
+    With no options, every event of the run, up to --limit. Filters narrow it: by account
+    (either end), dates, reason, rule, tax character and tag; the same as
+    events.ipynb's. Each row shows its event number, and Caused by gives the
+    event a leg derives from, such as the debit whose look-ahead drew a
+    refill. With one --account (and no --lot), rows are in posting order
+    with the account's running balance after each.
+    """
+    if lot is not None and len(accounts) != 1:
+        raise click.UsageError("--lot narrows one --account")
+    if months is not None and (start is None or end is not None):
+        raise click.UsageError("--months counts from --start, in place of --end")
+    from analysis.sim import events as events_
+
+    for tag in tags:
+        try:
+            events_.check_tag(tag)
+        except ValueError as exc:
+            raise click.UsageError(str(exc)) from None
+    first = last = None
+    if start is not None:
+        start = month_end_iso(_validate_month_date(start))
+        first = date.fromisoformat(start).replace(day=1)
     if end is not None:
         end = month_end_iso(_validate_month_date(end))
-        if end < start:
+        if start is not None and end < start:
             raise click.ClickException("--end must be on or after --start")
-    else:
+    elif start is not None:
         # start is a month end, so MonthEnd(n) lands n month ends later.
-        end = str((pd.Timestamp(start) + pd.offsets.MonthEnd(months - 1)).date())
+        end = str((pd.Timestamp(start) + pd.offsets.MonthEnd((months or 1) - 1)).date())
+    if end is not None:
+        last = date.fromisoformat(end)
 
     if runfile is None:
         data_dir_p = _resolve_data_dir(data_dir)
@@ -5425,90 +5468,84 @@ def items(
                 f"no runs for {scenario_ref.name!r} in {resolved_runs_dir}; run `sim run` first"
             )
 
-    con = connect_sim_file(f"file:{runfile}?mode=ro", uri=True)
-    try:
-        if account is None:
-            account = _ask_name("account", (r[0] for r in con.execute("SELECT name FROM account ORDER BY name")))
-        account_row = con.execute("SELECT id FROM account WHERE name = ?", (account,)).fetchone()
-        if account_row is None:
-            raise click.ClickException(f"unknown account in run: {account!r}")
-        account_id = account_row[0]
-        lot_id = None
+    with RunConnection(runfile) as rc:
+        known = rc.items("account").set_index("name")
+        for account in accounts:
+            if account not in known.index:
+                raise click.ClickException(f"unknown account in run: {account!r}")
         if lot is not None:
-            lot_row = con.execute(
-                "SELECT id FROM account_lot WHERE account_id = ? AND lot = ?",
-                (account_id, lot),
-            ).fetchone()
-            if lot_row is None:
-                raise click.ClickException(f"unknown lot {lot!r} of account {account!r}")
-            lot_id = lot_row[0]
-        rows = con.execute(
-            "SELECT te.date, fa.name, fa.subkind, fm.lot, te.from_account, te.from_lot_id, "
-            "ta.name, ta.subkind, tm.lot, te.to_account, te.to_lot_id, "
-            "te.amount, te.requested_cents, te.remainder_cents, te.tax_character, "
-            "te.reason_kind, COALESCE(s.name, tj.name), "
-            "COALESCE(s.amount_rule_kind, tj.kind) "
-            "FROM transfer_event te "
-            "JOIN account fa ON fa.id = te.from_account "
-            "JOIN account ta ON ta.id = te.to_account "
-            "JOIN account_lot fm ON fm.id = te.from_lot_id "
-            "JOIN account_lot tm ON tm.id = te.to_lot_id "
-            "LEFT JOIN scheduled_transaction s "
-            "  ON s.id = te.reason_id AND te.reason_kind IN ('rule', 'ytd_rule') "
-            "LEFT JOIN tax_jurisdiction tj ON tj.id = te.reason_id AND te.reason_kind = 'tax' "
-            "WHERE ((? IS NULL AND ? IN (te.from_account, te.to_account)) "
-            "       OR ? IN (te.from_lot_id, te.to_lot_id)) "
-            "  AND te.date BETWEEN ? AND ? "
-            "ORDER BY te.date, te.id",
-            (lot_id, account_id, lot_id, start, end),
-        ).fetchall()
-    finally:
-        con.close()
+            # Any account's lots, an income or expense account's one included.
+            lots = rc.items("account_lot")
+            if not ((lots["account"] == accounts[0]) & (lots["lot"] == lot)).any():
+                raise click.ClickException(f"unknown lot {lot!r} of account {accounts[0]!r}")
+        _heading, table = events_.events_view(
+            rc, accounts=accounts, reason_kinds=reasons, tax_characters=tax_characters,
+            start=first, end=last, lots=(lot,) if lot else (), rules=rules, tags=tags,
+        )
+    subkinds = known["subkind"].to_dict()
 
     click.echo(f"run: {runfile}")
-    click.echo(
-        f"account: {account}{f' (lot {lot})' if lot else ''}  window: {start} through {end}"
-    )
-    if not rows:
+    window = f"{first or 'start'} through {end or 'end'}"
+    if len(accounts) == 1:
+        click.echo(f"account: {accounts[0]}{f' (lot {lot})' if lot else ''}  window: {window}")
+    else:
+        click.echo(f"accounts: {', '.join(accounts) or 'all'}  window: {window}")
+    if table.empty:
         click.echo("(no matching ledger events)")
         return
 
-    from rich.console import Console
     from rich.table import Table
 
-    table = Table(title=f"ledger events ({account})")
-    table.add_column("Date")
-    table.add_column("Lot")
-    table.add_column("Direction")
-    table.add_column("Amount", justify="right")
-    table.add_column("Requested", justify="right")
-    table.add_column("Remainder", justify="right")
-    table.add_column("Tax")
-    table.add_column("Origin")
-    for (date_, from_name, from_subkind, from_lot, from_account_id, from_lot_id,
-         to_name, to_subkind, to_lot, _to_account_id, _to_lot_id,
-         amount, requested, remainder, tax_character,
-         reason_kind, rule_name, rule_kind) in rows:
-        own_is_from = (from_lot_id == lot_id) if lot_id is not None else (
-            from_account_id == account_id
-        )
-        if own_is_from:
-            direction = "to " + _account_with_lot(to_name, to_subkind, to_lot)
-            own = from_lot
+    one = accounts[0] if len(accounts) == 1 else None
+    title = f"ledger events ({one})" if one else "ledger events"
+    table_ = Table(title=f"{title}: {len(table):,}, {_compact_cents(round(table['amount'].sum() * 100))} total")
+    table_.add_column("#", justify="right")
+    table_.add_column("Date")
+    if one:
+        table_.add_column("Lot")
+        table_.add_column("Direction")
+    else:
+        table_.add_column("From")
+        table_.add_column("To")
+    table_.add_column("Amount", justify="right")
+    table_.add_column("Requested", justify="right")
+    table_.add_column("Remainder", justify="right")
+    table_.add_column("Tax")
+    table_.add_column("Origin")
+    table_.add_column("Caused by", justify="right")
+    has_balance = "balance" in table.columns
+    if has_balance:
+        table_.add_column("Balance", justify="right")
+
+    def cents(value: Any) -> int | None:
+        return None if pd.isna(value) else round(value * 100)
+
+    shown = table if not limit else table.head(limit)
+    for event, row in shown.iterrows():
+        source = _account_with_lot(row["from"], subkinds.get(row["from"]), row["from_lot"])
+        target = _account_with_lot(row["to"], subkinds.get(row["to"]), row["to_lot"])
+        if one:
+            # Which end is the account's own: a lot's, when --lot picked one.
+            own_is_from = row["from"] == one and (lot is None or row["from_lot"] == lot)
+            cells = [row["from_lot"], "to " + target] if own_is_from else [row["to_lot"], "from " + source]
         else:
-            direction = "from " + _account_with_lot(from_name, from_subkind, from_lot)
-            own = to_lot
-        origin = (
-            f"{reason_kind}: {rule_name} ({rule_kind})"
-            if rule_name is not None
-            else reason_kind
-        )
-        table.add_row(
-            date_, own, direction, _compact_cents(amount),
-            _compact_cents(requested), _compact_cents(remainder),
-            tax_character, origin,
-        )
-    Console(width=200).print(table)
+            cells = [source, target]
+        rule = row["rule"]
+        origin = (f"{row['reason']}: {rule} ({row['rule_kind']})" if pd.notna(rule) else row["reason"])
+        caused_by = row["caused_by"]
+        line = [
+            str(event), row["date"], *cells, _compact_cents(cents(row["amount"])),
+            _compact_cents(cents(row["requested"])) if pd.notna(row["requested"]) else "",
+            _compact_cents(cents(row["remainder"])) if pd.notna(row["remainder"]) else "",
+            row["tax_character"], origin, "" if pd.isna(caused_by) else str(caused_by),
+        ]
+        if has_balance:
+            line.append("-" if pd.isna(row["balance"]) else _compact_cents(cents(row["balance"])))
+        table_.add_row(*line)
+    _print_unclipped(table_)
+    if len(shown) < len(table):
+        click.echo(f"showing the first {len(shown):,} of {len(table):,} events: narrow them with the "
+                   "filters, or pass --limit 0 for all")
 
 
 def _fmt_quantity(micros: int | None) -> str:
@@ -15509,10 +15546,19 @@ def _ask_symbol() -> tuple[str, str | None, tuple[str, ...], str | None]:
     """``symbol add``'s arguments, asked a question at a time."""
     symbol = click.prompt("symbol (ticker)").strip()
     name = click.prompt("name (optional)", default="", show_default=False).strip() or None
+    specs = _ask_weights("weights (optional)",
+                         "e.g. stock_us=60% bond=40%; blank to add the weights later (an AI can look them up)")
+    as_of = _ask_month("as of YYYY-MM (optional; blank for every date)") if specs else None
+    return symbol, name, specs, as_of
+
+
+def _ask_weights(question: str, hint: str) -> tuple[str, ...]:
+    """A set of ``CLASS=PERCENT`` weights, asked again until they parse and
+    add up to 100%; blank for none."""
     click.echo(f"  asset classes: {registries.asset_class_list()}")
-    click.echo("  e.g. stock_us=60% bond=40%; blank to add the weights later (an AI can look them up)")
+    click.echo(f"  {hint}")
     while True:
-        text = click.prompt("weights (optional)", default="", show_default=False).strip()
+        text = click.prompt(question, default="", show_default=False).strip()
         try:
             weights = symbols.parse_weights(text.split()) if text else {}
         except ValueError as exc:
@@ -15522,12 +15568,21 @@ def _ask_symbol() -> tuple[str, str | None, tuple[str, ...], str | None]:
         if weights and total != 1_000_000:
             click.echo(f"  these add up to {units.micros_to_percent(total)}, not 100%")
             continue
-        break
-    as_of = None
-    if weights:
-        as_of = click.prompt("as of YYYY-MM (optional; blank for every date)",
-                             default="", show_default=False).strip() or None
-    return symbol, name, tuple(text.split()), as_of
+        return tuple(text.split())
+
+
+def _ask_month(question: str) -> str | None:
+    """A YYYY-MM month, asked again until it parses; blank for None."""
+    while True:
+        text = click.prompt(question, default="", show_default=False).strip()
+        if not text:
+            return None
+        try:
+            month_end_iso(text)
+        except ValueError:
+            click.echo(f"  {text!r} is not a YYYY-MM month")
+            continue
+        return text
 
 
 @symbol_group_command.command("edit")
@@ -15536,47 +15591,133 @@ def _ask_symbol() -> tuple[str, str | None, tuple[str, ...], str | None]:
 @click.option("--never-fetch/--may-fetch", "no_fetch", default=None,
               help="Mark it no_fetch in securities.csv, or clear the mark: a marked symbol's "
                    "prices are fetched, and it is researched, only when it is named.")
+@click.option("--weight", "weight_specs", multiple=True, metavar="CLASS=PERCENT",
+              help="Its share in one asset class (repeatable); together they make a whole new "
+                   "set, adding up to 100%. Without --as-of, they correct its latest set.")
+@click.option("--as-of", "as_of", default=None, metavar="YYYY-MM",
+              help="The month the --weight set describes: replaces that month's set, or adds a "
+                   "new dated set beside the others.")
 @click.option("--data-dir", type=click.Path(exists=True, file_okay=False, path_type=Path),
               default=None, help="Data repo (default: $ANALYSIS_DATA_DIR)")
 def symbol_edit_command(
-    symbol: str | None, name: str | None, no_fetch: bool | None, data_dir: Path | None,
+    symbol: str | None, name: str | None, no_fetch: bool | None,
+    weight_specs: tuple[str, ...], as_of: str | None, data_dir: Path | None,
 ) -> None:
-    """Change a symbol's securities.csv row: its name, or its no_fetch mark.
+    """Change a symbol: its name, its no_fetch mark, or its asset-class weights.
 
-    With no options, shows the row and asks for each field. A symbol with no
-    row gets one, unnamed unless a name is given. A symbol marked no_fetch
-    (one nothing can price, or an obsolete one) is skipped by `sim prices
-    fetch` with no symbol named and by the background builder's price fetch
-    and research; naming it runs it anyway, with a warning (#640). Weights
-    are changed in allocations.csv, or with `sim symbol research`.
+    With no options, shows what it has and asks for each. A symbol with no
+    securities.csv row gets one, unnamed unless a name is given. A symbol
+    marked no_fetch (one nothing can price, or an obsolete one) is skipped by
+    `sim prices fetch` with no symbol named and by the background builder's
+    price fetch and research; naming it runs it anyway, with a warning (#640).
+
+    --weight writes a whole set of weights to allocations.csv (#191). With
+    --as-of it replaces that month's set, or adds a new dated one (a fund's
+    glide path); without it, it corrects the latest set, keeping its date.
+    A symbol with no weights yet gets a set for every date. `sim symbol
+    research` can look the weights up. Both files change, or neither.
     """
     data = _resolve_data_dir(data_dir)
     if symbol is None:
         symbol = _ask_name("symbol", names.symbols(data), other=lambda _new: True)
     try:
         symbol = symbols.normalize_symbol(symbol)
+        weights = symbols.parse_weights(list(weight_specs))
     except ValueError as exc:
         raise click.UsageError(str(exc)) from None
-    current = symbols.security_name(data, symbol)
-    marked = symbol in prices.no_fetch_symbols(data)
-    if name is None and no_fetch is None:
-        click.echo(f"{symbol}: name {current or '(none)'}; "
-                   f"{'marked no_fetch' if marked else 'fetched and researched'}")
+    if as_of is not None and not weights:
+        raise click.UsageError("--as-of dates a set of weights; give --weight too")
+    if name is None and no_fetch is None and not weights:
+        current = symbols.security_name(data, symbol)
+        marked = symbol in prices.no_fetch_symbols(data)
+        latest = symbols.latest_set(data, symbol)
+        shown = symbols.weights_text(*latest) if latest else "(none)"
+        click.echo(f"{symbol}: name {current or '(none)'}; {symbols.fetch_text(marked)}; weights {shown}")
         name = click.prompt("name (blank: none)", default=current or "",
                             show_default=bool(current)).strip()
         no_fetch = click.confirm("mark it no_fetch (no price fetch or research unless named)?",
                                  default=marked)
+        weights = symbols.parse_weights(list(_ask_weights(
+            "new weights (blank: keep)", "e.g. stock_us=60% bond=40%; together a whole set, adding up to 100%")))
+        if weights:
+            kept = latest[0] if latest else ""
+            where = f"the latest set, as of {kept}" if kept else (
+                "the latest set" if latest else "a set for every date")
+            as_of = _ask_month(f"as of YYYY-MM (blank: {where})")
     try:
-        changed = symbols.edit_security(data, symbol, name=name, no_fetch=no_fetch)
+        edited = symbols.edit_symbol(data, symbol, name=name, no_fetch=no_fetch,
+                                     weights=weights or None, as_of=as_of)
     except ValueError as exc:
         raise click.ClickException(str(exc)) from None
-    if not changed:
+    if edited.named:
+        mark = symbol in prices.no_fetch_symbols(data)
+        click.echo(f"{symbol}: name {symbols.security_name(data, symbol) or '(none)'}; "
+                   f"{symbols.fetch_text(mark)} (securities.csv)")
+    if edited.as_of is not None:
+        dated = f"as of {edited.as_of}" if edited.as_of else "for every date"
+        click.echo(f"{symbol}: {', '.join(f'{c} {w}' for c, w in weights.items())} {dated} "
+                   f"({'replaced' if edited.replaced else 'added to'} allocations.csv)")
+    elif not edited.named:
         click.echo(f"{symbol}: unchanged")
-        return
-    shown = symbols.security_name(data, symbol)
-    mark = symbol in prices.no_fetch_symbols(data)
-    click.echo(f"{symbol}: name {shown or '(none)'}; "
-               f"{'marked no_fetch' if mark else 'fetched and researched'} (securities.csv)")
+
+
+@symbol_group_command.command("delete")
+@click.argument("symbol", type=completion.SYMBOL, required=False)
+@click.option("--prices/--keep-prices", "delete_prices", default=None,
+              help="Also delete its price files, the shared one and any scenario's own "
+                   "(default: asked; with --yes, kept).")
+@click.option("--yes", is_flag=True, help="Delete without asking anything.")
+@click.option("--data-dir", type=click.Path(exists=True, file_okay=False, path_type=Path),
+              default=None, help="Data repo (default: $ANALYSIS_DATA_DIR)")
+def symbol_delete_command(
+    symbol: str | None, delete_prices: bool | None, yes: bool, data_dir: Path | None,
+) -> None:
+    """Remove a symbol added by mistake: its securities.csv and allocations.csv rows.
+
+    Refuses while a lot in any scenario holds it, and lists them; for an
+    <account>:<lot> key, while that lot exists. Its price files
+    (prices/security_price__SYMBOL.csv, and any scenario's own) go too with
+    --prices, or after asking; --yes asks nothing and keeps them unless
+    --prices is given. Its research/ folder and any rate series named for it
+    are left in place and named. Every file changes, or none.
+    """
+    data = _resolve_data_dir(data_dir)
+    if symbol is None:
+        symbol = _ask_name("symbol", names.symbols(data))
+    try:
+        plan = symbols.plan_delete(data, symbol)
+    except ValueError as exc:
+        raise click.UsageError(str(exc)) from None
+    symbol = plan.symbol
+    if plan.held:  # before any question: nothing can be deleted
+        try:
+            symbols.delete_symbol(data, plan)
+        except ValueError as exc:
+            raise click.ClickException(str(exc)) from None
+    if not plan.named and not plan.weight_sets and not plan.prices:
+        raise click.ClickException(f"{symbol} is not in securities.csv, allocations.csv or any prices/ folder")
+    rows = [what for what, there in (("its securities.csv row", plan.named),
+                                     (f"{plan.weight_sets} set(s) of weights in allocations.csv",
+                                      plan.weight_sets)) if there]
+    if delete_prices is None:
+        delete_prices = bool(plan.prices) and not yes and click.confirm(
+            f"delete {symbol}'s price files?\n  "
+            + "\n  ".join(str(p.relative_to(data)) for p in plan.prices) + "\n", default=False)
+    going = [*rows, *([f"{len(plan.prices)} price file(s)"] if delete_prices and plan.prices else [])]
+    if going and not yes and not click.confirm(f"delete {' and '.join(going)}?", default=False):
+        raise click.Abort
+    try:
+        removed = symbols.delete_symbol(data, plan, prices=bool(delete_prices))
+    except (ValueError, OSError) as exc:
+        raise click.ClickException(str(exc)) from None
+    if plan.named:
+        click.echo(f"{symbol}: removed from securities.csv")
+    if plan.weight_sets:
+        click.echo(f"{symbol}: removed {plan.weight_sets} set(s) of weights from allocations.csv")
+    for path in plan.prices:
+        click.echo(f"{symbol}: {'deleted' if path in removed else 'kept'} {path.relative_to(data)}")
+    for path in plan.left:
+        click.echo(f"{symbol}: left in place: {path.relative_to(data)}")
 
 
 @symbol_group_command.command("research")
