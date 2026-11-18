@@ -274,6 +274,9 @@ CHAIN = NameType(_in_scenario(names.chain_names), "chain",
 ENDPOINT = NameType(_in_scenario(lambda d, s: names.chain_names(d, s, accounts=True)),
                     "account or chain", plural="accounts and chains", known=_builtin_accounts)
 RULE = NameType(_in_scenario(names.scheduled_names), "scheduled rule")
+# A filter on a run's events: a scheduled rule, but also a tax jurisdiction,
+# a generated growth rule or a rule the run has and the scenario no longer does.
+RULE_FILTER = NameType(_in_scenario(names.scheduled_names), "rule", check=False)
 YTD_ROW = NameType(_in_scenario(names.ytd_names), "year-to-date row")
 STRATEGY = NameType(_in_scenario(names.strategy_names), "strategy")
 TAX_JURISDICTION = NameType(_in_scenario(names.tax_jurisdiction_names), "tax jurisdiction")
@@ -408,11 +411,13 @@ AUX_KIND = NameType(lambda ctx, data_dir: sorted(registries.SWAPPABLE_AUX_KINDS)
 
 class LotName(NameType):
     """A lot of the account that ``account_param`` (an argument or option of
-    the same command) names."""
+    the same command) names; for a repeatable option, the one account given."""
 
     def __init__(self, account_param: str) -> None:
         def lister(ctx: click.Context, data_dir: Path) -> Sequence[str]:
             account = _line_params(ctx).get(account_param)
+            if isinstance(account, (tuple, list)) and len(account) == 1:
+                account = account[0]
             if not isinstance(account, str):
                 return []
             return _union(lambda s: names.lot_names(data_dir, s, account),

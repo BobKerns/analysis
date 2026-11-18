@@ -514,7 +514,7 @@ Names for the symbols lots hold ([ADR-005](ADR-005-lots-and-per-lot-state.md)). 
 | `name` | text | | the security's name, shown next to the symbol in holdings views; blank leaves it unnamed. A price fetch or research that finds the name fills in a blank or missing one, adding the row |
 | `no_fetch` | `0`/`1` | | `1` marks a symbol nothing can price, or an obsolete one: no price fetch (`sim prices fetch` with no symbol named, the builder's scheduled fetch) and no scheduled research take it. Named on the command line (`sim prices fetch SYMBOL`, `sim symbol research SYMBOL`) it still runs, with a warning. Blank is `0`; the column may be left out ([#640](https://github.com/BobKerns/analysis/issues/640)) |
 
-The file may be omitted, and a symbol with no row is simply unnamed. `sim symbol edit` changes a row's name or mark, adding the row (and the `no_fetch` column) when needed.
+The file may be omitted, and a symbol with no row is simply unnamed. `sim symbol edit` changes a row's name or mark, adding the row (and the `no_fetch` column) when needed. `sim symbol delete` removes a symbol's rows here and in `allocations.csv` (§4.1b), and its price files (§4.4) when asked; it refuses while any scenario's lot holds the symbol.
 
 #### 4.1b Shared base: `data_repo/allocations.csv` (optional)
 
@@ -526,6 +526,8 @@ What each symbol is made of, by asset class, for the portfolio overview (`sim al
 | `as_of` | YYYY-MM | | the date the weights describe; blank holds at every date. A fund's composition drifts (a target-date fund glides), so give several dated sets to follow it |
 | `asset_class` | enum | ✓ | `stock_us`, `stock_intl`, `stock` (stock whose US/international split is unknown: a placeholder to refine, distinct from bonds), `bond` (every bond but a municipal bond), `muni` (many states' municipal bonds, [#265](https://github.com/BobKerns/analysis/issues/265)), `muni_<ST>` (one state's municipal bonds, by its postal code: `muni_CA`), `cd` (certificates of deposit), `cash`, `real_estate`, `other` (`registries.ASSET_CLASSES`). A municipal bond class pays its `_yield` as tax-exempt interest (§2.2) |
 | `weight` | percent | ✓ | `0%` to `100%`; the weights of one (`symbol`, `as_of`) set must add up to 100 |
+
+`sim symbol edit SYMBOL --weight CLASS=PERCENT ...` writes a whole set: with `--as-of`, in place of that month's set or as a new dated one; without it, in place of the symbol's latest set, keeping its `as_of` (a symbol with no set gets a blank one).
 
 For a date the overview uses the symbol's latest set on or before it, else its earliest. A lot with no rows for its symbol is classed by the asset class its growth series is named for (a lot growing at `stock_us` is `stock_us`), else by its account subkind (`cash`, `real_estate`, `vehicle`/`other_asset` as `other`; a `CASH` symbol is cash and a `CD` symbol is `cd`), and otherwise shown as `unclassified`, so a gap is visible. The weights are static per date: the model does not rebalance or let allocations drift with relative price movements, only follow the dated sets you give it, so a lot's class mix at any date is its balance times that date's weights. The file may be omitted.
 
@@ -1706,3 +1708,4 @@ Each entry changed this ADR's design. The sections it names were rewritten in pl
 - [#618](https://github.com/BobKerns/analysis/issues/618): the coded source `ofx` reads OFX and QFX downloads, transactions by payee with each one's `FITID` as its reference, and balances and positions as holdings; the rule for references, shared by every source that has them, is restated (a reference is taken at its word, a file's own repeats are kept, corrections are applied, and what a reference can't be trusted for is noted); a source may say which accounts it lists in full; an account's cash beside its positions goes to its cash lot (§4.17).
 - [#641](https://github.com/BobKerns/analysis/issues/641): a `fixed_amount` with a blank amount pays a liability what it was owed when the month opened; rule kind `card_interest` charges what the month's payments left unpaid, after the month's rules; `sim import transactions` charges a card's spending to the card and writes its payment rule, and the imports' `--from-account` is `--from` (§2.1, §2.12, §4.6, §4.17, §5, §6).
 - [#640](https://github.com/BobKerns/analysis/issues/640): `securities.csv` gains `no_fetch`, and its `name` may be blank (§4.1a).
+- [#191](https://github.com/BobKerns/analysis/issues/191): `sim symbol edit --weight` and `sim symbol delete` (§4.1a, §4.1b).
