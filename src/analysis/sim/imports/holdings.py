@@ -284,6 +284,12 @@ def plan(
     untracked: dict[str, list[str]] = {}
     # The accounts the file has a basis for, of something that isn't cash.
     based: set[str] = set()
+    # Each (account, symbol) the file lists by tax lot: what it has of the
+    # symbol with no date is then no tax lot's, whatever order they come in.
+    tax_lotted = {
+        (target.account, holding.asset.upper()) for holding in snapshot.holdings
+        if holding.acquired is not None and holding.asset
+        and (target := account_map.lookup(holding.account, holding.asset)) is not None and not target.lot}
     for holding in snapshot.holdings:
         target = account_map.lookup(holding.account, holding.asset)
         if target is None:
@@ -341,9 +347,11 @@ def plan(
                        if result.rows[i].get("symbol", "").strip().upper() == holding.asset.upper()]
             if when:
                 indexes = [i for i in indexes if _acquired(result.rows[i]) == when]
-            elif len(indexes) > 1:
-                # Beside the symbol's tax lots, what has no date goes to its lot with none.
-                indexes = [i for i in indexes if not _acquired(result.rows[i])] or indexes
+            elif (target.account, holding.asset.upper()) in tax_lotted:
+                # Beside the symbol's tax lots, what has no date goes to its
+                # lot with none, and is new without one: added into a tax
+                # lot it would swell that lot's balance and mix its basis.
+                indexes = [i for i in indexes if not _acquired(result.rows[i])]
             by_symbol = True
             if not indexes:
                 alone = len(of_account) == 1 and not result.rows[of_account[0]].get("symbol", "").strip()

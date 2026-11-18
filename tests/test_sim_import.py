@@ -1726,6 +1726,29 @@ def test_sim_import_holdings_makes_a_lot_of_each_quicken_tax_lot(
     assert "updated 0 lot(s)" in again.output and _all_lots(test_data_dir) == lots
 
 
+def test_sim_import_holdings_gives_what_the_tax_lots_leave_a_lot_with_no_date(
+    test_data_dir: Path, quicken_tax_lot_report: Path, quicken_account_map: Path, rewrite_download: Rewrite,
+) -> None:
+    # One of the fund's three purchases isn't listed: its share of the total has no date.
+    short = rewrite_download(quicken_tax_lot_report, lambda raw: b"".join(
+        line for line in raw.splitlines(keepends=True) if not line.startswith(b",6/1/2022")))
+    args = ("holdings", str(short), "--new-lots", "--outside-account", "Asset_Brokerage_Joint")
+
+    result = _import(test_data_dir, *args)
+
+    assert result.exit_code == 0, result.output
+    assert "skipped" not in result.output.split("updated")[0]
+    lots = _all_lots(test_data_dir)
+    assert {lot: (row["acquired"], row["opening_balance"], row["opening_cost_basis"])
+            for (account, lot), row in lots.items() if row["symbol"] == "VTSAX"} == {
+        "vtsax-2019-03-15": ("2019-03-15", "195000.00", "120000.00"),
+        "vtsax-2026-02-10": ("2026-02-10", "12000.00", "10000.00"),
+        "vtsax": ("", "93000.00", "80000.00"),
+    }
+    again = _import(test_data_dir, *args)
+    assert again.exit_code == 0 and _all_lots(test_data_dir) == lots, again.output
+
+
 def test_sim_import_holdings_asks_whether_each_tax_lot_gets_a_lot(
     test_data_dir: Path, quicken_tax_lot_report: Path, quicken_account_map: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -3396,6 +3419,23 @@ def test_sim_import_holdings_names_the_one_lot_in_its_row_when_the_account_gets_
         "First Example Bank savings ...4321,,map,Asset_Checking,savings,"]
 
 
+def test_sim_import_holdings_leaves_other_files_rows_in_the_shared_map_as_they_are(
+    test_data_dir: Path, ofx_bank_like_accounts_download: Path, write_import_map: MapWriter,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(cli, "_interactive", lambda: True)
+    # A row for an account this file doesn't have: another scenario's one
+    # lot may have another name, so the saved map keeps it naming none.
+    write_import_map("ofx/accounts.csv", "Elsewhere Bank checking ...9999,,map,Asset_Checking,,\n")
+    result = _import(test_data_dir, "holdings", str(ofx_bank_like_accounts_download),
+                     input="Asset_Checking\n\nAsset_Checking\nsavings\ny\n")
+    assert result.exit_code == 0, result.output
+    assert _saved(test_data_dir, "ofx") == [
+        "Elsewhere Bank checking ...9999,,map,Asset_Checking,,",
+        "First Example Bank checking ...4321,,map,Asset_Checking,default,",
+        "First Example Bank savings ...4321,,map,Asset_Checking,savings,"]
+
+
 def test_sim_import_says_a_file_that_is_not_text_is_no_exported_report(
     test_data_dir: Path, quicken_transaction_export: Path, rewrite_download: Rewrite,
 ) -> None:
@@ -3485,6 +3525,18 @@ def test_holdings_are_worked_back_only_where_the_file_accounts_for_the_days_betw
     positive = rewrite_download(ofx_card_download, lambda raw: raw.replace(b"-250.00", b"310.00"))
     owed = import_ofx.read_holdings(positive)
     assert not owed.activity and "above zero" in import_holdings.at(owed, date(2026, 2, 1))[2][0]
+    # Nor can a card's signs be relied on where a charge is written above zero: a
+    # balance of zero or less doesn't show which way the issuer writes what is owed.
+    flipped = import_ofx.read_holdings(rewrite_download(ofx_card_download, lambda raw: raw.replace(
+        b"<TRNAMT>-80.00", b"<TRNAMT>80.00", 1).replace(b"<TRNTYPE>DEBIT", b"<TRNTYPE>XX").replace(
+        b"<TRNTYPE>CREDIT", b"<TRNTYPE>DEBIT").replace(b"<TRNTYPE>XX", b"<TRNTYPE>DEBIT")))
+    assert not flipped.activity
+    assert "writes the card's charges above zero" in import_holdings.at(flipped, date(2026, 2, 1))[2][0]
+    # A transaction that can't be read costs the working back, not the balance.
+    garbled = import_ofx.read_holdings(rewrite_download(ofx_bank_download, lambda raw: raw.replace(
+        b"<TRNAMT>-400.00", b"<TRNAMT>-400.005")))
+    assert [each.value_cents for each in garbled.holdings] == [432109] and not garbled.activity
+    assert "one of its transactions can't be read (" in import_holdings.at(garbled, date(2026, 1, 1))[2][0]
     # Positions on an earlier day can't be had from a brokerage's file.
     brokerage = import_ofx.read_holdings(ofx_brokerage_download)
     assert not brokerage.activity

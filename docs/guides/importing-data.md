@@ -892,7 +892,8 @@ lot for a new purchase, and with `--prune` empties one that was sold. A lot
 of the symbol with no date, from an earlier import of its total, is emptied
 too, since the dated lots now hold what it held. A no asks for one lot's
 name instead, and adds them together into it then and in later imports.
-Purchases on the same day are one lot.
+Purchases on the same day are one lot. Where the dates listed don't come
+to the security's total, the rest gets a lot with no date.
 
 A data repo with Quicken mappings from before the `imports/` folder moves
 them with `scripts/migrate_527.py` (it reports first; `--write` does it).
