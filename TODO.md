@@ -27,8 +27,7 @@ Known CLI gaps (last reviewed 2026-11-01; each has an issue):
   only (#189)
 - auxiliary tools: summaries for `amazon.ipynb` and `expense_baseline.ipynb` (#333)
 
-Scenario editing still missing from the CLI: `sim symbol edit|delete` (#191) and
-`sim series list|show|set` (#194). Machine-readable `--csv`/`--json` output is #196.
+Scenario editing still missing from the CLI: `sim series list|show|set` (#194). Machine-readable `--csv`/`--json` output is #196.
 
 Known notebook gaps, shown by the CLI only (last reviewed 2026-11-01; each has an issue):
 
