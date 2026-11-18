@@ -863,7 +863,7 @@ CREATE TABLE basis_step_up (
 -- #274: what each death did with an account: a lot swept into its
 -- beneficiary chain (lot_id and beneficiary_chain_id set; its legs are
 -- transfer_events with reason_kind 'inheritance' and this row's id), or the
--- account passing to a surviving spouse with no money moving (owner set),
+-- account passing to a household member with no money moving (owner set),
 -- which holds from the month after `date`. rule: 'designated' (the
 -- account's beneficiary), 'estate' (scenario meta_json estate) or 'spouse'.
 CREATE TABLE inheritance (
@@ -981,8 +981,8 @@ SELECT month, kind, subkind,
 FROM balance_by_account
 GROUP BY month, kind, subkind;
 
--- An account's owner is its accounts.csv owner until a death passes it to a
--- surviving spouse (#274, `inheritance`), from the month after.
+-- An account's owner is its accounts.csv owner until a death passes it to
+-- another household member (#274, `inheritance`), from the month after.
 CREATE VIEW balance_by_owner AS
 SELECT s.month,
        COALESCE((SELECT i.owner FROM inheritance i

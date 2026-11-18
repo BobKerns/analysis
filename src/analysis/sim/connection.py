@@ -42,6 +42,7 @@ if TYPE_CHECKING:
     from analysis.sim.lifespan_curves import PersonLifespan
     from analysis.sim.load_warnings import LoadWarnings
     from analysis.sim.shortfalls import NegativeBalance
+    from analysis.sim.inheritances import Inheritance
     from analysis.sim.step_ups import BasisStepUp
 
 # Category-bucketing defaults for RunConnection's derived-data methods below.
@@ -1110,6 +1111,22 @@ class RunConnection(Connection):
         # Its own read-only connection on the calling thread, as negative_balances.
         return self._cached("basis_step_ups",
                             lambda: step_ups.run_basis_step_ups(self.run_path))
+
+    def inheritances(self) -> list[Inheritance]:
+        """What each death did with the household's accounts (#274), as
+        ``sim explain`` lists them: see ``inheritances.inheritances``."""
+        from analysis.sim import inheritances
+
+        return self._cached("inheritances",
+                            lambda: inheritances.run_inheritances(self.run_path))
+
+    def owner_changes(self) -> list[tuple[str, str, str]]:
+        """Each account a death passed to a new owner (#274): ``(account,
+        final month, owner)``; see ``inheritances.owner_changes``."""
+        from analysis.sim import inheritances
+
+        return self._cached("owner_changes",
+                            lambda: inheritances.run_owner_changes(self.run_path))
 
     def deaths(self) -> list[Death]:
         """Each person's death in this run (#255), from ``lifespan.csv``: the

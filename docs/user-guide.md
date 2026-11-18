@@ -889,6 +889,39 @@ taken from the decedent's account later in the year of the death still
 counts as theirs. `sim report tax --return federal` shows
 what ended as `capital_loss_lapsed` and `nol_lapsed`.
 
+#### Where the accounts go
+
+Every account names an `owner` in `accounts.csv`: a person, or `joint` for
+the household's. At the end of the owner's final month (for a `joint`
+account, the household's last death), the account goes where its optional
+`beneficiary` column says:
+
+- **Blank:** a surviving spouse takes it over. Its owner changes from the
+  next month and no money moves, so their RMDs, Roth rules and step-ups
+  follow. With no spouse alive, the scenario's estate takes it (below).
+- **A person in the household, or `joint`:** they take it over the same way.
+  A retirement account can pass only to a person.
+- **A person outside the household** (a child, a trust, a charity): the
+  money leaves the household. Add them to `persons.csv` with no role
+  (`sim person add dana --role '' --birthdate ''`, and `--kind trust` or
+  `--kind charity` when that is what they are). Each such person gets an
+  account of their own, named by their id. What lands there, as a bequest
+  or as a gift you schedule while alive, is out of net worth but still
+  shown: the income report lists it as `gifts_and_bequests`, apart from
+  spending.
+- **A destination chain or another account:** the money goes there, as an
+  overflow sweep would place it. A chain names contingent beneficiaries in
+  order: a step whose owner has died is skipped. `Asset_Roth_Bill`, then
+  `dana`, leaves Alice's Roth IRA to Bill, or to Dana if Bill died first.
+
+`sim account edit Asset_Brokerage_Joint --beneficiary dana` sets one.
+
+At the household's last death, the scenario's estate takes whatever is
+left: set `"estate": "<chain>"` in `scenario.csv` `meta_json`. List the
+debts (a mortgage) first in that chain, so they are paid before the heirs
+are. `sim explain` lists what each death did. Estate tax, a trust's own
+tax, and an heir's taxes on an inherited IRA are not modeled.
+
 In an ensemble the age can vary from member to member. Give
 `vary_distribution` (`uniform` or `triangular`) and the lowest and highest
 age, `vary_low` and `vary_high`; a triangular peaks at `vary_mode`, or at

@@ -9,14 +9,18 @@ account of their own, outside net worth, where gifts and bequests land."""
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from collections.abc import Callable
 from contextlib import closing
 from pathlib import Path
 
+import pandas as pd
 import pytest
+from click.testing import CliRunner
 
-from analysis.sim import registries
+from analysis.cli import main
+from analysis.sim import chain_edit, registries, rename
 from analysis.sim.loader import LoadError, LoadResult
 
 ALICE_DIES = "alice,70,,,,,,"  # born 1965-03-15: final month 2035-03
@@ -214,3 +218,66 @@ def test_a_retirement_account_passes_only_to_a_person(
     update_account("Asset_Roth_Alice", beneficiary="joint")
     with pytest.raises(LoadError, match="a retirement account passes only to a person"):
         load_test_copy()
+
+
+def test_a_blank_owner_is_refused(
+    update_account: Callable[..., None], load_test_copy: Callable[[], LoadResult],
+) -> None:
+    update_account("Asset_Savings", owner="")
+    with pytest.raises(LoadError, match=r"Asset_Savings.*owner is blank"):
+        load_test_copy()
+
+
+def test_renames_follow_beneficiaries_and_the_estate(
+    heirs: None, write_chain: Callable[..., None], update_account: Callable[..., None],
+    set_scenario_meta: Callable[..., None], retire_alice_csv: Callable[[str], Path],
+    load_test_copy: Callable[[], LoadResult],
+) -> None:
+    write_chain("estate", "dana,,")
+    set_scenario_meta(estate="estate")
+    update_account(BROKERAGE, owner="alice", beneficiary="estate")
+    update_account("Asset_Roth_Alice", beneficiary="Asset_Roth_Bill")
+    scenario = retire_alice_csv("accounts.csv").parent
+    assert "scenario.csv" in chain_edit.rename_references(scenario, "estate", "heirs")
+    assert "accounts.csv" in rename.rename_account(scenario, "Asset_Roth_Bill", "Asset_Roth_B")
+    accounts = pd.read_csv(retire_alice_csv("accounts.csv"), dtype=str, keep_default_na=False)
+    assert dict(zip(accounts["name"], accounts["beneficiary"], strict=True))[BROKERAGE] == "heirs"
+    assert "Asset_Roth_B" in set(accounts["beneficiary"])
+    meta = pd.read_csv(retire_alice_csv("scenario.csv"), dtype=str, keep_default_na=False)["meta_json"][0]
+    assert json.loads(meta)["estate"] == "heirs"
+    load_test_copy()
+
+
+def test_account_edit_sets_a_beneficiary_the_scenario_loads_with(
+    heirs: None, test_data_dir: Path, retire_alice_csv: Callable[[str], Path],
+) -> None:
+    def edit(beneficiary: str) -> str:
+        return CliRunner().invoke(main, [
+            "sim", "account", "edit", BROKERAGE, "--beneficiary", beneficiary,
+            "--scenario", "retire_alice", "--data-dir", str(test_data_dir)]).output
+
+    edit("dana")
+    accounts = pd.read_csv(retire_alice_csv("accounts.csv"), dtype=str, keep_default_na=False)
+    assert accounts.set_index("name").at[BROKERAGE, "beneficiary"] == "dana"
+    assert "'nowhere' is not a known account or chain" in edit("nowhere")
+
+
+def test_explain_and_the_income_report_show_the_bequest(
+    heirs: None, write_lifespans: Callable[..., None], update_account: Callable[..., None],
+    run_test_copy: Callable[[], Path],
+) -> None:
+    write_lifespans(ALICE_DIES, BILL_DIES)
+    update_account(BROKERAGE, owner="alice", beneficiary="dana")
+    run = run_test_copy()
+
+    def sim(*args: str) -> str:
+        result = CliRunner().invoke(main, ["sim", *args])
+        assert result.exit_code == 0, result.output
+        return result.output
+
+    explained = sim("explain", str(run))
+    assert "accounts passed on at a death (3):" in explained  # the brokerage, and Alice's IRAs to Bill
+    assert any(BROKERAGE in line and "-> dana" in line and "left the household" in line
+               and "(its beneficiary)" in line for line in explained.splitlines())
+    income = sim("report", "income", "--runfile", str(run), "--year", "2035")
+    assert "gifts_and_bequests" in income

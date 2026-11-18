@@ -11,6 +11,7 @@ load is never written.
 from __future__ import annotations
 
 import csv
+import json
 from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path
 
@@ -41,11 +42,13 @@ REFERENCE_COLUMNS: dict[str, tuple[str, ...]] = {
     "scheduled.csv": ("from_account", "to_account"),
     "calendar.csv": ("account_1", "account_2"),
     "account_lots.csv": ("refill_chain", "overflow_chain"),
+    "accounts.csv": ("beneficiary",),
 }
 """The columns, per scenario file, that may name a chain. Chain files' own
 ``account_name`` steps are handled with the chain files, and strategy
 files' ``chain`` (``strategies/<name>.csv``) and tax files'
-``source_chain`` (``taxes/<name>.csv``) with ``rename_references``."""
+``source_chain`` (``taxes/<name>.csv``) with ``rename_references``, as is
+the scenario's ``estate`` (``rename_estate``)."""
 
 TAX_FILE_COLUMNS = ("source_chain", "destination")
 """A tax jurisdiction file's columns (#507) that may name an account; only
@@ -189,6 +192,36 @@ def rename_references(scenario_dir: Path, old: str, new: str) -> list[str]:
     for path in strategy_files.own_files(scenario_dir, registries.TAXES_DIR):
         if rename_cells(path, ("source_chain",), old, new):
             changed.append(f"{registries.TAXES_DIR}/{path.name}")
+    if rename_estate(scenario_dir, old, new):
+        changed.append("scenario.csv")
+    return changed
+
+
+def rename_estate(scenario_dir: Path, old: str, new: str) -> bool:
+    """Rename the estate (scenario.csv ``meta_json`` ``estate``, a chain or an
+    account) from ``old`` to ``new``; whether it changed."""
+    path = scenario_dir / "scenario.csv"
+    if not path.is_file():
+        return False
+    with path.open(newline="", encoding="utf-8") as fh:
+        reader = csv.DictReader(fh)
+        header = list(reader.fieldnames or [])
+        rows = list(reader)
+    changed = False
+    for row in rows:
+        try:
+            meta = json.loads(row.get("meta_json") or "{}")
+        except json.JSONDecodeError:
+            continue
+        if isinstance(meta, dict) and meta.get("estate") == old:
+            meta["estate"] = new
+            row["meta_json"] = json.dumps(meta, separators=(",", ":"))
+            changed = True
+    if changed:
+        with path.open("w", newline="", encoding="utf-8") as fh:
+            writer = csv.DictWriter(fh, fieldnames=header, lineterminator="\n")
+            writer.writeheader()
+            writer.writerows(rows)
     return changed
 
 

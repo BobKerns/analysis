@@ -191,7 +191,7 @@ _NAMING_PARAMS = {
     "refill_chain", "overflow_chain", "scheduled_name", "row", "person", "owner",
     "series", "source_series", "symbol", "symbols", "tag_token", "tag_tokens",
     "vary_correlate_with", "correlate_with", "strategy", "strategy_name", "target_set",
-    "jurisdiction",
+    "jurisdiction", "beneficiary",
 }
 # ... except where the command makes a new one (by the command's function,
 # as `sim accounts` repeats `sim account`).

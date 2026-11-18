@@ -95,7 +95,7 @@ def test_init_asks_for_what_its_options_leave_out(tmp_path: Path, monkeypatch: p
     sim = tmp_path / "repo" / "sim"
     assert _rows(sim / "persons.csv") == [{
         "id": "alice", "display": "Alice Example", "birthdate": "1960-05-01", "sex": "f",
-        "role": "primary", "meta_json": "{}",
+        "role": "primary", "meta_json": "{}", "kind": "",
     }]
     assert _rows(sim / "aux" / "filing_status.csv") == [
         {"effective_date": "2026-01", "filing_status": "Single"}]

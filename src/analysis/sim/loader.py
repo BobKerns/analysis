@@ -2364,7 +2364,7 @@ def _expand_account_growth(
             accounts.append({
                 "name": counterparty.name, "kind": counterparty.kind,
                 "subkind": counterparty.subkind,
-                "owner": "", "tax_treatment": counterparty.tax_treatment,
+                "owner": "joint", "tax_treatment": counterparty.tax_treatment,
                 "opened": "", "closed": "", "tags": "",
                 "meta_json": json.dumps(
                     {"builtin": _builtin_label(counterparty.name),
@@ -2826,6 +2826,11 @@ def _validate_accounts(
             issues.append(
                 f"{where} ({name}): subkind '{subkind}' not allowed for kind '{kind}'"
             )
+        if not (row.get("owner") or "").strip():
+            # #274: a blank owner used to mean the household's; say so instead.
+            issues.append(
+                f"{where} ({name}): owner is blank; name a person in persons.csv, "
+                "or joint for the household's")
         tt = row.get("tax_treatment", "")
         if tt and tt not in registries.TAX_TREATMENTS:
             issues.append(f"{where} ({name}): unknown tax_treatment '{tt}'")

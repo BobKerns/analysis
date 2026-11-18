@@ -1003,11 +1003,11 @@ def _inheritance_plan(
         "SELECT a.id, a.owner, m.id, m.beneficiary_chain_id, m.subkind FROM account a "
         "JOIN account_lot m ON m.account_id = a.id WHERE a.kind = 'asset' ORDER BY a.id, m.id"
     ).fetchall()
-    owner_now: dict[int, str | None] = {}
+    owner_now: dict[int, str] = {}
     lots_of: dict[int, list[tuple[int, int | None]]] = {}
     roth_ira_lots: set[int] = set()
     for account_id, owner, lot_id, chain_id, subkind in accounts:
-        owner_now[account_id] = owner
+        owner_now[account_id] = owner or "joint"  # the loader refuses a blank owner
         lots_of.setdefault(account_id, []).append((lot_id, chain_id))
         if subkind == "roth_ira":
             roth_ira_lots.add(lot_id)
@@ -1029,7 +1029,7 @@ def _inheritance_plan(
     def dead_lots(month: str) -> frozenset[int]:
         """Lots whose account's owner has no one alive after ``month``: a
         dead person's, or a joint account's once the household is gone."""
-        def gone(owner: str | None) -> bool:
+        def gone(owner: str) -> bool:
             if owner in ownership.JOINT_OWNERS:
                 return bool(members) and not any(household.alive_after(p, month) for p in members)
             return not household.alive_after(owner, month)
@@ -1040,7 +1040,7 @@ def _inheritance_plan(
             household.alive_after(p, month) for p in members if p != person)
         spouse = household.spouses.get(person)
         survivor = spouse if spouse is not None and household.alive_after(spouse, month) else None
-        def alive(heir: str) -> bool:
+        def alive(heir: str, month: str = month) -> bool:
             if heir in ownership.JOINT_OWNERS:
                 return any(household.alive_after(p, month) for p in members)
             return household.alive_after(heir, month)

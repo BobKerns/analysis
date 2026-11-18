@@ -4255,6 +4255,7 @@ def explain(
         _echo_recorded_load_warnings(con)
         _echo_negative_balance_warnings(con)
         _echo_basis_step_ups(con)
+        _echo_inheritances(con)
         _echo_strategies(con)
     finally:
         con.close()
@@ -4392,6 +4393,24 @@ def _echo_basis_step_ups(con: sqlite3.Connection) -> None:
                 f"  basis {_compact_cents(s.basis_before_cents)} -> {_compact_cents(s.basis_after_cents)}"
                 f"  ({s.rule_label})")
         click.echo(line)
+
+
+def _echo_inheritances(con: sqlite3.Connection) -> None:
+    """What each death did with the household's accounts (#274): the month,
+    the decedent, the account, where it went and how; nothing for a run
+    with none."""
+    from analysis.sim.inheritances import inheritances
+
+    found = inheritances(con)
+    if not found:
+        return
+    click.echo(f"accounts passed on at a death ({len(found)}):")
+    width = max(len(i.account) for i in found)
+    who = max(len(i.decedent) for i in found)
+    for i in found:
+        gone = f", {_compact_cents(i.bequest_cents)} left the household" if i.bequest_cents else ""
+        click.echo(f"  {i.month[:7]}  {i.decedent:<{who}}  {i.account:<{width}}  -> {i.to}"
+                   f"  {_compact_cents(i.amount_cents)}{gone}  ({i.rule_label})")
 
 
 def _echo_recorded_load_warnings(con: sqlite3.Connection) -> None:
@@ -10712,6 +10731,9 @@ def account_group_command() -> None:
               default=None)
 @click.option("--tags", default="",
               help="Space-separated '<role>:<name>' tokens.")
+@click.option("--beneficiary", type=completion.BENEFICIARY, default="",
+              help="Where it goes at its owner's death (#274): an account, a chain, a person "
+                   "or joint; blank: a surviving spouse, else the scenario's estate.")
 def add_account(
     name: str | None,
     kind: str | None,
@@ -10727,6 +10749,7 @@ def add_account(
     scenario: str | None,
     data_dir: Path | None,
     tags: str,
+    beneficiary: str,
 ) -> None:
     """Append an account to accounts.csv (and opening balance to the model).
 
@@ -10805,7 +10828,8 @@ def add_account(
 
     row = _account_row(
         name, kind, subkind, owner=owner, tax_treatment=tax_treatment, series=series,
-        tax_character=tax_character, opened=opened, closed=closed, tags=tags)
+        tax_character=tax_character, opened=opened, closed=closed, tags=tags,
+        beneficiary=beneficiary.strip())
     if opening_balance is None and kind in {"asset", "liability"}:
         if click.confirm("set opening balance now?", default=True):
             opening_balance = _prompt_with_completion(
@@ -11062,6 +11086,9 @@ def delete_account(name: str | None, scenario: str | None, data_dir: Path | None
 @click.option("--closed", default=None, help="Close date (YYYY-MM or YYYY-MM-DD).")
 @click.option("--meta-json", default=None, help="JSON payload for the account metadata.")
 @click.option("--tags", default=None, help="Space-separated '<role>:<name>' tokens.")
+@click.option("--beneficiary", type=completion.BENEFICIARY, default=None,
+              help="Where it goes at its owner's death (#274): an account, a chain, a person "
+                   "or joint; blank: a surviving spouse, else the scenario's estate.")
 @click.option("--scenario", type=completion.SCENARIO, default=None,
               help="Scenario folder name (default: the current scenario).")
 @click.option("--data-dir",
@@ -11078,6 +11105,7 @@ def edit_account(
     closed: str | None,
     meta_json: str | None,
     tags: str | None,
+    beneficiary: str | None,
     scenario: str | None,
     data_dir: Path | None,
 ) -> None:
@@ -11117,7 +11145,7 @@ def edit_account(
 
     direct_values = (
         new_name, kind, subkind, owner, tax_treatment,
-        opened, closed, meta_json, tags,
+        opened, closed, meta_json, tags, beneficiary,
     )
     if any(v is not None for v in direct_values):
         new_name = new_name or current.get("name", "")
@@ -11129,6 +11157,7 @@ def edit_account(
         closed = closed if closed is not None else current.get("closed", "")
         meta_json = meta_json if meta_json is not None else current.get("meta_json", "{}")
         tags = tags if tags is not None else current.get("tags", "")
+        beneficiary = beneficiary if beneficiary is not None else current.get("beneficiary", "")
     else:
         new_name = click.prompt("name", default=current.get("name", ""), show_default=True)
         kind = click.prompt(
@@ -11174,6 +11203,12 @@ def edit_account(
         tags = click.prompt("tags", default=current.get("tags", ""), show_default=True)
         if tags:
             registries.parse_tags(tags)
+        beneficiary = _prompt_with_completion(
+            "beneficiary (an account, chain, person or joint; blank: a surviving spouse, "
+            "else the estate)",
+            [*names.chain_names(data_dir_p, scenario_name, accounts=True), *persons, "joint"],
+            default=current.get("beneficiary", ""),
+        )
 
     if kind not in registries.ACCOUNT_SUBKINDS:
         raise click.ClickException(f"unknown kind: {kind!r}; allowed: {sorted(registries.ACCOUNT_SUBKINDS)}")
@@ -11213,7 +11248,7 @@ def edit_account(
     fields = {
         "name": new_name, "kind": kind, "subkind": subkind, "owner": owner,
         "tax_treatment": tax_treatment, "opened": opened, "closed": closed,
-        "meta_json": meta_json, "tags": tags,
+        "meta_json": meta_json, "tags": tags, "beneficiary": beneficiary.strip(),
     }
     if new_name != name and new_name in existing:
         raise click.ClickException(f"account already exists: {new_name!r}")
@@ -18648,21 +18683,37 @@ def _check_sex(text: str) -> str:
     return sex
 
 
+def _check_person_kind(text: str) -> str:
+    """Blank (a person), or one of PERSON_KINDS; a person is written blank."""
+    kind = text.strip().lower()
+    if kind and kind not in registries.PERSON_KINDS:
+        raise click.ClickException(
+            f"kind must be one of {list(registries.PERSON_KINDS)} or blank: {text!r}")
+    return "" if kind == registries.DEFAULT_PERSON_KIND else kind
+
+
 def _person_fields(
     current: dict[str, str], roles: list[str], *, guided: bool,
     display: str | None, birthdate: str | None, role: str | None, meta_json: str | None,
-    sex: str | None = None,
+    sex: str | None = None, kind: str | None = None,
 ) -> dict[str, str]:
-    """A person's display, birthdate, sex, role and meta_json: each one
-    given, or when ``guided``, asked for with ``current``'s value as the
-    default; or else ``current``'s. A blank role is no role; a blank sex is
-    none (only a life_table lifespan needs one)."""
+    """A person's display, birthdate, sex, role, kind and meta_json: each
+    one given, or when ``guided``, asked for with ``current``'s value as the
+    default; or else ``current``'s. A blank role is no role: someone outside
+    the household (#274), who may have no birthdate and whose kind (person,
+    trust or charity; blank is person) is asked for. A blank sex is none
+    (only a life_table lifespan needs one)."""
     if guided:
         if display is None:
             display = click.prompt("display", default=current.get("display") or None)
         if birthdate is None:
-            birthdate = click.prompt("birthdate (YYYY-MM-DD)",
-                                     default=current.get("birthdate") or None)
+            if role:  # a household member's age matters: the answer is required
+                birthdate = click.prompt("birthdate (YYYY-MM-DD)",
+                                         default=current.get("birthdate") or None)
+            else:
+                birthdate = click.prompt(
+                    "birthdate (YYYY-MM-DD; blank for none outside the household)",
+                    default=current.get("birthdate") or "", show_default=False)
         if sex is None:
             sex = _prompt_with_completion(
                 "sex (f or m; blank for none, needed only for a life-table lifespan)",
@@ -18672,14 +18723,22 @@ def _person_fields(
             role = _prompt_with_completion(
                 "role (blank for none)", roles, default=current.get("role") or "",
             )
+        if kind is None and not role:
+            kind = _prompt_with_completion(
+                "kind (person, trust or charity)", list(registries.PERSON_KINDS),
+                default=current.get("kind") or registries.DEFAULT_PERSON_KIND,
+            )
         if meta_json is None:
             meta_json = click.prompt("meta_json", default=current.get("meta_json") or "{}")
+    role = (role if role is not None else current.get("role", "")).strip()
+    birthdate = (birthdate if birthdate is not None else current.get("birthdate", "")).strip()
     fields = {
         "display": (display if display is not None else current.get("display", "")).strip(),
-        "birthdate": _check_birthdate(
-            birthdate if birthdate is not None else current.get("birthdate", "")),
+        # Someone outside the household needs no birthdate: nothing reads their age.
+        "birthdate": _check_birthdate(birthdate) if birthdate or role else "",
         "sex": _check_sex(sex if sex is not None else current.get("sex", "")),
-        "role": (role if role is not None else current.get("role", "")).strip(),
+        "role": role,
+        "kind": _check_person_kind(kind if kind is not None else current.get("kind", "")),
         # An edit leaves a meta_json it wasn't given exactly as it is, blank included.
         "meta_json": _check_meta_json(meta_json) if meta_json is not None
         else current.get("meta_json", "{}"),
@@ -18701,6 +18760,8 @@ _PERSON_OPTIONS = (
                  help="f or m ('' for none); a life_table lifespan needs it."),
     click.option("--role", default=None,
                  help="primary, secondary, or another role; '' for none."),
+    click.option("--kind", default=None,
+                 help="person, trust or charity ('' for person); reporting only."),
     click.option("--meta-json", default=None, help="JSON metadata (default {})."),
     click.option("--scenario", type=completion.SCENARIO, default=None,
                  help="Scenario checked first (default: the current one); "
@@ -18745,10 +18806,13 @@ def _write_persons(
 @_person_options
 def person_add(
     person_id: str | None, display: str | None, birthdate: str | None, sex: str | None,
-    role: str | None, meta_json: str | None, scenario: str | None, data_dir: Path | None,
+    role: str | None, kind: str | None, meta_json: str | None, scenario: str | None,
+    data_dir: Path | None,
 ) -> None:
     """Add a person to persons.csv, asking for a display name and birthdate
-    not given (and then the sex, role and meta_json).
+    not given (and then the sex, role, kind and meta_json). Someone with no
+    role is outside the household (an heir, a trust, a charity) and gets an
+    account of their own, outside net worth, where gifts and bequests land.
 
     persons.csv is shared by every scenario, at the data repo's top level.
 
@@ -18767,7 +18831,7 @@ def person_add(
         raise click.ClickException(f"person already exists: {person_id!r} (sim person edit)")
     fields = _person_fields(
         {}, _role_choices(df), guided=display is None or birthdate is None,
-        display=display, birthdate=birthdate, role=role, meta_json=meta_json, sex=sex,
+        display=display, birthdate=birthdate, role=role, meta_json=meta_json, sex=sex, kind=kind,
     )
     row = pd.DataFrame([{"id": person_id, **fields}])
     _write_persons(data, scenario, pd.concat([df, row], ignore_index=True).fillna(""), before)
@@ -18779,7 +18843,8 @@ def person_add(
 @_person_options
 def person_edit(
     person_id: str | None, display: str | None, birthdate: str | None, sex: str | None,
-    role: str | None, meta_json: str | None, scenario: str | None, data_dir: Path | None,
+    role: str | None, kind: str | None, meta_json: str | None, scenario: str | None,
+    data_dir: Path | None,
 ) -> None:
     """Change a person in persons.csv. With no options, asks for each field
     with its current value as the default; options change just those fields.
@@ -18801,10 +18866,10 @@ def person_edit(
             f"unknown person {person_id!r}; persons: {sorted(df['id'])}")
     idx = matches[0]
     current = {c: str(df.at[idx, c]) for c in df.columns}
-    guided = all(v is None for v in (display, birthdate, sex, role, meta_json))
+    guided = all(v is None for v in (display, birthdate, sex, role, kind, meta_json))
     fields = _person_fields(
         current, _role_choices(df), guided=guided,
-        display=display, birthdate=birthdate, role=role, meta_json=meta_json, sex=sex,
+        display=display, birthdate=birthdate, role=role, meta_json=meta_json, sex=sex, kind=kind,
     )
     if all(fields[k] == current.get(k, "") for k in fields):
         click.echo(f"person '{current['id']}' unchanged")

@@ -17,7 +17,8 @@ import pandas as pd
 
 from analysis.sim import registries
 from analysis.sim.asset_classes import UNCLASSIFIED, class_weights, is_lot_key, lot_key, weight_sets
-from analysis.sim.connection import Connection
+from analysis.sim.connection import Connection, RunConnection
+from analysis.sim.inheritances import owner_in
 from analysis.frames import named_rows
 from analysis.sim.holdings import lots_frame
 
@@ -58,6 +59,11 @@ def lot_classes(source: Connection, month: str | None = None) -> pd.DataFrame:
     lots = lots[lots["kind"] == "asset"]
     owners = source.items("account").set_index("name")["owner"]
     lots = lots.assign(owner=lots["account"].map(owners).fillna(_JOINT))
+    # #274: a death may have passed an account to a new owner by this month.
+    if changes := (source.owner_changes() if isinstance(source, RunConnection) else []):
+        lots["owner"] = [owner_in(changes, account, owner, str(as_of)[:10])
+                         for account, owner, as_of in zip(lots["account"], lots["owner"],
+                                                          lots["as_of"], strict=True)]
     sets = _weight_sets(source)
     growth = source.lot_growth_series()
     dates = {as_of: _reference_date(source, as_of) for as_of in set(lots["as_of"])}
