@@ -1299,6 +1299,7 @@ def load_scenario(
                               issues,
                               scenarios_dir=scenarios_dir,
                               account_clashes=(account_clashes := []))
+    _add_outside_accounts(accounts, persons, issues)
     _normalize_vary_dates(calendar_rows)
     _resolve_relative_dates(calendar_rows, issues, unused)
     parents = read_parents(scenario_dir)
@@ -1402,6 +1403,8 @@ def load_scenario(
             a["name"] for a in accounts if a.get("subkind") == registries.RETIREMENT_SUBKIND),
     )
     _validate_chain_roles(chains, scheduled_rows, calendar_rows, value_rows, issues, tax_rows=tax_rows)
+    beneficiaries = _validate_inheritance(
+        accounts, value_rows, persons, leaves, chains, scenario_row, issues, warnings)
     roth_leaves = frozenset(
         leaves.leaf_of[(m.get("account_name", ""), m.get("lot") or registries.DEFAULT_LOT)]
         for m in value_rows
@@ -1519,6 +1522,7 @@ def load_scenario(
             ytd_rows=ytd_rows,
             residence_rows=residence_rows,
             money_resolver=money_resolver,
+            beneficiaries=beneficiaries,
         )
         counts.update(strategy_load.write_strategies(
             con, strategies, kinds=strategy_kinds, sources=strategy_sources,
@@ -2702,6 +2706,18 @@ def _validate_birthdates(rows: list[dict[str, str]], issues: list[str]) -> None:
                     f"{where} ({row.get('id') or '?'}): birthdate "
                     f"'{birthdate}' is not YYYY-MM-DD"
                 )
+        kind = (row.get("kind") or "").strip()
+        if kind and kind not in registries.PERSON_KINDS:
+            issues.append(
+                f"{where} ({row.get('id') or '?'}): kind must be one of "
+                f"{list(registries.PERSON_KINDS)} or blank (got '{kind}')"
+            )
+        elif kind not in ("", registries.DEFAULT_PERSON_KIND) and (
+                row.get("role") or "").strip() in registries.PERSON_ROLES:
+            issues.append(
+                f"{where} ({row.get('id') or '?'}): a {row['role'].strip()} member of the "
+                f"household is a person, not a {kind}"
+            )
         sex = (row.get("sex") or "").strip()
         if sex and sex not in registries.PERSON_SEXES:
             issues.append(
@@ -3066,6 +3082,172 @@ def _validate_lot_money(
                 "on every lot of an account or on none (Roth lots aside); "
                 f"set on {'; '.join(sides[True])}, but not on {'; '.join(sides[False])}"
             )
+
+
+def outside_parties(persons: Iterable[Mapping[str, str]]) -> list[str]:
+    """The ids of everyone outside the household (#274): a persons.csv row
+    with no role that isn't the household's own pseudo-person (``joint``)."""
+    return [
+        p.get("id", "") for p in persons
+        if p.get("id") and p.get("id") != "joint" and not (p.get("role") or "").strip()
+        and not (_safe_json(p.get("meta_json")) or {}).get("household")
+    ]
+
+
+def _add_outside_accounts(
+    accounts: list[dict[str, str]], persons: list[dict[str, str]], issues: list[str],
+) -> None:
+    """Give each outside party (#274) the account a gift or bequest lands
+    in: an expense account of subkind gift, named by their id and owned by
+    them, so it leaves net worth as any expense does, and its balance is all
+    they've been given. A scenario may define it itself (to start it with
+    past gifts, say), as long as it is that kind of account and theirs. An
+    account any outside party owns must be one, since the household's net
+    worth can't hold what isn't the household's."""
+    outside = set(outside_parties(persons))
+    by_name = {a.get("name", ""): a for a in accounts}
+    kind, subkind = registries.OUTSIDE_ACCOUNT_KIND, registries.OUTSIDE_ACCOUNT_SUBKIND
+    for where, a in _located(accounts, "accounts.csv"):
+        owner = a.get("owner", "")
+        name = a.get("name", "")
+        if owner in outside and (a.get("kind"), a.get("subkind")) != (kind, subkind):
+            issues.append(
+                f"{where} ({name}): its owner {owner!r} is outside the household (no role "
+                f"in persons.csv), so it must be a {kind} account of subkind {subkind}, "
+                "which net worth leaves out"
+            )
+        elif name in outside and owner != name:
+            issues.append(
+                f"{where} ({name}): this name is {name}'s own account, which "
+                f"{name} must own (owner {owner or 'blank'!r})"
+            )
+    for party in sorted(outside - by_name.keys()):
+        accounts.append({
+            "name": party, "kind": kind, "subkind": subkind, "owner": party,
+            "tax_treatment": "", "series": "", "tax_character": "", "opened": "",
+            "closed": "", "meta_json": "{}", "tags": "", "beneficiary": "",
+        })
+
+
+def _beneficiary_lots(
+    account: str, target: str, leaves: _LeafIndex, lot_subkinds: Mapping[tuple[str, str], str],
+) -> tuple[dict[str, str], str | None]:
+    """Each of ``account``'s lots' leaf in the account ``target`` names: the
+    lot of the same name, else the one lot of the same lot subkind (so a
+    Roth goes to the Roth, as a spousal rollover would), else its only lot.
+    Returns the matches by lot, and why one couldn't be matched."""
+    theirs = leaves.lot_labels.get(target, [])
+    found: dict[str, str] = {}
+    for lot in leaves.lot_labels.get(account, []):
+        subkind = lot_subkinds.get((account, lot), "")
+        same_kind = [t for t in theirs if subkind and lot_subkinds.get((target, t)) == subkind]
+        match = (lot if lot in theirs else same_kind[0] if len(same_kind) == 1
+                 else theirs[0] if len(theirs) == 1 else None)
+        if match is None:
+            return found, (
+                f"lot '{lot}' matches none of {target}'s lots ({', '.join(theirs)}) by name or "
+                f"subkind; name one of them ({target}:<lot>) or a chain")
+        found[lot] = leaves.leaf_of[(target, match)]
+    return found, None
+
+
+def _validate_inheritance(
+    accounts: list[dict[str, str]], value_rows: list[dict[str, str]],
+    persons: list[dict[str, str]], leaves: _LeafIndex,
+    chains: dict[str, tuple[str, list[dict[str, str]]]], scenario_row: Mapping[str, str],
+    issues: list[str], warnings: list[str],
+) -> dict[tuple[str, str], str]:
+    """Check accounts.csv ``beneficiary`` and meta_json ``estate`` (#274),
+    and return where each lot with a beneficiary goes at its owner's death:
+    the leaf or destination chain, by (account, lot).
+
+    A beneficiary is a member of the household or ``joint``, who takes the
+    account over (written to ``account.beneficiary_owner``, so not
+    returned); or a destination chain, a lot's leaf, or an account, whose
+    lots are matched to the decedent's (``_beneficiary_lots``). An outside
+    party's own account is named by their id, so naming them is naming it.
+    Only an asset account of the household's has one. The estate, the
+    beneficiary of every account without one, is a destination chain or a
+    leaf."""
+    outside = set(outside_parties(persons))
+    household = {p.get("id", "") for p in persons} - outside
+    people = {p.get("id", "") for p in persons if (p.get("role") or "").strip() in registries.PERSON_ROLES}
+    kinds = {a.get("name", ""): a.get("kind", "") for a in accounts}
+    lot_subkinds = {(m.get("account_name", ""), m.get("lot") or registries.DEFAULT_LOT):
+                    m.get("subkind") or "" for m in value_rows}
+
+    def target_problem(target: str) -> str | None:
+        if target in chains:
+            role = chains[target][0]
+            return None if role == "destination" else (
+                f"'{target}' is a {role} chain; a beneficiary is paid into, so it must be "
+                "a destination chain")
+        account = leaves.account_of.get(target, target)
+        if kinds.get(account) not in ("asset", "expense"):
+            if account not in kinds:
+                return f"'{target}' is not a known account or chain"
+            return f"'{target}' is a {kinds[account]} account; name an asset or expense account"
+        return None
+
+    found: dict[tuple[str, str], str] = {}
+    for where, a in _located(accounts, "accounts.csv"):
+        name, target = a.get("name", ""), (a.get("beneficiary") or "").strip()
+        if not target:
+            continue
+        label = f"{where} ({name}): beneficiary"
+        if a.get("kind") != "asset":
+            issues.append(f"{label}: only an asset account passes to a beneficiary")
+            continue
+        if a.get("owner", "") in outside:
+            issues.append(f"{label}: the account is already outside the household")
+            continue
+        if target in household:
+            if target in kinds or target in chains:
+                issues.append(f"{label}: '{target}' is both a person and an account or chain")
+            elif a.get("subkind") == registries.RETIREMENT_SUBKIND and target not in people:
+                issues.append(f"{label}: a retirement account passes only to a person, "
+                              f"not '{target}'")
+            elif target == a.get("owner"):
+                issues.append(f"{label}: '{target}' already owns it")
+            continue
+        if problem := target_problem(target):
+            issues.append(f"{label}: {problem}")
+            continue
+        lots = leaves.lot_labels.get(name, [registries.DEFAULT_LOT])
+        if target in chains or target in leaves.names:
+            matches = dict.fromkeys(lots, target)
+        else:
+            matches, problem = _beneficiary_lots(name, target, leaves, lot_subkinds)
+            if problem:
+                issues.append(f"{label}: {problem}")
+                continue
+        if any(leaves.account_of.get(leaf) == name for leaf in matches.values()):
+            issues.append(f"{label}: '{target}' is this account itself")
+            continue
+        found.update(((name, lot), leaf) for lot, leaf in matches.items())
+
+    meta = _safe_json(scenario_row.get("meta_json")) or {}
+    estate = meta.get("estate")
+    if estate is not None:
+        label = f"{scenario_row.get('name', '')}: scenario.csv meta_json estate"
+        if not isinstance(estate, str) or not estate:
+            issues.append(f"{label} must name a destination chain or an account (got {estate!r})")
+        elif estate not in chains and estate not in leaves.names:
+            issues.append(f"{label}: {_ref_problem(estate, leaves, frozenset(chains))}")
+        elif problem := target_problem(estate):
+            issues.append(f"{label}: {problem}")
+        else:
+            # F (#274): the estate settles debts before heirs see anything,
+            # by its own liability steps; the engine pays none on its own.
+            reached = ({leaves.account_of.get(leaf, leaf) for leaf in _chain_leaf_names(estate, chains)}
+                       if estate in chains else {leaves.account_of.get(estate, estate)})
+            owed = sorted(n for n, k in kinds.items() if k == "liability" and n not in reached)
+            if owed:
+                warnings.append(
+                    f"{label} '{estate}' pays no liability step for {', '.join(owed)}: at the "
+                    "last death that debt stays unpaid while the rest goes to the heirs; put "
+                    "a step for it first in the estate chain")
+    return found
 
 
 def _validate_retirement_owners(
@@ -6960,6 +7142,7 @@ def _write_intent(
     money_resolver: _MoneyReferenceResolver,
     tax_rows: Sequence[dict[str, str]] = (),
     residence_rows: Sequence[dict[str, str]] = (),
+    beneficiaries: Mapping[tuple[str, str], str] | None = None,
 ) -> dict[str, int]:
     counts: dict[str, int] = {}
     now = _now_iso()
@@ -6967,13 +7150,14 @@ def _write_intent(
 
     for p in persons:
         con.execute(
-            "INSERT INTO person(id, display, birthdate, sex, role, meta_json) "
-            "VALUES (?,?,?,?,?,?)",
+            "INSERT INTO person(id, display, birthdate, sex, role, meta_json, kind) "
+            "VALUES (?,?,?,?,?,?,?)",
             (
                 p["id"], p["display"], p["birthdate"],
                 (p.get("sex") or "").strip() or None,
                 p.get("role") or None,
                 p.get("meta_json") or "{}",
+                (p.get("kind") or "").strip() or registries.DEFAULT_PERSON_KIND,
             ),
         )
     counts["person"] = len(persons)
@@ -6994,16 +7178,18 @@ def _write_intent(
         )
     counts["security_allocation"] = len(allocations)
 
+    household_ids = {p["id"] for p in persons} - set(outside_parties(persons))
     account_ids: dict[str, int] = {}
     for a in accounts:
         cur = con.execute(
             "INSERT INTO account(name, kind, subkind, owner, tax_treatment, "
-            "opened, closed, meta_json) VALUES (?,?,?,?,?,?,?,?)",
+            "opened, closed, meta_json, beneficiary_owner) VALUES (?,?,?,?,?,?,?,?,?)",
             (
                 a["name"], a["kind"], a["subkind"],
                 a.get("owner") or None, a.get("tax_treatment") or None,
                 a.get("opened") or None, a.get("closed") or None,
                 a.get("meta_json") or "{}",
+                a.get("beneficiary") if a.get("beneficiary") in household_ids else None,
             ),
         )
         account_ids[a["name"]] = inserted_id(cur)
@@ -7105,6 +7291,13 @@ def _write_intent(
             )
             step_count += 1
     counts["chain_steps"] = step_count
+
+    for (account, lot), target in (beneficiaries or {}).items():
+        con.execute(
+            "UPDATE account_lot SET beneficiary_chain_id = ? "
+            "WHERE account_id = ? AND lot = ?",
+            (chain_ids[target], account_ids[account], lot),
+        )
 
     for leaf, m in lot_rows.items():
         refill = m.get("refill_chain") or None

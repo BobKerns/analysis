@@ -129,6 +129,7 @@ def run_scenario(
             r[0]: _parse_date(r[10]) if r[10] else None for r in lots
         }
         lot_account_name: dict[int, str] = {r[0]: r[9] for r in lots}
+        account_by_name: dict[str, int] = dict(con.execute("SELECT name, id FROM account").fetchall())
         lots_by_account: dict[str, list[int]] = {}
         for lot_id, owner in lot_account_name.items():
             lots_by_account.setdefault(owner, []).append(lot_id)
@@ -232,13 +233,21 @@ def run_scenario(
         aux = _load_aux(con)
         inflation_indexes = _initialize_inflation_indexes(aux)
         inflation_factor_cache: dict[tuple[str, date, date, str], int] = {}
+        household = _household(con)
+        inheritances = _inheritance_plan(con, household, chain_graph)
+        outside_lots = frozenset(
+            lot for (lot,) in con.execute(
+                "SELECT m.id FROM account_lot m JOIN account a ON a.id = m.account_id "
+                "JOIN person p ON p.id = a.owner "
+                "WHERE p.role IS NULL AND p.id != 'joint' "
+                "AND COALESCE(json_extract(p.meta_json, '$.household'), 0) = 0"))
         refill_ctx = RefillContext(
             chain_graph, aux, _parse_date(start_s), inflation_factor_cache,
             account_tax_treatment, account_subkind, account_name, cost_bases,
             quantities, growth_sources, acquired,
             share_sources=share_sources,
             chain_name=dict(con.execute("SELECT id, name FROM chain").fetchall()),
-            roth=_roth_lots(con, person_birthdates),
+            roth=_roth_lots(con, person_birthdates, inheritances),
             hsa=frozenset(lot for lot, subkind in account_subkind.items()
                           if subkind == "hsa" and account_kinds[lot] == "asset"),
         )
@@ -284,7 +293,7 @@ def run_scenario(
                 aux=aux, person_lifespan=person_lifespan, taxpayers=taxpayers, irmaa=irmaa,
             )
 
-        step_ups = _basis_step_ups(con)
+        step_ups = _basis_step_ups(con, inheritances)
 
         skipped_counts: dict[str, int] = {}
         applied_event_ids: set[int] = set()
@@ -534,6 +543,13 @@ def run_scenario(
                                 "(a chain source needs it in params_json)"
                             )
                         assert to is not None  # only fixed_amount may target an interior chain
+                        if not params.get("person"):
+                            # #274: no person is the subject account's owner at
+                            # the time, so one row serves an IRA a spouse inherits.
+                            owner = inheritances.owners.at(account_by_name[subject], month_s)
+                            if owner is None or household.final_months.get(owner, month_s) < month_s:
+                                continue
+                            params["person"] = owner
                         _apply_rmd(
                             con, balances, account_kinds, step_id, month_s, month,
                             params, from_account, to,
@@ -621,6 +637,11 @@ def run_scenario(
             if month_s in step_ups:
                 _step_up_basis(
                     con, step_id, month_s, step_ups[month_s], balances, cost_bases, acquired,
+                )
+            if month_s in inheritances.by_month:
+                _settle_inheritances(
+                    con, step_id, month_s, inheritances.by_month[month_s], balances,
+                    account_kinds, refill_ctx, outside_lots,
                 )
 
             con.executemany(
@@ -712,7 +733,9 @@ def _earlier_clock(*clocks: date | None) -> date | None:
     return None if None in clocks else min(c for c in clocks if c is not None)
 
 
-def _roth_lots(con, birthdates: Mapping[str, date]) -> dict[int, RothLot]:
+def _roth_lots(
+    con, birthdates: Mapping[str, date], plan: InheritancePlan | None = None,
+) -> dict[int, RothLot]:
     """Every Roth lot, by lot id, with its owner's five-year clock (#217).
 
     A Roth IRA's clock is the owner's, across all their Roth IRA lots; a Roth
@@ -728,7 +751,12 @@ def _roth_lots(con, birthdates: Mapping[str, date]) -> dict[int, RothLot]:
     clocks and the survivor's 59½. Otherwise, as for a Roth 401k or a
     decedent with no surviving spouse, the decedent's lots keep the
     decedent's clock with no age test, since a distribution after death
-    needs only the five years."""
+    needs only the five years. A survivor treats a Roth IRA as their own
+    only when it comes to them (#274, ``InheritancePlan.roth_heirs``): by
+    default, or rolled into a Roth IRA of theirs, not when its beneficiary
+    is someone else."""
+    if plan is None:
+        plan = _inheritance_plan(con, _household(con), _load_chain_graph(con))
     rows = con.execute(
         "SELECT m.id, m.subkind, m.acquired, a.opened, a.owner, a.id FROM account_lot m "
         "JOIN account a ON a.id = m.account_id WHERE m.subkind IN ('roth_ira', 'roth_401k')"
@@ -771,18 +799,22 @@ def _roth_lots(con, birthdates: Mapping[str, date]) -> dict[int, RothLot]:
             return []
         spouse = spouses.get(owner) if subkind == "roth_ira" and treat_as_own else None
         spouse_clock = clocks.get(("ira", spouse), clock) if spouse else clock
+        # Who takes whose Roth IRAs as their own: the owner the spouse's, and
+        # the spouse the owner's.
+        takes = spouse if spouse and owner in plan.roth_heirs.get(spouse, ()) else None
+        gives = spouse if spouse and spouse in plan.roth_heirs.get(owner, ()) else None
         steps = []
-        if spouse in deaths and survives(owner, deaths[spouse]):
+        if takes in deaths and survives(owner, deaths[takes]):
             # The owner survives and treats the spouse's Roth IRAs as their own.
             clock = _earlier_clock(clock, spouse_clock)
-            steps.append((deaths[spouse], clock, born))
+            steps.append((deaths[takes], clock, born))
         if owner in deaths:
             dies = deaths[owner]
-            if survives(spouse, dies):
+            if survives(gives, dies):
                 clock = _earlier_clock(clock, spouse_clock)
-                steps.append((dies, clock, birthdates.get(spouse)))
-                if spouse in deaths:
-                    steps.append((deaths[spouse], clock, None))
+                steps.append((dies, clock, birthdates.get(gives)))
+                if gives in deaths:
+                    steps.append((deaths[gives], clock, None))
             else:
                 steps.append((dies, clock, None))
         return steps
@@ -832,7 +864,7 @@ def _rule_lifespans(con, person_lifespan: Mapping[str, str]) -> dict[str, str]:
     return lifespans
 
 
-def _basis_step_ups(con) -> dict[str, list[StepUp]]:
+def _basis_step_ups(con, inherits: InheritancePlan | None = None) -> dict[str, list[StepUp]]:
     """The basis step-ups each final month brings (IRC §1014), by month.
 
     Only a non-cash asset lot that tracks a basis steps up (an investment, a
@@ -844,8 +876,14 @@ def _basis_step_ups(con) -> dict[str, list[StepUp]]:
     left alive, or under ``community_property`` (§1014(b)(6): both halves of
     community property step up). Otherwise only the decedent's half does
     (§2040(b)). ``ownership.Household.decedent_part`` decides, as it does
-    for the end of a decedent's loss carryovers (#277)."""
+    for the end of a decedent's loss carryovers (#277).
+
+    Whose a lot is follows the inheritances (#274): an account a surviving
+    spouse took over is theirs (rule ``inherited``) from then on, and one a
+    death's sweep emptied is no one's."""
     household = _household(con)
+    if inherits is None:
+        inherits = _inheritance_plan(con, household, _load_chain_graph(con))
     deaths = household.final_months
     if not deaths:
         return {}
@@ -853,7 +891,7 @@ def _basis_step_ups(con) -> dict[str, list[StepUp]]:
     community = bool(meta.get("community_property", False))
     no_step_up = sorted(registries.CASH_SUBKINDS | {registries.RETIREMENT_SUBKIND, "hsa"})
     lots = con.execute(
-        "SELECT m.id, a.owner FROM account_lot m JOIN account a ON a.id = m.account_id "
+        "SELECT m.id, a.owner, a.id FROM account_lot m JOIN account a ON a.id = m.account_id "
         "WHERE a.kind = 'asset' AND COALESCE(m.tax_treatment, 'none') IN ('taxable', 'none') "
         f"AND a.subkind NOT IN ({','.join('?' * len(no_step_up))}) ORDER BY m.id",
         no_step_up,
@@ -862,10 +900,15 @@ def _basis_step_ups(con) -> dict[str, list[StepUp]]:
     plan: dict[str, list[StepUp]] = {}
     for person, month in sorted(deaths.items(), key=lambda d: (d[1], d[0])):
         stepped = {s.lot_id for s in plan.get(month, ())}
-        for lot_id, owner in lots:
+        for lot_id, owner, account_id in lots:
             if lot_id in stepped:
                 continue  # two deaths in one month: the first stepped it up in full
-            part = household.decedent_part(person, owner, community=community)
+            if inherits.swept.get(account_id, month) < month:
+                continue  # emptied at an earlier death
+            now = inherits.owners.at(account_id, month)
+            part = household.decedent_part(person, now, community=community)
+            if part == (1, "owner") and owner != now:
+                part = (1, "inherited")
             if part is not None:
                 plan.setdefault(month, []).append(StepUp(lot_id, person, *part))
     return plan
@@ -895,6 +938,229 @@ def _step_up_basis(
         "                          basis_before, basis_after, rule) "
         "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
         rows,
+    )
+
+
+class Inheritance(NamedTuple):
+    """What one death does with one account (#274, ADR-003 §4.9).
+
+    ``owner`` set: the account passes to that surviving spouse, no money
+    moving (``rule`` 'spouse'). Otherwise each of ``lots``, a (lot, chain)
+    pair, is swept into its beneficiary chain ('designated') or the estate
+    ('estate'), skipping any step whose account's owner is in ``dead``
+    lots' accounts by then."""
+    decedent: str
+    account_id: int
+    rule: str
+    owner: str | None = None
+    lots: tuple[tuple[int, int], ...] = ()
+    dead: frozenset[int] = frozenset()
+
+
+class OwnerTimeline:
+    """Each asset account's owner over the run (#274): its ``owner`` column
+    until a death passes it to a surviving spouse, from the month after."""
+
+    def __init__(self, owners: Mapping[int, str | None],
+                 changes: Mapping[int, Sequence[tuple[str, str]]] | None = None) -> None:
+        self._owners = dict(owners)
+        self._changes = {a: sorted(c) for a, c in (changes or {}).items()}
+
+    def at(self, account_id: int, month_s: str) -> str | None:
+        """The owner of ``account_id`` in ``month_s``."""
+        owner = self._owners.get(account_id)
+        for final_month, new_owner in self._changes.get(account_id, ()):
+            if final_month < month_s:
+                owner = new_owner
+        return owner
+
+
+class InheritancePlan(NamedTuple):
+    """Every death's inheritances, by final month, and what they leave:
+    who owns each account when, the accounts a sweep emptied (with the
+    month), and for each decedent the survivors who took a Roth IRA of
+    theirs as their own."""
+    by_month: dict[str, list[Inheritance]]
+    owners: OwnerTimeline
+    swept: dict[int, str]
+    roth_heirs: dict[str, frozenset[str]]
+
+
+def _inheritance_plan(
+    con, household: ownership.Household, graph: ChainGraph,
+) -> InheritancePlan:
+    """What each death does with the household's asset accounts (#274).
+
+    At a person's death, an account they own then goes to its beneficiary
+    (accounts.csv: a chain, matched to each lot at load, or a household
+    member or ``joint`` who takes it over, no money moving, while alive),
+    else passes to a surviving spouse (the same way), else goes to the estate
+    (scenario meta_json ``estate``), else stays as it is. A joint account
+    goes the same way, but only at the household's last death, since until
+    then it is the survivors'. Each person's final month is known when the
+    run starts, so the whole plan is too."""
+    accounts = con.execute(
+        "SELECT a.id, a.owner, m.id, m.beneficiary_chain_id, m.subkind FROM account a "
+        "JOIN account_lot m ON m.account_id = a.id WHERE a.kind = 'asset' ORDER BY a.id, m.id"
+    ).fetchall()
+    owner_now: dict[int, str | None] = {}
+    lots_of: dict[int, list[tuple[int, int | None]]] = {}
+    roth_ira_lots: set[int] = set()
+    for account_id, owner, lot_id, chain_id, subkind in accounts:
+        owner_now[account_id] = owner
+        lots_of.setdefault(account_id, []).append((lot_id, chain_id))
+        if subkind == "roth_ira":
+            roth_ira_lots.add(lot_id)
+    account_of = {lot: account for account, lots in lots_of.items() for lot, _ in lots}
+    meta = json.loads(con.execute("SELECT meta_json FROM scenario").fetchone()[0] or "{}")
+    estate = None
+    if name := meta.get("estate"):
+        row = con.execute("SELECT id FROM chain WHERE name = ?", (name,)).fetchone()
+        estate = row[0] if row else None
+    owners_original = dict(owner_now)
+    named: dict[int, str] = dict(con.execute(
+        "SELECT id, beneficiary_owner FROM account WHERE beneficiary_owner IS NOT NULL").fetchall())
+    changes: dict[int, list[tuple[str, str]]] = {}
+    swept: dict[int, str] = {}
+    roth_heirs: dict[str, set[str]] = {}
+    by_month: dict[str, list[Inheritance]] = {}
+    members = household.members
+
+    def dead_lots(month: str) -> frozenset[int]:
+        """Lots whose account's owner has no one alive after ``month``: a
+        dead person's, or a joint account's once the household is gone."""
+        def gone(owner: str | None) -> bool:
+            if owner in ownership.JOINT_OWNERS:
+                return bool(members) and not any(household.alive_after(p, month) for p in members)
+            return not household.alive_after(owner, month)
+        return frozenset(lot for lot, account in account_of.items() if gone(owner_now[account]))
+
+    for person, month in sorted(household.final_months.items(), key=lambda d: (d[1], d[0])):
+        last = person in members and not any(
+            household.alive_after(p, month) for p in members if p != person)
+        spouse = household.spouses.get(person)
+        survivor = spouse if spouse is not None and household.alive_after(spouse, month) else None
+        def alive(heir: str) -> bool:
+            if heir in ownership.JOINT_OWNERS:
+                return any(household.alive_after(p, month) for p in members)
+            return household.alive_after(heir, month)
+
+        for account_id, lots in lots_of.items():
+            owner = owner_now[account_id]
+            if account_id in swept or not (
+                    owner == person or (owner in ownership.JOINT_OWNERS and last)):
+                continue
+            designated = [(lot, chain) for lot, chain in lots if chain is not None]
+            heir = named.get(account_id)
+            if designated:
+                entry = Inheritance(person, account_id, "designated", lots=tuple(designated))
+            elif heir is not None and heir != owner and alive(heir):
+                entry = Inheritance(person, account_id, "designated", owner=heir)
+            elif owner == person and survivor is not None:
+                entry = Inheritance(person, account_id, "spouse", owner=survivor)
+            elif estate is not None:
+                entry = Inheritance(person, account_id, "estate",
+                                    lots=tuple((lot, estate) for lot, _ in lots))
+            else:
+                continue
+            if entry.owner is not None:
+                owner_now[account_id] = entry.owner
+                changes.setdefault(account_id, []).append((month, entry.owner))
+                if any(lot in roth_ira_lots for lot, _ in lots):
+                    roth_heirs.setdefault(person, set()).add(entry.owner)
+            else:
+                entry = entry._replace(dead=dead_lots(month))
+                swept[account_id] = month
+                for lot, chain in entry.lots:
+                    if lot not in roth_ira_lots:
+                        continue
+                    # A Roth IRA rolled into a survivor's own Roth IRA is
+                    # theirs to treat as their own (Treas. Reg. §1.408A-6 Q&A-7(b)).
+                    for reached in _chain_leaves(chain, graph, set()):
+                        heir = owner_now.get(account_of.get(reached, -1))
+                        if reached in roth_ira_lots and reached not in entry.dead and heir:
+                            roth_heirs.setdefault(person, set()).add(heir)
+            by_month.setdefault(month, []).append(entry)
+    return InheritancePlan(
+        by_month, OwnerTimeline(owners_original, changes), swept,
+        {p: frozenset(h) for p, h in roth_heirs.items()})
+
+
+def _settle_inheritances(
+    con, step_id: int, month_s: str, entries: Sequence[Inheritance],
+    balances: dict[int, int], account_kinds: dict[int, str], ctx: RefillContext,
+    outside: frozenset[int],
+) -> None:
+    """Carry out a final month's inheritances (#274), at its end, after the
+    basis step-up: so an heir gets the stepped-up lot, and a sale on the way
+    realizes no gain. Each is an ``inheritance`` row; a sweep's legs are
+    transfer_events with reason_kind 'inheritance' and that row's id."""
+    for entry in entries:
+        if entry.owner is not None:
+            balance = sum(balances.get(lot, 0) for (lot,) in con.execute(
+                "SELECT id FROM account_lot WHERE account_id = ?", (entry.account_id,)))
+            con.execute(
+                "INSERT INTO inheritance(step_id, date, decedent, account_id, owner, balance, rule) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (step_id, month_s, entry.decedent, entry.account_id, entry.owner, balance,
+                 entry.rule))
+            continue
+        for lot, chain in entry.lots:
+            amount = balances.get(lot, 0)
+            row_id = inserted_id(con.execute(
+                "INSERT INTO inheritance(step_id, date, decedent, account_id, lot_id, "
+                "beneficiary_chain_id, balance, rule) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (step_id, month_s, entry.decedent, entry.account_id, lot, chain, amount,
+                 entry.rule)))
+            if amount <= 0:
+                continue
+            # Emptying the lot is the point, so its refill look-ahead must not
+            # top it back up first (as for transfer_balance).
+            ctx.refilling.add(lot)
+            ctx.inheritance = InheritanceSweep(entry.dead, outside)
+            try:
+                placed = _chain_sweep(
+                    con, balances, account_kinds, ctx.account_tax_treatment,
+                    ctx.account_subkind, ctx.account_name, step_id, month_s,
+                    ctx.graph, chain, amount, lot,
+                    aux=ctx.aux, chain_base_date=ctx.chain_base_date,
+                    inflation_factor_cache=ctx.inflation_factor_cache,
+                    source_tax_character=_blank_move_character(ctx, lot, ctx.graph.leaf_lot.get(chain)),
+                    refill_ctx=ctx, reason_kind="inheritance", reason_id=row_id,
+                )
+            finally:
+                ctx.inheritance = None
+                ctx.refilling.discard(lot)
+            con.execute("UPDATE inheritance SET placed = ? WHERE id = ?", (placed, row_id))
+
+
+class InheritanceSweep(NamedTuple):
+    """While a death's sweep runs (#274): lots whose account's owner has
+    died, which its chain skips, and lots outside the household, where the
+    money arrives as a bequest."""
+    dead: frozenset[int]
+    outside: frozenset[int]
+
+
+def _post_bequest(
+    con, ctx: RefillContext, balances: dict[int, int], account_kinds: dict[int, str],
+    step_id: int, month_s: str, from_lot: int, to_lot: int, amount: int, reason_id: int,
+    *, requested: int, remainder: int,
+) -> None:
+    """Money a death's sweep places outside the household (#274): one
+    ``bequest`` leg, which no tax reads (the heir is taxed on an inherited
+    IRA, not the household). It takes its pro-rata share of the lot's basis
+    and shares with it, as any withdrawal does, but realizes nothing."""
+    prior = balances.get(from_lot, 0)
+    if (basis := ctx.cost_bases.get(from_lot)) is not None:
+        ctx.cost_bases[from_lot] = basis - _pro_rata_basis(basis, prior, amount)
+    quantity = ctx.quantities.get(from_lot)
+    if quantity and prior > 0:
+        ctx.quantities[from_lot] = quantity - min(quantity, quantity * amount // prior)
+    _post_transfer(
+        con, balances, account_kinds, step_id, month_s, from_lot, to_lot, amount,
+        registries.BEQUEST, reason_id, reason_kind="inheritance",
+        requested=requested, remainder=remainder, net_effects=False,
     )
 
 
@@ -972,7 +1238,7 @@ class RefillContext:
                  "account_tax_treatment", "account_subkind", "account_name",
                  "cost_bases", "quantities", "growth_sources", "share_sources", "acquired",
                  "chain_name", "refilling", "last_refill", "negative_since",
-                 "negative_events", "roth", "hsa", "strategies")
+                 "negative_events", "roth", "hsa", "strategies", "inheritance")
 
     def __init__(
         self, graph: ChainGraph, aux, chain_base_date: date,
@@ -1011,6 +1277,9 @@ class RefillContext:
         self.negative_events: list[dict[str, Any]] = []
         # The run's strategies (#326), when it has any: asked at the chains they own.
         self.strategies: StrategyRuntime | None = None
+        # A death's sweep under way (#274), which skips the dead's lots and
+        # makes money reaching an outside party a bequest.
+        self.inheritance: InheritanceSweep | None = None
 
 
 def _ensure_min_balance(
@@ -2880,6 +3149,11 @@ def _chain_sweep(
     if account_id is not None:
         if account_id == source_account_id:
             return 0
+        sweep = refill_ctx.inheritance if refill_ctx is not None else None
+        if sweep is not None and account_id in sweep.dead:
+            # A beneficiary who has died: the next step (a contingent
+            # beneficiary) takes it, as it would an exhausted step's (#274).
+            return 0
         cap = graph.maximum_of.get(account_id)
         room = (
             amount_available if cap is None
@@ -2891,6 +3165,15 @@ def _chain_sweep(
         put = min(amount_available, room)
         if put <= 0:
             return 0
+        if sweep is not None and account_id in sweep.outside:
+            assert refill_ctx is not None
+            _post_bequest(
+                con, refill_ctx, balances, account_kinds, step_id, month_s,
+                source_account_id, account_id, put,
+                source_account_id if reason_id is None else reason_id,
+                requested=_progress.requested, remainder=_progress.record(put),
+            )
+            return put
         _post_withdrawal(
             con, balances, account_kinds, account_tax_treatment, account_subkind,
             account_name, refill_ctx.cost_bases if refill_ctx is not None else None,

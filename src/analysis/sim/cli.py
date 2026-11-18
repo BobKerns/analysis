@@ -5723,7 +5723,8 @@ _BACKFILLABLE_CALENDAR_COLUMNS = frozenset({
 
 
 # lifespan.csv's life_table (#315) is optional too.
-_BACKFILLABLE_COLUMNS = _BACKFILLABLE_CALENDAR_COLUMNS | {"life_table"}
+# #274 added accounts.csv beneficiary; an older file gains it, blank.
+_BACKFILLABLE_COLUMNS = _BACKFILLABLE_CALENDAR_COLUMNS | {"life_table", "beneficiary"}
 
 
 def _append_csv_row(path: Path, header: tuple[str, ...],
@@ -18607,6 +18608,9 @@ def _read_persons(path: Path) -> pd.DataFrame:
     if "sex" not in df.columns and "birthdate" in df.columns:
         # #222 added sex; a persons.csv from before then gains it, blank.
         df.insert(list(df.columns).index("birthdate") + 1, "sex", "")
+    if "kind" not in df.columns:
+        # #274 added kind (person, trust, charity); an older file gains it, blank.
+        df["kind"] = ""
     missing = [c for c in registries.PERSONS_CSV_HEADER if c not in df.columns]
     if missing:
         raise click.ClickException(

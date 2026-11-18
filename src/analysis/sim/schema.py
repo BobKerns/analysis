@@ -6,7 +6,7 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
-SCHEMA_VERSION = 69
+SCHEMA_VERSION = 70
 
 
 def connect_sim_file(path: str | Path, **kwargs: Any) -> sqlite3.Connection:
@@ -30,7 +30,10 @@ CREATE TABLE person (
     birthdate   TEXT NOT NULL,
     sex         TEXT,  -- #222: 'f' or 'm', or NULL; a life_table lifespan needs it
     role        TEXT,
-    meta_json   TEXT NOT NULL DEFAULT '{}'
+    meta_json   TEXT NOT NULL DEFAULT '{}',
+    -- #274: what the person is, for reports: one with no role is outside
+    -- the household and gets an account of their own.
+    kind        TEXT NOT NULL DEFAULT 'person' CHECK (kind IN ('person','trust','charity'))
 );
 
 -- Names for the symbols lots hold (data repo securities.csv); shared reference
@@ -64,6 +67,10 @@ CREATE TABLE account (
     opened          TEXT,
     closed          TEXT,
     meta_json       TEXT NOT NULL DEFAULT '{}',
+    -- #274: the household member (or joint) who takes the account over at
+    -- its owner's death, no money moving: accounts.csv beneficiary naming a
+    -- person. A beneficiary chain is per lot (account_lot).
+    beneficiary_owner TEXT REFERENCES person(id),
     CHECK (
         (kind = 'asset' AND subkind IN ('cash','brokerage_taxable',
             'retirement','hsa','real_estate','vehicle','other_asset','business'))
@@ -171,6 +178,9 @@ CREATE TABLE account_lot (
     refill_amount_cents     INTEGER,
     maximum_balance_cents   INTEGER,
     overflow_chain_id       INTEGER REFERENCES chain(id),
+    -- #274: where the lot goes at its owner's death (accounts.csv
+    -- beneficiary, matched to this lot); NULL when the account names none.
+    beneficiary_chain_id    INTEGER REFERENCES chain(id),
     UNIQUE (account_id, lot)
 );
 
@@ -719,7 +729,7 @@ CREATE TABLE transfer_event (
     tax_character   TEXT NOT NULL,
     reason_kind     TEXT NOT NULL CHECK (reason_kind IN
                         ('rule','initial','ytd','ytd_rule','refill','overflow','strategy',
-                         'tax')),
+                         'tax','inheritance')),
     reason_id       INTEGER,
     -- The event this leg derives from: a multi-leg rule's primary leg, a
     -- withdrawal's basis leg for its gain leg, or, for a reason_kind='refill'
@@ -850,6 +860,27 @@ CREATE TABLE basis_step_up (
     rule            TEXT NOT NULL
 );
 
+-- #274: what each death did with an account: a lot swept into its
+-- beneficiary chain (lot_id and beneficiary_chain_id set; its legs are
+-- transfer_events with reason_kind 'inheritance' and this row's id), or the
+-- account passing to a surviving spouse with no money moving (owner set),
+-- which holds from the month after `date`. rule: 'designated' (the
+-- account's beneficiary), 'estate' (scenario meta_json estate) or 'spouse'.
+CREATE TABLE inheritance (
+    id                   INTEGER PRIMARY KEY,
+    step_id              INTEGER NOT NULL REFERENCES simulation_step(id),
+    date                 TEXT NOT NULL,
+    decedent             TEXT NOT NULL,
+    account_id           INTEGER NOT NULL REFERENCES account(id),
+    lot_id               INTEGER REFERENCES account_lot(id),
+    beneficiary_chain_id INTEGER REFERENCES chain(id),
+    owner                TEXT,
+    balance              INTEGER NOT NULL,
+    placed               INTEGER NOT NULL DEFAULT 0,
+    rule                 TEXT NOT NULL CHECK (rule IN ('designated','estate','spouse')),
+    CHECK ((owner IS NULL) = (lot_id IS NOT NULL))
+);
+
 -- #542: the balance each month's interest of a mortgage_payment rule was
 -- figured on, for the mortgage debt limit: one row per rule and month the
 -- interest covers. A ytd_amount catch-up posts several months' interest
@@ -950,8 +981,13 @@ SELECT month, kind, subkind,
 FROM balance_by_account
 GROUP BY month, kind, subkind;
 
+-- An account's owner is its accounts.csv owner until a death passes it to a
+-- surviving spouse (#274, `inheritance`), from the month after.
 CREATE VIEW balance_by_owner AS
-SELECT s.month, a.owner,
+SELECT s.month,
+       COALESCE((SELECT i.owner FROM inheritance i
+                 WHERE i.account_id = a.id AND i.owner IS NOT NULL AND i.date < s.month
+                 ORDER BY i.date DESC, i.id DESC LIMIT 1), a.owner) AS owner,
        SUM(CASE WHEN a.kind = 'asset' THEN st.balance
                 WHEN a.kind = 'liability' THEN -st.balance
                 ELSE 0 END) AS balance
@@ -959,7 +995,7 @@ FROM simulation_step s
 JOIN account_state st ON st.step_id = s.id
 JOIN account a        ON a.id = st.account_id
 WHERE a.kind IN ('asset','liability')
-GROUP BY s.month, a.owner;
+GROUP BY 1, 2;
 
 CREATE VIEW flow_by_account AS
 SELECT CAST(substr(date, 1, 4) AS INTEGER) AS year,

@@ -1318,6 +1318,21 @@ def update_account(retire_alice_csv: Callable[[str], Path]) -> Callable[..., Non
 
 
 @pytest.fixture(scope="function")
+def add_person(test_data_dir: Path) -> Callable[..., None]:
+    """Add a row to the private data copy's shared persons.csv (#274):
+    ``add_person("dana", kind="charity")``; with no ``role``, someone outside
+    the household, who gets an account of their own."""
+    def _add(person: str, **columns: str) -> None:
+        path = test_data_dir / "persons.csv"
+        persons = pd.read_csv(path, dtype=str, keep_default_na=False)
+        row = {"id": person, "display": person.title(), "birthdate": "", "sex": "",
+               "role": "", "meta_json": "{}", **columns}
+        pd.concat([persons, pd.DataFrame([row])], ignore_index=True).fillna("").to_csv(
+            path, index=False)
+    return _add
+
+
+@pytest.fixture(scope="function")
 def update_scheduled(retire_alice_csv: Callable[[str], Path]) -> Callable[..., None]:
     """Set columns on one existing rule of the private copy's scheduled.csv:
     ``update_scheduled("living", person="joint")``."""
