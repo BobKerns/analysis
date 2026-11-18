@@ -12745,8 +12745,11 @@ def _check_quantity(text: str) -> Decimal:
 
 
 def _check_lot_label(text: str) -> str:
-    if ":" in text:
-        raise click.ClickException(f"a lot label may not contain ':': {text!r}")
+    # ':' joins an account to its lot; a comma would need quoting in every
+    # CSV the name is written to, and a hand edit that forgets breaks the row.
+    for mark in ":,":
+        if mark in text:
+            raise click.ClickException(f"a lot label may not contain {mark!r}: {text!r}")
     return text.strip()
 
 
@@ -13538,11 +13541,16 @@ def import_holdings(
             # A row that sends a whole outside account here and names no lot
             # meant the one there was. With two it would mean neither, and
             # its balance would be skipped from now on: it names that lot.
+            # Saved only for the outside accounts this file has, whose
+            # balances this import puts there: the saved map is every
+            # scenario's, and another's one lot may have another name.
+            here = {holding.account for holding in snapshot.holdings}
             for each in (account_map, saved_map):
                 for key, target in list(each.entries.items()):
-                    if not key[1] and (target.action, target.account, target.lot) == ("map", account, ""):
+                    if not key[1] and (target.action, target.account, target.lot) == ("map", account, "") \
+                            and (each is account_map or key[0] in here):
                         each.set(*key, import_mapping.AccountTarget("map", account, bare[0], target.note))
-                        to_save = True
+                        to_save = to_save or each is saved_map
         return True
 
     def add_account_now(name: str, listed: bool) -> bool:
@@ -13737,7 +13745,7 @@ def import_holdings(
                     continue
                 if any(row.get("account_name") == target.account
                        and row.get("symbol", "").upper() == symbol.upper()
-                       and (not acquired or row.get("acquired", "").strip() == acquired) for row in rows):
+                       and row.get("acquired", "").strip() == acquired for row in rows):
                     # An earlier holding of the symbol (another row of the
                     # file, or another outside account) got the lot just now.
                     continue

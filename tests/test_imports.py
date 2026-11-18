@@ -152,6 +152,11 @@ def test_a_flat_transaction_report_is_read_row_by_row(quicken_flat_transaction_r
     assert frame["transfer"].tolist() == ["", "", "", "Savings"]
     assert frame["tags"][0] == "Family" and frame["memo"][0] == "Flowers, a dozen"
     assert sources.read_flows([quicken_flat_transaction_report]).source == "quicken"
+    # A bank's table with the same columns, and no unnamed first one, is a profile's to read.
+    table = quicken_flat_transaction_report.with_name("bank.csv")
+    table.write_text("Date,Payee,Category,Amount,Account\n01/15/2026,Market,Groceries,-20.00,Checking\n",
+                     encoding="utf-8")
+    assert not quicken.is_transaction_export(table)
 
 
 def test_flows_refuse_a_frame_without_the_common_columns(quicken_transaction_export: Path) -> None:
@@ -658,6 +663,14 @@ def test_plan_sends_each_tax_lot_to_the_lot_acquired_that_day(test_data_dir: Pat
         3: {"opening_balance": "0.00"},
     }
     assert [(h.acquired, t.account) for h, t in result.new] == [(dt.date(2026, 5, 6), "Brokerage")]
+
+    # What the file has of the symbol with no date is no tax lot's: with no
+    # undated lot it is new, whichever side of the tax lots it comes on.
+    rest = Holding("B1", 300_00, asset="AAA", cost_basis_cents=200_00)
+    for order in ((rest, *snapshot.holdings), (*snapshot.holdings, rest)):
+        partly = holdings.plan(Snapshot("broker", order), account_map, _BROKERAGE, lots[1:3])
+        assert (rest, mapping.AccountTarget("map", "Brokerage")) in partly.new and not partly.warnings
+        assert partly.cells[0]["opening_balance"] == "7000.00" and "opening_balance" not in partly.cells[1]
 
     # A mapping that names a lot still takes them all in together.
     account_map.set("B1", "AAA", mapping.AccountTarget("map", "Brokerage", "aaa"))

@@ -518,11 +518,25 @@ def _activity(path: Path, statement: Element) -> Activity | str:
         return "the file doesn't say which days its transactions are of (no DTSTART and DTEND)"
     if any(_text(each, "CORRECTFITID") for each in statement.iter("STMTTRN")):
         return "the file has a correction of a transaction, so its amounts don't add up to the change"
-    return Activity(
-        _day(path, start, "a transaction list's DTSTART"), _day(path, end, "a transaction list's DTEND"),
-        tuple((_day(path, _text(each, "DTPOSTED"), "a transaction's DTPOSTED"),
-               _cents(path, _text(each, "TRNAMT"), "a transaction's TRNAMT"))
-              for each in statement.iter("STMTTRN")))
+    try:
+        found = Activity(
+            _day(path, start, "a transaction list's DTSTART"), _day(path, end, "a transaction list's DTEND"),
+            tuple((_day(path, _text(each, "DTPOSTED"), "a transaction's DTPOSTED"),
+                   _cents(path, _text(each, "TRNAMT"), "a transaction's TRNAMT"))
+                  for each in statement.iter("STMTTRN")))
+    except ValueError as exc:
+        # The balance itself is still good, as of the file's own day.
+        return f"one of its transactions can't be read ({exc})"
+    if statement.tag == "CCSTMTRS" and any(
+            (kind == "DEBIT" and cents > 0) or (kind in ("CREDIT", "PAYMENT") and cents < 0)
+            for kind, (_, cents) in zip(
+                (_text(each, "TRNTYPE").upper() for each in statement.iter("STMTTRN")), found.posted, strict=True)):
+        # A charge is a debit, below zero. An issuer that writes them the
+        # other way would have the balance worked back the wrong way, and
+        # a balance of zero or less doesn't show which it is.
+        return ("the file writes the card's charges above zero (or its payments below), so its transactions' "
+                "signs can't be relied on")
+    return found
 
 
 def read_holdings(path: Path) -> Snapshot:

@@ -46,10 +46,12 @@ def _is_flat_header(row: list[str]) -> bool:
     """The header of a transaction report exported as it stands (not the
     saved Transaction Export): one row for each transaction, with its
     account in a column of its own, under a few lines saying what the
-    report is."""
+    report is. Its first column has no name (it holds only the totals'
+    labels), which is what tells it from a bank's table with these
+    columns, a household profile's to read."""
     cells = {cell.strip() for cell in row}
-    return {"Date", "Amount", "Account", "Category"} <= cells and bool(cells & {"Payee", "Payee/Security"}) \
-        and not (row and row[0].strip().casefold() == "account")
+    return bool(row) and not row[0].strip() \
+        and {"Date", "Amount", "Account", "Category"} <= cells and bool(cells & {"Payee", "Payee/Security"})
 
 
 def is_transaction_export(path: Path) -> bool:

@@ -645,7 +645,7 @@ Opening state for the accounts declared in §4.2, **one row per lot** ([ADR-005]
 | column | type | required | notes |
 | --- | --- | --- | --- |
 | `account_name` | text | ✓ | resolves to `account.id` |
-| `lot` | text | | free-form label, unique within the account, without `:`; blank means `default`. **Required for investment subkinds** (`brokerage_taxable`, `retirement`, `hsa`) |
+| `lot` | text | | free-form label, unique within the account, without `:`; blank means `default`. The commands that name a lot refuse a comma too, which every CSV the name is written to would have to quote. **Required for investment subkinds** (`brokerage_taxable`, `retirement`, `hsa`) |
 | `subkind` | enum | on a `retirement` account | the lot's retirement subkind (§1a); required on, and only allowed on, the lots of a `retirement` account |
 | `symbol` | text | | the security held; names its rate series (§2.2) and its price (§4.4) |
 | `acquired` | YYYY-MM-DD | | starts the holding period: a sale within a year of it books its gain as `stcg`, later as `ltcg`; blank means long-term |
