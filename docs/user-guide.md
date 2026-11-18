@@ -916,6 +916,14 @@ account, the household's last death), the account goes where its optional
 
 `sim account edit Asset_Brokerage_Joint --beneficiary dana` sets one.
 
+It works the other way too. An older relative outside the household can
+leave you money: give them a `birthdate` and a `lifespan.csv` row (it can
+vary across an ensemble), start their account with what they have
+(`account_lots.csv`), and set that account's `beneficiary` to the account
+or chain it would come to (perhaps an empty placeholder account until
+then). At their death it arrives untaxed, with its basis stepped up. A
+step whose owner has died by then is skipped, as above.
+
 At the household's last death, the scenario's estate takes whatever is
 left: set `"estate": "<chain>"` in `scenario.csv` `meta_json`. List the
 debts (a mortgage) first in that chain, so they are paid before the heirs

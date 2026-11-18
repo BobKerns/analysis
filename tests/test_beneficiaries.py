@@ -281,3 +281,74 @@ def test_explain_and_the_income_report_show_the_bequest(
                and "(its beneficiary)" in line for line in explained.splitlines())
     income = sim("report", "income", "--runfile", str(run), "--year", "2035")
     assert "gifts_and_bequests" in income
+
+
+GRANDMA_DIES = "grandma,92,uniform,88,97,,,"  # born 1940-06-15: final month 2032-06 in the base case
+GRANDMA_DIES_LAST = "grandma,100,,,,,,"  # 2040-06, after Alice and Bill
+
+
+@pytest.fixture
+def grandma(
+    add_person: Callable[..., None], add_account_value: Callable[..., None],
+    retire_alice_csv: Callable[[str], Path],
+) -> Callable[[str], None]:
+    """An older relative outside the household with $200,000 of her own,
+    which goes to her account's ``beneficiary`` at her death."""
+    add_person("grandma", birthdate="1940-06-15")
+    add_account_value("grandma", opening_balance="200000.00")
+
+    def _leave_to(beneficiary: str) -> None:
+        path = retire_alice_csv("accounts.csv")
+        accounts = pd.read_csv(path, dtype=str, keep_default_na=False)
+        if "beneficiary" not in accounts:  # an optional column the prototype leaves out
+            accounts["beneficiary"] = ""
+        accounts.loc[len(accounts)] = {
+            **dict.fromkeys(accounts.columns, ""), "name": "grandma", "kind": "expense",
+            "subkind": "gift", "owner": "grandma", "meta_json": "{}", "beneficiary": beneficiary}
+        accounts.to_csv(path, index=False)
+    return _leave_to
+
+
+def _lot_basis(run: Path, account: str, month: str) -> int:
+    return _rows(run, "SELECT SUM(ls.cost_basis) FROM lot_state ls "
+                      "JOIN simulation_step s ON s.id = ls.step_id "
+                      "JOIN account_lot m ON m.id = ls.lot_id JOIN account a ON a.id = m.account_id "
+                      "WHERE a.name = ? AND s.month = ?", account, month)[0][0]
+
+
+def test_a_relatives_bequest_comes_into_the_household_at_her_death(
+    grandma: Callable[[str], None], write_lifespans: Callable[..., None], run_test_copy: Callable[[], Path],
+) -> None:
+    grandma(BROKERAGE)
+    write_lifespans(GRANDMA_DIES)  # her date varies in an ensemble; the base case is 92
+    run = run_test_copy()
+    # Untaxed, and the brokerage's basis rises by all of it: what she left is stepped up.
+    assert _legs(run) == [("2032-06-30", "grandma", BROKERAGE, "none")]
+    assert _balance(run, "grandma", "2032-06-30") == 0
+    before, after = (_lot_basis(run, BROKERAGE, m) for m in ("2032-05-31", "2032-06-30"))
+    assert after - before == 20_000_000
+    assert _rows(run, "SELECT decedent, rule, placed FROM inheritance") == [
+        ("grandma", "designated", 20_000_000)]
+
+
+def test_a_relatives_bequest_skips_an_heir_who_died_first(
+    heirs: None, grandma: Callable[[str], None], update_account: Callable[..., None],
+    write_chain: Callable[..., None], write_lifespans: Callable[..., None],
+    run_test_copy: Callable[[], Path],
+) -> None:
+    write_chain("grandma_will", "Asset_Savings,,", "dana,,")
+    update_account("Asset_Savings", owner="alice")
+    grandma("grandma_will")
+    write_lifespans(ALICE_DIES, BILL_DIES, GRANDMA_DIES_LAST)
+    legs = [leg for leg in _legs(run_test_copy()) if leg[1] == "grandma"]
+    # Alice's savings passed to Bill, who died in 2039 too, so the household's
+    # step is skipped and the money goes on to Dana.
+    assert legs == [("2040-06-30", "grandma", "dana", registries.BEQUEST)]
+
+
+def test_a_relatives_account_cant_be_taken_over_by_the_household(
+    grandma: Callable[[str], None], load_test_copy: Callable[[], LoadResult],
+) -> None:
+    grandma("alice")
+    with pytest.raises(LoadError, match="can't take over an account outside the household"):
+        load_test_copy()

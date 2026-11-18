@@ -989,7 +989,8 @@ class InheritancePlan(NamedTuple):
 def _inheritance_plan(
     con, household: ownership.Household, graph: ChainGraph,
 ) -> InheritancePlan:
-    """What each death does with the household's asset accounts (#274).
+    """What each death does with the household's asset accounts, and an
+    outside party's own account that names a beneficiary (#274).
 
     At a person's death, an account they own then goes to its beneficiary
     (accounts.csv: a chain, matched to each lot at load, or a household
@@ -1001,7 +1002,10 @@ def _inheritance_plan(
     run starts, so the whole plan is too."""
     accounts = con.execute(
         "SELECT a.id, a.owner, m.id, m.beneficiary_chain_id, m.subkind FROM account a "
-        "JOIN account_lot m ON m.account_id = a.id WHERE a.kind = 'asset' ORDER BY a.id, m.id"
+        "JOIN account_lot m ON m.account_id = a.id "
+        # An outside party's own account passes on at their death too, but
+        # only to a beneficiary it names (the household's estate isn't theirs).
+        "WHERE a.kind = 'asset' OR m.beneficiary_chain_id IS NOT NULL ORDER BY a.id, m.id"
     ).fetchall()
     owner_now: dict[int, str] = {}
     lots_of: dict[int, list[tuple[int, int | None]]] = {}
@@ -1058,7 +1062,9 @@ def _inheritance_plan(
                 entry = Inheritance(person, account_id, "designated", owner=heir)
             elif owner == person and survivor is not None:
                 entry = Inheritance(person, account_id, "spouse", owner=survivor)
-            elif estate is not None:
+            elif estate is not None and (person in members or owner in ownership.JOINT_OWNERS):
+                # The household's estate; an outside party's account with no
+                # beneficiary stays where it is.
                 entry = Inheritance(person, account_id, "estate",
                                     lots=tuple((lot, estate) for lot, _ in lots))
             else:

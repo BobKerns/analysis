@@ -3172,7 +3172,8 @@ def _validate_inheritance(
     returned); or a destination chain, a lot's leaf, or an account, whose
     lots are matched to the decedent's (``_beneficiary_lots``). An outside
     party's own account is named by their id, so naming them is naming it.
-    Only an asset account of the household's has one. The estate, the
+    An asset account of the household's has one, or an outside party's own
+    account, which can't be taken over. The estate, the
     beneficiary of every account without one, is a destination chain or a
     leaf."""
     outside = set(outside_parties(persons))
@@ -3201,11 +3202,16 @@ def _validate_inheritance(
         if not target:
             continue
         label = f"{where} ({name}): beneficiary"
-        if a.get("kind") != "asset":
-            issues.append(f"{label}: only an asset account passes to a beneficiary")
+        # An outside party's own account passes on at their death too (a
+        # parent's estate coming to the household), by their lifespan.
+        theirs = a.get("owner", "") in outside
+        if a.get("kind") != "asset" and not theirs:
+            issues.append(f"{label}: only an asset account, or an outside party's own, "
+                          "passes to a beneficiary")
             continue
-        if a.get("owner", "") in outside:
-            issues.append(f"{label}: the account is already outside the household")
+        if theirs and target in household:
+            issues.append(f"{label}: '{target}' can't take over an account outside the "
+                          "household; name the account or chain the money lands in")
             continue
         if target in household:
             if target in kinds or target in chains:
