@@ -2252,6 +2252,68 @@ def quicken_net_worth_export(tmp_path: Path) -> Path:
 
 
 @pytest.fixture
+def quicken_portfolio_report(tmp_path: Path) -> Path:
+    """Quicken's "Portfolio Value & Cost Basis" report of one account, as of
+    2025-12-31 and 2026-08-18: cash, a fund held on both days, one sold
+    between them, one with no known basis, and one with no symbol."""
+    path = tmp_path / "portfolio.csv"
+    dashes = ",".join(["-------------------------"] * 11)
+    path.write_text(
+        "Portfolio Value & Cost Basis\n"
+        "Last 8 Months: 12/31/2025 - 8/18/2026\n"
+        "Joint Brokerage, All Securities\n"
+        "\n"
+        '"Security",,"Symbol","12/31/25 Cost Basis","12/31/25 Gain / Loss","12/31/25 Gain / Loss (%)",'
+        '"12/31/25 Market Value","8/18/26 Cost Basis","8/18/26 Gain / Loss","8/18/26 Gain / Loss (%)",'
+        '"8/18/26 Market Value"\n'
+        f"{dashes}\n"
+        '"Cash",,"","1,000.00","0.00","0.00%","1,000.00","2,500.00","0.00","0.00%","2,500.00"\n'
+        '"Total Stock Fund",,"VTSAX","200,000.00","50,000.00","25.00%","250,000.00",'
+        '"210,000.00","90,000.00","42.86%","300,000.00"\n'
+        '"Total Bond Fund",,"VBTLX","40,000.00","-1,000.00","-2.50%","39,000.00","","","",""\n'
+        '"Employer Stock",,"ACME","--","","--","5,000.00","--","","--","7,500.00"\n'
+        '"Stable Value Trust",,"","9,000.00","","","9,000.00","9,000.00","100.00","1.11%","9,100.00"\n'
+        f"{dashes}\n"
+        '"Total",,,"250,000.00","49,000.00","19.60%","304,000.00","221,500.00","90,100.00","40.68%","319,100.00 "\n',
+        encoding="utf-8",
+    )
+    return path
+
+
+@pytest.fixture
+def quicken_tax_lot_report(tmp_path: Path) -> Path:
+    """Quicken's "Portfolio Value & Cost Basis" report of one account, saved
+    as "Joint Brokerage", with two securities' lines opened to their tax
+    lots: one fund bought on three days (the last after the first date),
+    one sold before the second date, and a stock whose line is closed."""
+    path = tmp_path / "tax_lots.csv"
+    dashes = ",".join(["-------------------------"] * 11)
+    path.write_text(
+        "Portfolio Value & Cost Basis Joint Brokerage,,,,,,,,,,\n"
+        "Last 8 Months: 12/31/2025 - 8/18/2026,,,,,,,,,,\n"
+        "1 Account, All Securities,,,,,,,,,\n"
+        ",,,,,,,,,,\n"
+        "Security,,Symbol,12/31/25 Cost Basis,12/31/25 Gain / Loss,12/31/25 Gain / Loss (%),"
+        "12/31/25 Market Value,8/18/26 Cost Basis,8/18/26 Gain / Loss,8/18/26 Gain / Loss (%),"
+        "8/18/26 Market Value\n"
+        f"{dashes}\n"
+        'Cash,,,"2,500.00",0.00,0.00%,"2,500.00","2,500.00",0.00,0.00%,"2,500.00"\n'
+        'Total Stock Fund,,VTSAX,"200,000.00","50,000.00",25.00%,"250,000.00",'
+        '"210,000.00","90,000.00",42.86%,"300,000.00"\n'
+        ',3/15/2019,,"120,000.00","50,000.00",41.67%,"170,000.00","120,000.00","75,000.00",62.50%,"195,000.00"\n'
+        ',6/1/2022,,"80,000.00",0.00,0.00%,"80,000.00","80,000.00","13,000.00",16.25%,"93,000.00"\n'
+        ',2/10/2026,,,,,,"10,000.00","2,000.00",20.00%,"12,000.00"\n'
+        'Total Bond Fund,,VBTLX,"40,000.00","-1,000.00",-2.50%,"39,000.00",,,,\n'
+        ',4/1/2020,,"40,000.00","-1,000.00",-2.50%,"39,000.00",,,,\n'
+        'Employer Stock,,ACME,--,,--,"5,000.00",--,,--,"7,500.00"\n'
+        f"{dashes}\n"
+        'Total,,,"242,500.00","49,000.00",20.21%,"296,500.00","212,500.00","90,000.00",42.35%,"310,000.00"\n',
+        encoding="utf-8",
+    )
+    return path
+
+
+@pytest.fixture
 def quicken_year_end_export(tmp_path: Path) -> Path:
     """A Quicken "Year End Export" of two of the same accounts, as of
     2025-12-31."""
@@ -2776,6 +2838,30 @@ def ofx_brokerage_download(tmp_path: Path) -> Path:
         + security("222222222", "Federal Money Market", "VMFXX")
         + "</SECLIST></SECLISTMSGSRSV1></OFX>\n",
         encoding="utf-8")
+    return path
+
+
+@pytest.fixture
+def quicken_flat_transaction_report(tmp_path: Path) -> Path:
+    """Quicken's "All Transactions" report exported as it stands: one row
+    for each transaction with its account in a column, under a few lines
+    about the report. Two accounts, a move between them, and a total."""
+    path = tmp_path / "all_transactions.csv"
+    path.write_text(
+        "All Transactions Report Created: 2026-03-01 09:00:00 -0800\n"
+        ",\n"
+        "Filter Criteria:,Spending\n"
+        ",Last Year\n"
+        ",All Accounts\n"
+        ",\n"
+        ',"Split","Date","Payee/Security","Category","Tags","Amount","Account","Memo/Notes"\n'
+        ',,"02/14/2026","Florist","Gifts","Family","-60.00","Rewards Card","Flowers, a dozen"\n'
+        ',,"02/02/2026","Market","Groceries","","-1,500.00","Checking",\n'
+        ',,"01/31/2026","Dividend","Uncategorized","","2.08","Savings",\n'
+        ',,"01/15/2026","To Savings","Transfer:[Savings]","","-200.00","Checking",""\n'
+        '"Total",,,,,,"-1,757.92",,\n',
+        encoding="utf-8",
+    )
     return path
 
 

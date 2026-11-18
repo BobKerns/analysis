@@ -90,11 +90,12 @@ def test_duplicate_account_and_lot_rejected(
         load_test_copy()
 
 
-def test_lot_label_may_not_contain_colon(
-    retire_alice_csv: Callable[[str], Path], load_test_copy: Callable[[], LoadResult]
+@pytest.mark.parametrize(("label", "mark"), [("a:b", ":"), ('"a,b"', ",")])
+def test_lot_label_may_not_contain_a_colon_or_a_comma(
+    retire_alice_csv: Callable[[str], Path], load_test_copy: Callable[[], LoadResult], label: str, mark: str,
 ) -> None:
-    _edit(retire_alice_csv("account_lots.csv"), "Asset_Roth_Bill,default,", "Asset_Roth_Bill,a:b,")
-    with pytest.raises(LoadError, match="may not contain ':'"):
+    _edit(retire_alice_csv("account_lots.csv"), "Asset_Roth_Bill,default,", f"Asset_Roth_Bill,{label},")
+    with pytest.raises(LoadError, match=f"may not contain '{mark}'"):
         load_test_copy()
 
 
