@@ -112,7 +112,7 @@ latest run; add `</dev/null`. Charts marked † take `--graph` (in the pane) or
 | Net worth over time | `sim networth X [--monthly] [--pre-tax] [--dollars nominal]`; `sim explain X` (year-end net worth, lots, negative balances, years past a guard rail) |
 | Compare scenarios | `sim compare BASE V1 [V2...] [--section net-worth\|break-even\|guard-rails\|differences\|runs\|social-security\|tax\|account] [--account A]` † |
 | How X is set up | `sim account list`, `sim scheduled list`, `sim calendar list` (each row says where it's defined in the lineage), `sim person list`, `sim guard-rail list` |
-| How an account is affected | `sim account history A [--yearly] [--lot L]`, `sim account holdings A`, `sim items --account A --start YYYY-MM [--months N]` (each movement with the rule that made it) |
+| How an account is affected | `sim account history A [--yearly] [--lot L]`, `sim account holdings A`, `sim items --account A --start YYYY-MM [--months N]` (each movement with the rule that made it, and the account's running balance) |
 | How money flows | `sim chain list`, `sim chain show A [--rules]` † (a flowchart of where a debit draws from, refills and overflows) |
 | Income, spending, tax | `sim report income`, `sim report expenses [--by category\|account\|tag:ROLE]`, `sim report gains`, `sim report tax [--reconciliation]` |
 | Guard rails | `sim report guard-rails [--carried]` (each year's margin, cumulative, and a summary), `sim compare ... --section guard-rails`, `sim ensemble guard-rails R` |
@@ -124,7 +124,9 @@ no chart yet (#327): for those pictures, open the notebook.
 
 **"Why did X happen"**: find the month (`sim explain` lists negative
 balances; `account history` shows the change), list that month's movements
-with `sim items`, which names the rule behind each, then find that rule in
+with `sim items` (narrow it with `--reason`, `--rule`, `--tax-character`,
+`--tag`; leave out `--account` for the whole ledger), which names the rule
+behind each and the debit that caused each refill, then find that rule in
 `sim scheduled list` or `sim calendar list`, whose "Defined in" column says
 which scenario in the lineage sets it.
 
