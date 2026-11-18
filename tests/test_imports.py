@@ -233,12 +233,48 @@ def test_account_map_round_trips_and_falls_back_to_the_whole_account(test_data_d
     ("A,,move,X,,\n", "action must be"),
     ("A,,map,,,\n", "needs an account"),
     ("A,,map,X,,\nA,,skip,,,\n", "duplicate"),
+    ("A,,split,,,\n", "needs an account"),
+    ("A,,split,X,one,\n", "a 'split' row names no lot: lot_splits.csv"),
 ])
 def test_load_account_map_rejects_bad_rows(
     write_import_map: Callable[[str, str], Path], rows: str, message: str,
 ) -> None:
     with pytest.raises(ValueError, match=message):
         mapping.load_account_map(write_import_map("quicken/accounts.csv", rows))
+
+
+@pytest.mark.parametrize(("rows", "message"), [
+    ("A,,,100.00,\n", "a lot is required"),
+    ("A,,one,100.00,\nA,,one,50.00,\n", "lot 'one' has a part of 'A' already"),
+    ("A,,one,,\nA,,two,,\n", "only one lot of a split can have a blank amount"),
+    ("A,,one,1e3,\n", "invalid dollar value"),
+    ("A,,one,100.00,lots\n", "invalid dollar value"),
+])
+def test_load_lot_splits_rejects_bad_rows(
+    write_import_map: Callable[[str, str], Path], rows: str, message: str,
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        mapping.load_lot_splits(write_import_map("quicken/lot_splits.csv", rows))
+
+
+def test_lot_splits_round_trip_and_divide_a_number(write_import_map: Callable[[str, str], Path]) -> None:
+    path = write_import_map(
+        "quicken/lot_splits.csv", "Funds,,vti,6000.00,4500.00\nFunds,,bnd,,\nBank,,cd,250.00,\nBank,,rest,50.00,\n")
+    found = mapping.load_lot_splits(path)
+    before = path.read_text(encoding="utf-8")
+    found.save()
+    assert path.read_text(encoding="utf-8") == before
+    assert mapping.load_lot_splits(path.with_name("none.csv")).parts == {}
+
+    funds, bank = found.parts["Funds", ""], found.parts["Bank", ""]
+    assert funds == [mapping.LotPart("vti", 600000, 450000), mapping.LotPart("bnd", None)]
+    # The lot with no amount takes what the others leave, whatever the number is now.
+    assert [cents for _, cents in mapping.divide(funds, 1000000) or []] == [600000, 400000]
+    assert [cents for _, cents in mapping.divide(funds, 600000) or []] == [600000, 0]
+    # More given out than there is, and fixed amounts that come to another number, don't divide it.
+    assert mapping.divide(funds, 500000) is None
+    assert [cents for _, cents in mapping.divide(bank, 30000) or []] == [25000, 5000]
+    assert mapping.divide(bank, 30001) is None and mapping.divide([], 0) is None
 
 
 def test_load_account_map_rejects_another_header(quicken_account_map: Path) -> None:
@@ -267,10 +303,26 @@ def test_renames_follow_in_every_saved_mapping(
     assert mapping.rename_account(test_data_dir, "Nothing", "Else") == []
     assert mapping.rename_lot(test_data_dir, "Asset_Checking", "vti", "x") == []
 
+    # A row that divides a number among an account's lots follows the
+    # account in accounts.csv, and its lots in lot_splits.csv; a part of
+    # another account's lot of the same name is left alone.
+    accounts.write_text(accounts.read_text(encoding="utf-8")
+                        + "Total,,split,Asset_Brokerage_Joint,,\nOther,,split,Asset_Roth_Alice,,\n", encoding="utf-8")
+    splits = write_import_map("quicken/lot_splits.csv", "Total,,bnd,10.00,\nTotal,,voo,,\nOther,,bnd,,\n")
+    assert mapping.rename_lot(test_data_dir, "Asset_Brokerage_Joint", "bnd", "bonds") == [
+        "imports/quicken/accounts.csv", "imports/quicken/lot_splits.csv"]
+    assert splits.read_text(encoding="utf-8").splitlines()[1:] == [
+        "Total,,bonds,10.00,", "Total,,voo,,", "Other,,bnd,,"]
+    assert mapping.rename_account(test_data_dir, "Asset_Roth_Alice", "Asset_Roth") == ["imports/quicken/accounts.csv"]
+    assert mapping.load_account_map(accounts).entries["Other", ""] == mapping.AccountTarget("split", "Asset_Roth")
+    assert mapping.rename_lot(test_data_dir, "Asset_Brokerage_Joint", "bonds", "bnd") == [
+        "imports/quicken/accounts.csv", "imports/quicken/lot_splits.csv"]
+
     found = mapping.load_account_map(accounts)
     assert found.lookup("Business") == mapping.AccountTarget("map", "Asset_Bank")
     assert found.entries["Funds", ""].label == "Asset_Brokerage_Joint:total_market"
     assert found.entries["Bonds", ""].label == "Asset_Brokerage_Joint:bnd"
+    assert found.entries["Total", ""] == mapping.AccountTarget("split", "Asset_Brokerage_Joint")
     assert mapping.load_expense_accounts(expenses).accounts == {
         "Food": "Expense_Home", "Gifts": "-"}
 
@@ -414,6 +466,24 @@ def test_plan_reports_what_the_mapping_leaves_open() -> None:
     assert [h.account for h, _ in result.no_lot] == ["NoLot", "Card"]
     assert len(result.warnings) == 1 and "has 2 lots" in result.warnings[0]
     assert result.changes == [] and result.cells == {}
+
+
+def test_plan_leaves_a_split_open_until_its_parts_name_their_lots() -> None:
+    account_map = _map(Funds=mapping.AccountTarget("split", "Asset_Brokerage_Joint"))
+    whole = holdings.plan(_snapshot(Funds=10000), account_map, _ACCOUNTS, _lots())
+    assert not whole.complete and [h.account for h, _ in whole.to_split] == ["Funds"]
+    assert whole.changes == []
+
+    parts = Snapshot("quicken", (
+        Holding("Funds", 7000, lot="vti", cost_basis_cents=5000), Holding("Funds", 3000, lot="bnd"),
+        Holding("Funds", 1, lot="voo")))
+    result = holdings.plan(parts, account_map, _ACCOUNTS, _lots())
+    # A part for a lot the account doesn't have is as a mapping to one.
+    assert [(h.lot, t.label) for h, t in result.no_lot] == [("voo", "Asset_Brokerage_Joint:voo")]
+    assert not result.to_split
+    assert {(c.lot, c.column): c.after for c in result.changes if c.column != "prior_year_end_balance"} == {
+        ("vti", "opening_balance"): "70.00", ("vti", "opening_cost_basis"): "50.00",
+        ("bnd", "opening_balance"): "30.00"}
 
 
 # ---------- the flows applier ----------

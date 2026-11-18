@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import csv as _csv
+import dataclasses
 import contextvars
 import functools
 import inspect
@@ -187,7 +188,7 @@ from analysis.sim.overlay import (
     tax_rows as _tax_rows,
 )
 from analysis.frames import clip_years, index_years, named_rows, row_years
-from analysis.sim.types import INVESTMENT_ASSET_SUBKINDS, Death, DollarMode, ItemType
+from analysis.sim.types import INVESTMENT_ASSET_SUBKINDS, Death, DollarMode, InvestmentAssetSubkind, ItemType
 from analysis.sim.retention import RETENTION_FILENAME, RetentionError, prune_state
 from analysis.sim.schema import connect_sim_file
 
@@ -8783,7 +8784,7 @@ def _map_choices(
             case "use":
                 names_ = ["budget", "actual"]
             case "action":
-                names_ = ["map", "skip"]
+                names_ = ["map", "skip", "split"]
             case _:
                 names_ = []
         found[column] = [*names_, *kind.words.get(column, ())]
@@ -9016,9 +9017,11 @@ def _ask_holding_target(
 
     With ``add_lot``, the lot is asked for even where the account has one
     (Enter takes it), and a new name is a new lot of the account, which
-    ``add_lot(account, lot)`` adds or says why it can't: several outside
-    accounts (a bank's checking and savings) are often one account of the
-    plan with a lot each.
+    ``add_lot(account, lot)`` makes the account's (asking what it needs to)
+    or says why it didn't: several outside accounts (a bank's checking and
+    savings) are often one account of the plan with a lot each. ``split``
+    there says the number is several lots' together: the target's action is
+    ``split``, and the caller asks how it divides.
     """
     click.echo(f"{source} account {label} ({format_dollars(cents)}) {why}.")
     if add is not None:
@@ -9064,24 +9067,127 @@ def _ask_holding_target(
         if len(shown) > 1:
             lot = _ask_name("lot", shown, prompt=f"lot of {answer}")
     else:
-        def new_lot(name: str) -> bool:
-            return click.confirm(f"Add lot {name} to {answer}?", default=False) and add_lot(answer, name)
-
-        click.echo(f"lots: {', '.join(shown)}; a new name adds a lot to {answer}")
+        # A lot may be named `split`: the word is then the lot's.
+        words = [] if "split" in shown else ["split"]
+        click.echo(f"lots: {', '.join(shown)}; a new name adds a lot to {answer}"
+                   + ("; 'split' divides this number among lots" if words else ""))
         only = shown[0] if len(shown) == 1 else None
         while True:
-            said = _prompt_with_completion(f"lot of {answer}", choices=shown, default=only).strip()
+            said = _prompt_with_completion(f"lot of {answer}", choices=[*shown, *words], default=only).strip()
             if said == only:
                 # The one lot, as before there was a question: the row
                 # names no lot, so a file that lists the account's holdings
                 # still sends each to its own. ``add_lot`` names it in the
                 # row when the account gets a second.
                 break
-            if said in shown or (said and new_lot(said)):
+            if said in words:
+                return import_mapping.AccountTarget("split", answer)
+            if said in shown or (said and add_lot(answer, said)):
                 lot = said
                 break
-            click.echo(f"  one of: {', '.join(shown)}")
+            click.echo(f"  one of: {', '.join([*shown, *words])}")
     return import_mapping.AccountTarget("map", answer, lot)
+
+
+def _ask_lot_split(
+    label: str, total: int, account: str, its_lots: Sequence[str], before: Sequence[import_mapping.LotPart],
+    *, basis: bool, investment: bool, new_ok: bool,
+) -> tuple[list[import_mapping.LotPart], list[tuple[str, str, str]]]:
+    """How one outside number (``label``, ``total`` cents) divides among
+    lots of ``account``, asked for a lot at a time until nothing is left or
+    a lot takes the rest, then shown and agreed to; and the lots to add for
+    it, each with its symbol and the day it was acquired.
+
+    ``before`` is the split the last import saved: its lots and amounts are
+    the defaults. ``basis`` asks each part's cost basis (a taxable brokerage
+    account's lots keep one); ``investment`` asks a new lot's symbol and
+    day; ``new_ok`` is whether a new name can be a new lot.
+    """
+    before = list(before)
+    while True:
+        click.echo(f"Dividing {label}, {format_dollars(total)}, among lots of {account}.")
+        click.echo(f"  lots: {', '.join(its_lots) or 'none yet'}" + ("; a new name adds a lot" if new_ok else ""))
+        click.echo("  Each lot's amount, until nothing is left. 'rest' gives a lot whatever the others "
+                   "leave, in later imports too: the split then still fits when the number changes.")
+        was = {part.lot: part for part in before}
+        parts: list[import_mapping.LotPart] = []
+        new: list[tuple[str, str, str]] = []
+        left = total
+        while left or not parts:
+            used = {part.lot for part in parts}
+            again = before[len(parts)].lot if len(parts) < len(before) else None
+            name = _prompt_with_completion(
+                f"lot ({format_dollars(left)} left)", choices=[each for each in its_lots if each not in used],
+                default=None if again in used else again).strip()
+            try:
+                name = _check_lot_label(name)
+            except click.ClickException as error:
+                click.echo(f"  {error.format_message()}")
+                continue
+            if not name or name in used:
+                click.echo(f"  {name} has its part already" if name else "  a lot's name")
+                continue
+            if name not in its_lots:
+                if not new_ok:
+                    click.echo(f"  one of: {', '.join(its_lots)}")
+                    continue
+                # No by default: a slip in a lot's name is likelier than a new one.
+                if not click.confirm(f"Add lot {name} to {account}?", default=False):
+                    continue
+                symbol = acquired = ""
+                while investment:
+                    symbol = _prompt_with_completion(f"symbol of {name} (blank for none)", default="").strip().upper()
+                    acquired = _prompt_with_completion(
+                        f"day {name} was acquired, YYYY-MM-DD (blank for none)", default="").strip()
+                    try:
+                        if acquired:
+                            _check_day(acquired)
+                        if any(c.isspace() for c in symbol):
+                            raise click.ClickException(f"a symbol has no spaces: {symbol!r}")
+                        break
+                    except click.ClickException as error:
+                        click.echo(f"  {error.format_message()}")
+                new.append((name, symbol, acquired))
+            saved = was.get(name)
+            offered = format_dollars(left) if saved is None or (saved.cents is not None and (
+                left - saved.cents) * total < 0) else "rest" if saved.cents is None else format_dollars(saved.cents)
+            cents: int | None
+            while True:
+                text = _prompt_with_completion(f"amount for {name}, or rest", choices=["rest"], default=offered).strip()
+                if text == "rest":
+                    cents = None
+                    break
+                try:
+                    cents = units.dollars_to_cents(text)
+                except ValueError as error:
+                    click.echo(f"  {error}")
+                    continue
+                if (left - cents) * total >= 0:
+                    break
+                click.echo(f"  that is more than the {format_dollars(left)} left")
+            basis_cents: int | None = None
+            while basis:
+                kept = saved.basis_cents if saved is not None else None
+                text = _prompt_with_completion(
+                    f"cost basis of {name}'s part (blank if not known)",
+                    default="" if kept is None else format_dollars(kept)).strip()
+                try:
+                    basis_cents = units.dollars_to_cents(text) if text else None
+                    break
+                except ValueError as error:
+                    click.echo(f"  {error}")
+            parts.append(import_mapping.LotPart(name, cents, basis_cents))
+            if cents is None:
+                break
+            left -= cents
+        shares = import_mapping.divide(parts, total) or []
+        _echo_table(
+            ["lot", "amount", ""],
+            ((part.lot, format_dollars(cents), "the rest" if part.cents is None else "") for part, cents in shares),
+            left=1)
+        if click.confirm("Divide it this way?", default=True):
+            return parts, new
+        before = parts
 
 
 def _outside_label(holdings: Sequence[import_forms.Holding], *, whole: bool) -> str:
@@ -9845,7 +9951,7 @@ def _cards_charged(
     unclaimed = scenario_cards - {
         target.account
         for path in imports.glob(f"*/{import_mapping.ACCOUNTS}")
-        for target in import_mapping.load_account_map(path).entries.values() if target.action == "map"}
+        for target in import_mapping.load_account_map(path).entries.values() if target.action != "skip"}
     maps: dict[str, import_mapping.AccountMap] = {}
     changed: dict[str, import_mapping.AccountMap] = {}
     found: dict[tuple[str, str], Payer] = {}
@@ -13473,7 +13579,10 @@ def import_holdings(
     either mapped to an account (and a lot, when the account has several) or
     marked ``skip`` -- this catches new or renamed outside accounts instead
     of silently ignoring them. At a terminal the missing ones are asked for
-    and saved.
+    and saved. A new lot name there adds the lot, or renames the account's
+    one lot when that is still ``default``. ``split`` there divides the
+    file's one number among lots, by amounts that are asked for and saved
+    in imports/<source>/lot_splits.csv.
 
     A brokerage's file lists what each account holds, by symbol. Its outside
     account is mapped to an account only, and each holding goes to the
@@ -13563,10 +13672,80 @@ def import_holdings(
         rows.append(row)
         fresh.add(len(rows) - 1)
 
+    def rename_default(account: str, at: int, name: str) -> bool:
+        """Rename ``account``'s one lot, ``default`` (``lots[at]``), to
+        ``name``, as `sim account lot rename` does, and take the renamed lot
+        in; False, with why, when that command refuses. Written at once, as
+        an account added here is: the rules and mappings that name the lot
+        follow, which is that command's work. A dry run only says so."""
+        was = registries.DEFAULT_LOT
+        if dry_run:
+            click.echo(f"(dry run) lot {was} of {account} would be renamed {name}")
+            lots[at] = lots[at]._replace(row={**lots[at].row, "lot": name})
+        else:
+            try:
+                click.get_current_context().invoke(
+                    lot_rename, account=account, lot=was, new_lot=name, scenario=scen_name, data_dir=data_dir_p)
+            except click.ClickException as e:
+                click.echo(f"  not renamed: {e.format_message()}")
+                return False
+            lots[at] = next(
+                lot for lot in _import_target_lots(scenario_dir, scen_name, {account: accounts[account]})
+                if (lot.account, lot.lot) == (account, name))
+        rows[at] = lots[at].row
+        lot_context.clear()
+        # What this run holds of the mappings, as that command left the
+        # saved ones: a row is followed only where no scenario still has
+        # the old name, and saving this run's answers must not undo it.
+        on_file = account_map if dry_run else import_mapping.load_account_map(map_path)
+        for each in (account_map, saved_map):
+            for key, target in list(each.entries.items()):
+                now = on_file.entries.get(key)
+                if (target.action, target.account, target.lot) == ("map", account, was) and now is not None \
+                        and (dry_run or now.lot == name):
+                    each.set(*key, dataclasses.replace(target, lot=name))
+        return True
+
     def add_balance_lot(account: str, name: str) -> bool:
-        """A lot of ``account`` with no symbol, for an outside account's one
-        balance; False, with why, when it can't be one."""
+        """A lot ``name`` of ``account`` with no symbol, for an outside
+        account's one balance: a new lot, or the account's one lot,
+        ``default``, renamed, as the user says; False, with why, when it
+        can't be one or the user went back."""
         nonlocal to_save
+        try:
+            name = _check_lot_label(name)
+        except click.ClickException as e:
+            click.echo(f"  {e.format_message()}")
+            return False
+        its = [i for i, lot in enumerate(lots) if lot.account == account]
+        only = lots[its[0]] if len(its) == 1 and its[0] not in fresh else None
+        # Another of this file's numbers goes into the lot: it isn't this one's.
+        claimed = any(
+            (found.action, found.account) == ("map", account) and found.lot in ("", registries.DEFAULT_LOT)
+            for holding in snapshot.holdings
+            if (found := account_map.lookup(holding.account, holding.asset)) is not None)
+        if only is not None and only.lot == registries.DEFAULT_LOT and not claimed and not (
+                only.implicit or only.deleted or only.row.get("symbol", "").strip()):
+            # A lot called `default` is whatever the account held before it
+            # had lots worth naming: the same money as this, as likely as not.
+            try:
+                held = units.dollars_to_cents(only.row.get("opening_balance", "") or "0")
+            except ValueError:
+                held = 0
+            click.echo(f"{account} has one lot, {registries.DEFAULT_LOT!r}, "
+                       + (f"with a balance of {format_dollars(held)}." if held else "which is empty."))
+            click.echo(
+                f"  If {name!r} is that same lot under a name of its own, rename it: the rules and mappings "
+                f"that name it follow. If {name!r} is other money beside it (a file may list only part of "
+                "an account), add a lot.")
+            choice = _ask_name("choice", ["rename", "add", "back"], prompt="rename, add, or back", plural="choices")
+            if choice == "back":
+                return False
+            if choice == "rename":
+                return rename_default(account, its[0], name)
+        elif not click.confirm(f"Add lot {name} to {account}?", default=False):
+            # No by default: a slip in a lot's name is likelier than a new one.
+            return False
         bare = [row.get("lot", "") or registries.DEFAULT_LOT for row in rows
                 if row.get("account_name") == account and not row.get("symbol")]
         try:
@@ -13666,6 +13845,8 @@ def import_holdings(
                 + f": is it a {snapshot.source} holdings report?")
         map_path = import_mapping.source_dir(data_dir_p, snapshot.source) / import_mapping.ACCOUNTS
         saved_map = import_mapping.load_account_map(map_path)
+        splits_path = map_path.with_name(import_mapping.LOT_SPLITS)
+        lot_splits = import_mapping.load_lot_splits(splits_path)
         # What this run uses: the saved map, and any answer given for this
         # run only.
         account_map = import_mapping.AccountMap(map_path, dict(saved_map.entries))
@@ -13696,6 +13877,7 @@ def import_holdings(
 
         result = replan()
         to_save = False
+        split_asked = False
         # Whether each (account, symbol) the file has by tax lot gets a lot for each.
         tax_lots: dict[tuple[str, str], bool] = {}
         while not result.complete:
@@ -13736,6 +13918,66 @@ def import_holdings(
             if progress:
                 # The answers may have sent holdings to accounts with lots to
                 # ask about; ask those once every account is settled.
+                result = replan()
+                continue
+            # A number its mapping divides among lots: as the saved split says
+            # where that still comes to the file's number, else asked for.
+            for at in dict.fromkeys((h.account, h.asset) for h, _ in result.to_split):
+                covered = [h for h, _ in result.to_split if (h.account, h.asset) == at]
+                target = next(t for h, t in result.to_split if h is covered[0])
+                total = sum(h.value_cents for h in covered)
+                label = _outside_label(covered, whole=not at[1])
+                before = lot_splits.parts.get(at, [])
+                its_lots = [_lot.lot for _lot in lots if _lot.account == target.account and not _lot.deleted]
+                shares = import_mapping.divide(before, total)
+                why = ""
+                if not before:
+                    why = f"{_shown(splits_path)} has no split of {label} yet"
+                elif shares is None:
+                    fixed = sum(part.cents for part in before if part.cents is not None)
+                    why = (f"the saved split of {label} gives out {format_dollars(fixed)}, and the file has "
+                           f"{format_dollars(total)}")
+                elif missing := [part.lot for part, _ in shares if part.lot not in its_lots]:
+                    why = (f"the saved split of {label} names lot(s) {', '.join(missing)}, which "
+                           f"{target.account} doesn't have")
+                if why:
+                    if not _interactive():
+                        raise click.ClickException(
+                            f"{why}; run at a terminal to be asked, or change its rows in {splits_path} "
+                            f"(columns {', '.join(import_mapping.LOT_SPLITS_HEADER)}; one lot's amount may "
+                            "be blank, to take the rest)")
+                    if before:
+                        click.echo(f"{why}.")
+                    subkind = accounts[target.account][1]
+                    while True:
+                        parts, added = _ask_lot_split(
+                            label, total, target.account, its_lots, before,
+                            basis=subkind == InvestmentAssetSubkind.BROKERAGE_TAXABLE,
+                            investment=subkind in INVESTMENT_ASSET_SUBKINDS,
+                            # Last year's file can't say what a new lot holds now.
+                            new_ok=not year_end)
+                        try:
+                            for name, symbol, acquired in added:
+                                if name not in its_lots:
+                                    add_lot(target.account, name, symbol, acquired)
+                                    its_lots.append(name)
+                            break
+                        except click.ClickException as e:
+                            click.echo(f"  not added: {e.format_message()}")
+                            before = parts
+                    lot_splits.parts[at] = parts
+                    split_asked = True
+                    shares = import_mapping.divide(parts, total)
+                assert shares is not None
+                # Each part is a holding of its own from here, which names its lot.
+                pieces = tuple(
+                    dataclasses.replace(covered[0], value_cents=cents, quantity=None, acquired=None,
+                                        cost_basis_cents=part.basis_cents, lot=part.lot)
+                    for part, cents in shares)
+                snapshot = dataclasses.replace(snapshot, holdings=(
+                    *(h for h in snapshot.holdings if (h.account, h.asset) != at), *pieces))
+                progress = True
+            if progress:
                 result = replan()
                 continue
             if year_end:
@@ -13953,7 +14195,7 @@ def import_holdings(
         counts = f"{len(fresh)} new, {counts}"
     if dry_run:
         click.echo(f"(dry run) {result.lots_changed} lot(s) would change, {counts}")
-        if to_save:
+        if to_save or split_asked:
             click.echo("(dry run) the mappings you gave were not saved")
         return
 
@@ -13997,6 +14239,9 @@ def import_holdings(
     if to_save:
         saved_map.save()
         click.echo(f"saved mappings to {_shown(map_path)}")
+    if split_asked:
+        lot_splits.save()
+        click.echo(f"saved the split to {_shown(splits_path)}")
     for account, character in characters.items():
         _echo_growth_character(account, character)
     inherited = f"; {overrides} as override(s) of inherited lots" if overrides else ""

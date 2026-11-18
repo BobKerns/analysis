@@ -90,7 +90,8 @@ imports/
   budget_choices.csv       category -> budget or actual, where you have both
   <source>/
     profile.yaml           a source of your own (see below)
-    accounts.csv           outside account -> account and lot, or skip
+    accounts.csv           outside account -> account and lot, or skip, or split
+    lot_splits.csv         one outside number divided among an account's lots
     categories.csv         outside category -> category
     splits.csv             a category divided by the outside account that paid
     excluded_payees.csv    payees whose expenses the scenario models itself
@@ -119,9 +120,21 @@ accounts hold. Export the snapshot as of the scenario's first day.
 - The question asks for the lot too. Press Enter for an account's one lot,
   name one of its lots, or give a new name: after a yes, the lot is added
   to the account and takes the balance. So a bank's second account can be
-  given its own lot as it is first imported. One outside number can't fill two lots, so an outside account that
-  the scenario keeps as several lots is best answered `skip`, and its lots
-  filled from a [brokerage file](#brokerage-files) or typed.
+  given its own lot as it is first imported.
+- When the account's one lot is still called `default`, a new name may be
+  that same lot's, so the question says what `default` holds and asks:
+  `rename` gives the lot your name, and the rules that pay into or out of it
+  follow; `add` keeps `default` and adds your lot beside it, for a file that
+  lists only part of the account; `back` asks for the lot again.
+- One outside number can fill several lots when you know how it divides:
+  answer `split` for the lot. It then asks for a lot and its amount, one at a
+  time, until nothing is left. A new name adds a lot; `rest` for an amount
+  gives that lot whatever the others leave. In a brokerage account it also
+  asks a new lot's symbol and the day it was bought, and each part's cost
+  basis in a taxable one. The split is saved in
+  `imports/<source>/lot_splits.csv`. The next import uses it as it is when
+  one lot takes the rest, or when the number hasn't changed. Otherwise it
+  asks again, with the last amounts as the defaults.
 - An outside account the scenario has no account for can be added from
   the question: answer with a new name, and it asks what `sim account add`
   asks (kind, subkind, owner) and adds the account before going on. For an

@@ -1446,7 +1446,7 @@ def test_a_rename_warns_when_a_mapping_file_does_not_read(
     assert result.exit_code == 0, result.output
     assert "warning: the saved import mappings still name Asset_Checking, not Asset_Bank" \
         in result.output
-    assert "action must be 'map' or 'skip'" in result.output
+    assert "action must be 'map', 'skip' or 'split'" in result.output
     assert saved.read_text(encoding="utf-8") == before
     assert "Asset_Bank" in _lots(test_data_dir)
 
@@ -3386,11 +3386,13 @@ def test_sim_import_holdings_asks_which_lot_a_bank_balance_goes_into_and_adds_a_
     assert "lots: default; a new name adds a lot to Asset_Checking" in one.output
     assert "lot of Asset_Checking [default]:" in one.output
 
-    # A bank's checking and savings as two lots of one account: each new
-    # name is asked about (a slip isn't a lot), then added with the balance.
+    # A bank's checking and savings as two lots of one account, beside what
+    # its one lot `default` holds: each new name is asked about (a slip
+    # isn't a lot), then added with the balance.
     result = _import(test_data_dir, "holdings", str(ofx_bank_like_accounts_download),
-                     input="Asset_Checking\nchecking\ny\nAsset_Checking\nsaving\nn\nsavings\ny\n")
+                     input="Asset_Checking\nchecking\nadd\nAsset_Checking\nsaving\nn\nsavings\ny\n")
     assert result.exit_code == 0, result.output
+    assert "Asset_Checking has one lot, 'default', with a balance of 5000.00." in result.output
     assert "Add lot saving to Asset_Checking? [y/N]" in result.output
     with (test_data_dir / "scenarios" / "retire_alice" / "account_lots.csv").open(encoding="utf-8") as f:
         lots = {row["lot"]: row["opening_balance"] for row in csv.DictReader(f)
@@ -3434,6 +3436,145 @@ def test_sim_import_holdings_leaves_other_files_rows_in_the_shared_map_as_they_a
         "Elsewhere Bank checking ...9999,,map,Asset_Checking,,",
         "First Example Bank checking ...4321,,map,Asset_Checking,default,",
         "First Example Bank savings ...4321,,map,Asset_Checking,savings,"]
+
+
+def _lot_references(data: Path, account: str) -> set[str]:
+    """The lots of ``account`` that retire_alice's rules pay from or into."""
+    with (data / "scenarios" / "retire_alice" / "scheduled.csv").open(newline="", encoding="utf-8") as f:
+        rows = list(csv.DictReader(f))
+    return {row[f"{side}_lot"] for row in rows for side in ("from", "to") if row[f"{side}_account"] == account}
+
+
+@pytest.mark.usefixtures("at_a_terminal")
+def test_sim_import_holdings_renames_the_default_lot_a_named_balance_is(
+    test_data_dir: Path, ofx_bank_download: Path, write_import_map: MapWriter,
+) -> None:
+    # Another institution's row that names the lot by its old name.
+    write_import_map("ofx/accounts.csv", "Elsewhere Bank checking ...9999,,map,Asset_Checking,default,\n")
+    before = _all_lots(test_data_dir)
+
+    # A dry run says what it would do, and writes nothing.
+    dry = _import(test_data_dir, "holdings", str(ofx_bank_download), "--dry-run",
+                  input="Asset_Checking\nmain\nrename\n")
+    assert dry.exit_code == 0, dry.output
+    assert "(dry run) lot default of Asset_Checking would be renamed main" in dry.output
+    assert _all_lots(test_data_dir) == before and _lot_references(test_data_dir, "Asset_Checking") == {""}
+
+    # `back` asks for the lot again, and Enter then takes the one there is.
+    back = _import(test_data_dir, "holdings", str(ofx_bank_download), "--dry-run",
+                   input="Asset_Checking\nmain\nback\n\n")
+    assert back.exit_code == 0, back.output
+    assert "would be renamed" not in back.output
+
+    result = _import(test_data_dir, "holdings", str(ofx_bank_download), input="Asset_Checking\nmain\nrename\n")
+    assert result.exit_code == 0, result.output
+    assert "Asset_Checking has one lot, 'default', with a balance of 5000.00." in result.output
+    assert "Add lot" not in result.output
+    lots = {lot: row for (account, lot), row in _all_lots(test_data_dir).items() if account == "Asset_Checking"}
+    # One lot still, under its new name, with the file's balance and what it had beside it.
+    assert list(lots) == ["main"]
+    assert lots["main"]["opening_balance"] == "4321.09"
+    assert lots["main"]["minimum_balance"] == before["Asset_Checking", ""]["minimum_balance"] == "2000.00"
+    # The rules that named the lot follow, and so does the other institution's row.
+    assert _lot_references(test_data_dir, "Asset_Checking") == {"main"}
+    assert _saved(test_data_dir, "ofx") == [
+        "Elsewhere Bank checking ...9999,,map,Asset_Checking,main,",
+        "First Example Bank checking ...4321,,map,Asset_Checking,main,"]
+
+    # The next import has nothing to ask.
+    again = _import(test_data_dir, "holdings", str(ofx_bank_download))
+    assert again.exit_code == 0, again.output
+    assert "0 lot(s)" in again.output
+
+
+def test_sim_import_holdings_divides_one_number_among_lots_and_keeps_the_split(
+    test_data_dir: Path, ofx_bank_download: Path, rewrite_download: Rewrite, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(cli, "_interactive", lambda: True)
+    # 1000.00 stays in the one lot there is; a new lot takes the rest. A
+    # lot named twice, and more than is left, are asked for again.
+    answers = "Asset_Checking\nsplit\ndefault\n1000\ndefault\ncd\ny\n9000\nrest\n\n"
+    dry = _import(test_data_dir, "holdings", str(ofx_bank_download), "--dry-run", input=answers)
+    assert dry.exit_code == 0, dry.output
+    assert "(dry run) the mappings you gave were not saved" in dry.output
+    assert not (test_data_dir / "imports").exists()
+
+    result = _import(test_data_dir, "holdings", str(ofx_bank_download), input=answers)
+    assert result.exit_code == 0, result.output
+    assert "lots: default; a new name adds a lot to Asset_Checking; 'split' divides this number among lots" \
+        in result.output
+    assert "Dividing 'First Example Bank checking ...4321', 4321.09, among lots of Asset_Checking." in result.output
+    assert "lot (3321.09 left)" in result.output
+    assert "default has its part already" in result.output
+    assert "that is more than the 3321.09 left" in result.output
+    lots = _all_lots(test_data_dir)
+    assert lots["Asset_Checking", ""]["opening_balance"] == "1000.00"
+    assert lots["Asset_Checking", "cd"]["opening_balance"] == "3321.09"
+    assert _saved(test_data_dir, "ofx") == ["First Example Bank checking ...4321,,split,Asset_Checking,,"]
+    split = test_data_dir / "imports" / "ofx" / "lot_splits.csv"
+    assert split.read_text(encoding="utf-8").splitlines() == [
+        "outside_account,asset,lot,amount,cost_basis",
+        "First Example Bank checking ...4321,,default,1000.00,",
+        "First Example Bank checking ...4321,,cd,,",
+    ]
+
+    # Away from a terminal, a later file with another balance: the lot that takes the rest follows it.
+    monkeypatch.setattr(cli, "_interactive", lambda: False)
+    later = rewrite_download(ofx_bank_download, lambda raw: raw.replace(b"4321.09", b"5000.00"))
+    result = _import(test_data_dir, "holdings", str(later))
+    assert result.exit_code == 0, result.output
+    lots = _all_lots(test_data_dir)
+    assert lots["Asset_Checking", ""]["opening_balance"] == "1000.00"
+    assert lots["Asset_Checking", "cd"]["opening_balance"] == "4000.00"
+
+    # A split of fixed amounts fits one number only: it is refused, with both numbers.
+    split.write_text(split.read_text(encoding="utf-8").replace(",cd,,", ",cd,2000.00,"), encoding="utf-8")
+    refused = _import(test_data_dir, "holdings", str(later))
+    assert refused.exit_code != 0
+    assert "gives out 3000.00, and the file has 5000.00; run at a terminal to be asked" in refused.output
+    assert "one lot's amount may be blank, to take the rest" in refused.output
+
+    # At a terminal it is asked again, with the saved lots and amounts as the defaults.
+    monkeypatch.setattr(cli, "_interactive", lambda: True)
+    result = _import(test_data_dir, "holdings", str(later), input="\n\n\nrest\n\n")
+    assert result.exit_code == 0, result.output
+    assert "lot (5000.00 left) [default]:" in result.output
+    assert "amount for cd, or rest [2000.00]:" in result.output
+    assert split.read_text(encoding="utf-8").splitlines()[1:] == [
+        "First Example Bank checking ...4321,,default,1000.00,", "First Example Bank checking ...4321,,cd,,"]
+
+
+@pytest.mark.usefixtures("at_a_terminal")
+def test_sim_import_holdings_splits_a_brokerage_total_into_lots_with_a_symbol_and_a_basis(
+    test_data_dir: Path, quicken_net_worth_export: Path, write_import_map: MapWriter,
+) -> None:
+    write_import_map(
+        "quicken/accounts.csv",
+        "Asset_Checking,,skip,,,\nAsset_Brokerage_Joint,,split,Asset_Brokerage_Joint,,\n"
+        "Asset_TraditionalIRA_Alice,,skip,,,\nLiability_Mortgage,,skip,,,\n")
+    # What stays in `default`, with its basis; then a new lot of one fund,
+    # with the day it was bought (asked again when it isn't a day), for the rest.
+    answers = "default\n100000\n80000\nvtsax\ny\nvtsax\nsoon\nvtsax\n2020-03-02\nrest\n150000\n\n"
+    result = _import(test_data_dir, "holdings", str(quicken_net_worth_export), input=answers)
+    assert result.exit_code == 0, result.output
+    assert "date must be YYYY-MM-DD: 'soon'" in result.output
+    lots = _all_lots(test_data_dir)
+    kept, new = lots["Asset_Brokerage_Joint", "default"], lots["Asset_Brokerage_Joint", "vtsax"]
+    assert (kept["opening_balance"], kept["opening_cost_basis"]) == ("100000.00", "80000.00")
+    assert (new["symbol"], new["acquired"], new["quantity"]) == ("VTSAX", "2020-03-02", "")
+    assert (new["opening_balance"], new["opening_cost_basis"]) == ("210000.00", "150000.00")
+    assert (test_data_dir / "imports" / "quicken" / "lot_splits.csv").read_text(encoding="utf-8").splitlines()[1:] == [
+        "Asset_Brokerage_Joint,,default,100000.00,80000.00", "Asset_Brokerage_Joint,,vtsax,,150000.00"]
+
+    # A lot renamed afterwards is followed in the split.
+    renamed = CliRunner().invoke(main, [
+        "sim", "account", "lot", "rename", "Asset_Brokerage_Joint", "vtsax", "index",
+        "--scenario", "retire_alice", "--data-dir", str(test_data_dir)])
+    assert renamed.exit_code == 0, renamed.output
+    assert "imports/quicken/lot_splits.csv" in renamed.output
+    again = _import(test_data_dir, "holdings", str(quicken_net_worth_export))
+    assert again.exit_code == 0, again.output
+    assert "0 lot(s)" in again.output
 
 
 def test_sim_import_says_a_file_that_is_not_text_is_no_exported_report(

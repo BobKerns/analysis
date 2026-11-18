@@ -78,6 +78,8 @@ class HoldingsPlan:
     add them together into that lot, or keep each as a lot of its own?"""
     new: list[tuple[Holding, AccountTarget]] = field(default_factory=list)
     """Holdings with a symbol none of the account's lots has."""
+    to_split: list[tuple[Holding, AccountTarget]] = field(default_factory=list)
+    """Holdings whose mapping divides them among lots, not yet divided."""
     skipped: list[str] = field(default_factory=list)
     pruned: list[str] = field(default_factory=list)
     """Lots emptied because their account's file no longer has them."""
@@ -92,7 +94,8 @@ class HoldingsPlan:
     @property
     def complete(self) -> bool:
         """Whether every holding found a place (or was skipped on purpose)."""
-        return not (self.unmapped or self.unknown or self.no_lot or self.undecided or self.new)
+        return not (self.unmapped or self.unknown or self.no_lot or self.undecided or self.new
+                    or self.to_split)
 
 
 @dataclass
@@ -261,6 +264,12 @@ def plan(
     A holding with no symbol, where the mapping names no lot, goes to the
     account's lot with no symbol when it has one, and not into a fund's.
 
+    **A number divided among lots.** A mapping whose action is ``split``
+    says the file's one number is several lots' together. Such a holding is
+    ``to_split`` until the caller replaces it in the snapshot with its
+    parts, each a holding that names its lot (``Holding.lot``) and goes
+    there as if its mapping named that lot.
+
     A liability is stored as a non-negative debt, so its total is negated.
     """
     result = HoldingsPlan(rows=[dict(row) for row in lots])
@@ -299,6 +308,12 @@ def plan(
         if year_end and not is_investment_asset(*info):
             result.ineligible.append(target.account)
             continue
+        if target.action == "split":
+            if not holding.lot:
+                result.to_split.append((holding, target))
+                continue
+            # One part of the file's number, which names its lot.
+            target = AccountTarget("map", target.account, holding.lot, target.note)
         of_account = [i for i, row in enumerate(result.rows) if row.get("account_name") == target.account]
         if holding.account in snapshot.complete:
             full.add(target.account)
@@ -494,7 +509,7 @@ def plan(
     present = {holding.account for holding in snapshot.holdings}
     shared: dict[str, set[str]] = {}
     for (outside, _), target in account_map.entries.items():
-        if target.action == "map" and outside not in present:
+        if target.action != "skip" and outside not in present:
             shared.setdefault(target.account, set()).add(outside)
     unsaid: set[str] = set()
     for index, row in enumerate(result.rows):

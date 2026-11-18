@@ -10,7 +10,8 @@ imports/
   income_accounts.csv         category -> income account, for a budget's income
   <source>/
     profile.yaml              the source itself, when it is the household's own (profiles.py)
-    accounts.csv              (outside account, asset) -> (account, lot), or skip
+    accounts.csv              (outside account, asset) -> (account, lot), or skip, or split
+    lot_splits.csv            one outside number divided among an account's lots
     categories.csv            outside category -> category (blank or '-' excludes)
     splits.csv                a category divided by the outside account that paid
     excluded_payees.csv       payees whose expenses the scenario models itself
@@ -25,6 +26,7 @@ balance quietly left out.
 from __future__ import annotations
 
 import csv
+import dataclasses
 import json
 import os
 import re
@@ -35,7 +37,8 @@ from pathlib import Path
 
 __all__ = [
     "MAP_FILES", "MapFile", "categories", "map_files", "read_map_rows", "sources_with_maps", "write_map_rows",
-    "ACCOUNTS", "ACCOUNTS_HEADER", "BUDGET_CHOICES", "BUDGET_CHOICES_HEADER", "CATEGORIES",
+    "ACCOUNTS", "ACCOUNTS_HEADER", "LOT_SPLITS", "LOT_SPLITS_HEADER", "LotPart", "LotSplits", "divide",
+    "load_lot_splits", "BUDGET_CHOICES", "BUDGET_CHOICES_HEADER", "CATEGORIES",
     "CATEGORIES_HEADER", "EXCLUDED_PAYEES", "EXCLUDED_PAYEES_HEADER", "EXPENSE_ACCOUNTS",
     "EXPENSE_ACCOUNTS_HEADER", "IMPORTS", "INCOME_ACCOUNTS", "NO_RULE", "PAYEES", "PAYEES_HEADER", "SPLITS",
     "SPLITS_HEADER", "TRANSFER", "AccountMap", "AccountTarget", "BudgetChoice", "BudgetChoices",
@@ -47,6 +50,7 @@ __all__ = [
 
 IMPORTS = "imports"
 ACCOUNTS = "accounts.csv"
+LOT_SPLITS = "lot_splits.csv"
 CATEGORIES = "categories.csv"
 SPLITS = "splits.csv"
 BUDGET_CHOICES = "budget_choices.csv"
@@ -56,6 +60,7 @@ INCOME_ACCOUNTS = "income_accounts.csv"
 PAYEES = "payees.csv"
 
 ACCOUNTS_HEADER = ("outside_account", "asset", "action", "account", "lot", "note")
+LOT_SPLITS_HEADER = ("outside_account", "asset", "lot", "amount", "cost_basis")
 CATEGORIES_HEADER = ("outside_category", "category")
 SPLITS_HEADER = ("category", "outside_account", "target_category")
 EXCLUDED_PAYEES_HEADER = ("payee_pattern",)
@@ -136,10 +141,12 @@ class AccountTarget:
     """Where one outside account (or one asset in it) goes."""
 
     action: str
-    """``map`` or ``skip`` (acknowledged, deliberately not imported)."""
+    """``map``, ``skip`` (acknowledged, deliberately not imported), or
+    ``split``: the file's one number is divided among lots of ``account``,
+    as ``lot_splits.csv`` says."""
     account: str = ""
     lot: str = ""
-    """Blank for the account's only lot."""
+    """Blank for the account's only lot; always blank for a ``split``."""
     note: str = ""
 
     @property
@@ -179,14 +186,91 @@ def load_account_map(path: Path) -> AccountMap:
             continue
         key = (row["outside_account"], row["asset"])
         where = f"{path} row {number}"
-        if row["action"] not in {"map", "skip"}:
-            raise ValueError(f"{where}: action must be 'map' or 'skip', got {row['action']!r}")
-        if row["action"] == "map" and not row["account"]:
-            raise ValueError(f"{where}: a 'map' row needs an account")
+        if row["action"] not in {"map", "skip", "split"}:
+            raise ValueError(f"{where}: action must be 'map', 'skip' or 'split', got {row['action']!r}")
+        if row["action"] != "skip" and not row["account"]:
+            raise ValueError(f"{where}: a {row['action']!r} row needs an account")
+        if row["action"] == "split" and row["lot"]:
+            raise ValueError(
+                f"{where}: a 'split' row names no lot: {LOT_SPLITS} beside this file says which lots, "
+                "and how much goes to each")
         if key in found.entries:
             raise ValueError(f"{where}: duplicate outside_account {' / '.join(filter(None, key))!r}")
         found.entries[key] = AccountTarget(row["action"], row["account"], row["lot"], row["note"])
     return found
+
+
+# ---------- one number divided among lots ----------
+
+@dataclass(frozen=True)
+class LotPart:
+    """One lot's part of a number a file gives whole."""
+
+    lot: str
+    cents: int | None
+    """Signed as the file's number is; None for whatever the other parts leave."""
+    basis_cents: int | None = None
+
+
+@dataclass
+class LotSplits:
+    """``imports/<source>/lot_splits.csv``: for a holding whose ``accounts.csv``
+    row says ``split``, the lots of that row's account it is divided among.
+    The amounts are those of the import that asked, kept as the next one's
+    defaults; the part with no amount takes the rest, so a split with one
+    still fits a number that has changed."""
+
+    path: Path
+    parts: dict[tuple[str, str], list[LotPart]] = field(default_factory=dict)
+
+    def save(self) -> None:
+        from analysis.sim.imports.forms import format_dollars
+
+        def money(cents: int | None) -> str:
+            return "" if cents is None else format_dollars(cents)
+
+        _write(self.path, LOT_SPLITS_HEADER, (
+            (outside, asset, part.lot, money(part.cents), money(part.basis_cents))
+            for (outside, asset), parts in self.parts.items() for part in parts))
+
+
+def load_lot_splits(path: Path | str) -> LotSplits:
+    """The lot splits at ``path``; none if there's no file yet."""
+    from analysis.sim.units import dollars_to_cents
+
+    found = LotSplits(Path(path))
+    if not found.path.is_file():
+        return found
+    for number, row in _read(found.path, LOT_SPLITS_HEADER):
+        if not row["outside_account"]:
+            continue
+        where = f"{path} row {number}"
+        parts = found.parts.setdefault((row["outside_account"], row["asset"]), [])
+        if not row["lot"]:
+            raise ValueError(f"{where}: a lot is required")
+        if any(part.lot == row["lot"] for part in parts):
+            raise ValueError(f"{where}: lot {row['lot']!r} has a part of {row['outside_account']!r} already")
+        if not row["amount"] and any(part.cents is None for part in parts):
+            raise ValueError(
+                f"{where}: only one lot of a split can have a blank amount (it takes the rest)")
+        try:
+            cents = dollars_to_cents(row["amount"]) if row["amount"] else None
+            basis = dollars_to_cents(row["cost_basis"]) if row["cost_basis"] else None
+        except ValueError as e:
+            raise ValueError(f"{where}: {e}") from None
+        parts.append(LotPart(row["lot"], cents, basis))
+    return found
+
+
+def divide(parts: Sequence[LotPart], total_cents: int) -> list[tuple[LotPart, int]] | None:
+    """Each of ``parts`` with its cents of ``total_cents``; None when they
+    don't come to it: no part takes the rest and the others add up to
+    another number, or the rest would be of the other sign (more is given
+    out than there is)."""
+    rest = total_cents - sum(part.cents for part in parts if part.cents is not None)
+    if not parts or (rest and (all(part.cents is not None for part in parts) or rest * total_cents < 0)):
+        return None
+    return [(part, rest if part.cents is None else part.cents) for part in parts]
 
 
 # ---------- categories ----------
@@ -340,15 +424,15 @@ def load_budget_choices(path: Path | str) -> BudgetChoices:
 # ---------- following a rename ----------
 
 def _retarget(data_dir: Path, moved: Callable[[AccountTarget], AccountTarget | None]) -> list[str]:
-    """Rewrite every source's account map, each ``map`` row's target replaced
-    by ``moved``'s answer where it gives one; the files changed, relative to
+    """Rewrite every source's account map, each ``map`` or ``split`` row's
+    target replaced by ``moved``'s answer where it gives one; the files changed, relative to
     the data dir. Every map is read before any is written, so one that
     doesn't read leaves them all as they were."""
     maps = [load_account_map(path) for path in sorted(imports_dir(data_dir).glob(f"*/{ACCOUNTS}"))]
     changed: list[str] = []
     for found in maps:
         renamed = {key: new for key, target in found.entries.items()
-                   if target.action == "map" and (new := moved(target)) is not None}
+                   if target.action != "skip" and (new := moved(target)) is not None}
         if renamed:
             found.entries.update(renamed)
             found.save()
@@ -370,10 +454,25 @@ def categories(data_dir: Path) -> set[str]:
 
 
 def rename_lot(data_dir: Path, account: str, old: str, new: str) -> list[str]:
-    """Follow a renamed lot of ``account`` in every saved account mapping;
-    the files changed, relative to the data dir."""
-    return _retarget(data_dir, lambda t: AccountTarget(t.action, t.account, new, t.note)
-                     if (t.account, t.lot) == (account, old) else None)
+    """Follow a renamed lot of ``account`` in every saved account mapping,
+    and in the lot splits of the rows that divide a number among the
+    account's lots; the files changed, relative to the data dir."""
+    # Read, and so checked, before anything is rewritten.
+    splits = [(load_account_map(path.with_name(ACCOUNTS)), load_lot_splits(path))
+              for path in sorted(imports_dir(data_dir).glob(f"*/{LOT_SPLITS}"))]
+    changed = _retarget(data_dir, lambda t: AccountTarget(t.action, t.account, new, t.note)
+                        if t.action == "map" and (t.account, t.lot) == (account, old) else None)
+    for accounts, found in splits:
+        before = {key: list(parts) for key, parts in found.parts.items()}
+        for key, parts in found.parts.items():
+            target = accounts.entries.get(key)
+            if target is not None and target.action == "split" and target.account == account:
+                found.parts[key] = [dataclasses.replace(part, lot=new) if part.lot == old else part
+                                    for part in parts]
+        if found.parts != before:
+            found.save()
+            changed.append(str(found.path.relative_to(data_dir)))
+    return changed
 
 
 def _income_categories(data_dir: Path, account: str) -> set[str]:
@@ -509,6 +608,7 @@ MAP_FILES: tuple[MapFile, ...] = (
             account_kinds=("income",), words={"account": (NO_RULE,)}),
     MapFile(BUDGET_CHOICES, BUDGET_CHOICES_HEADER, 1, load_budget_choices, shared=True),
     MapFile(ACCOUNTS, ACCOUNTS_HEADER, 2, load_account_map),
+    MapFile(LOT_SPLITS, LOT_SPLITS_HEADER, 3, load_lot_splits),
     MapFile(CATEGORIES, CATEGORIES_HEADER, 1, load_category_map, words={"category": (NO_RULE,)}),
     # A split's target is an ordinary category: '-' there would only be one's name.
     MapFile(SPLITS, SPLITS_HEADER, 2, load_category_splits),

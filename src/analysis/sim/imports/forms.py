@@ -46,6 +46,10 @@ class Holding:
     hints: Mapping[str, str] = field(default_factory=dict)
     """Whatever else the file says about the account (type, owner, tax
     treatment), for pre-filling a new account."""
+    lot: str = ""
+    """The lot this is for, where it is one part of a number the file gives
+    whole and its mapping divides among lots (``lot_splits.csv``); no file
+    says this."""
 
     @property
     def label(self) -> str:
