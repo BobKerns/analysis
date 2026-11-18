@@ -63,6 +63,31 @@ def test_person_add_asks_for_what_is_missing(
     carol = _persons(test_data_dir)["carol"]
     assert (carol["display"], carol["birthdate"], carol["sex"], carol["role"]) == (
         "Carol (fake)", "1995-02-03", "f", "")
+    # The question says what a role is, and no role is an answer of its own.
+    assert "roles: primary (you or your spouse" in result.output and "role [none]:" in result.output
+
+    # Until the household has its two spouses, the usual answer is offered.
+    edited = sim("person", "edit", "bill", "--role", "secondary")
+    assert edited.exit_code == 0, edited.output
+    result = sim("person", "add", "dave", input="Dave (fake)\n1966-02-03\nm\n\n\n")
+    assert result.exit_code == 0, result.output
+    assert "role [primary]:" in result.output and _persons(test_data_dir)["dave"]["role"] == "primary"
+    result = sim("person", "edit", "dave", input="\n\n\nnone\n\n\n")
+    assert result.exit_code == 0, result.output
+    assert "role [primary]:" in result.output and _persons(test_data_dir)["dave"]["role"] == ""
+
+
+def test_person_role_none_as_an_option_is_no_role_too(
+    sim: Callable[..., Result], test_data_dir: Path,
+) -> None:
+    added = sim("person", "add", "carol", "--display", "Carol (fake)", "--birthdate", "1995-02-03",
+                "--sex", "f", "--role", "none")
+    assert added.exit_code == 0, added.output
+    assert _persons(test_data_dir)["carol"]["role"] == ""
+    assert sim("person", "edit", "carol", "--role", "secondary").exit_code == 0
+    edited = sim("person", "edit", "carol", "--role", "none")
+    assert edited.exit_code == 0, edited.output
+    assert _persons(test_data_dir)["carol"]["role"] == ""
 
 
 @pytest.mark.parametrize(("args", "message"), [

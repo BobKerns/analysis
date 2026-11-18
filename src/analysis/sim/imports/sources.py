@@ -8,6 +8,7 @@ flows, or both, each with a test of whether a file is in its layout so
 
 from __future__ import annotations
 
+import functools
 import datetime as dt
 import itertools
 from collections import Counter
@@ -43,6 +44,35 @@ class Reader[T]:
     read: Callable[[Path], T]
     layout: str
     """What to export, in the outside program's words."""
+    unnamed: Callable[[Path], bool] | None = None
+    """Whether a file doesn't say which outside account it is, where some
+    of the source's don't: such a file is read with ``read_named``."""
+    read_named: Callable[[Path, str], T] | None = None
+    """Reads a file as the outside account given."""
+
+    def __post_init__(self) -> None:
+        # Every caller of either, now and later, gets the same answer for a
+        # file that isn't text.
+        object.__setattr__(self, "read", _text_only(self.read))
+        if self.read_named is not None:
+            object.__setattr__(self, "read_named", _text_only(self.read_named))
+
+
+def _text_only[**P, T](read: Callable[P, T]) -> Callable[P, T]:
+    """``read`` (of a path first), saying of a file that isn't text that it
+    is that, and not the codec's complaint about a byte. It is most often
+    the outside program's own data file (Quicken's ``.qxf``), given where a
+    report it exports was meant."""
+    @functools.wraps(read)
+    def reading(*args: P.args, **kwargs: P.kwargs) -> T:
+        try:
+            return read(*args, **kwargs)
+        except UnicodeDecodeError:
+            raise SourceError(
+                f"{args[0]} isn't a text file, so it isn't a report exported as CSV. A program's own data or "
+                "transfer file (such as Quicken's .qxf or .qdf) can't be read: export a report from the program "
+                "instead ('sim import sources' lists what each source reads)") from None
+    return reading
 
 
 @dataclass(frozen=True)
@@ -71,14 +101,31 @@ class Source:
         return self.profile.where
 
 
+def _quicken_holdings(path: Path, account: str | None = None) -> Snapshot:
+    """A Quicken holdings report: the account tree, which names its
+    accounts, or one account's portfolio report, which doesn't."""
+    if quicken.is_portfolio(path):
+        if account is None:
+            raise SourceError(
+                f"{path} doesn't say which account it is (a portfolio report names none); name it with "
+                "--outside-account, or import it alone at a terminal to be asked")
+        return quicken.read_portfolio(path, account)
+    if account is not None:
+        raise SourceError(f"{path} names its accounts itself, so --outside-account doesn't apply")
+    return quicken.read_account_tree(path)
+
+
 _CODED: dict[str, Source] = {
     quicken.NAME: Source(
         name=quicken.NAME,
         description="Quicken report exports (CSV)",
-        holdings=Reader(quicken.is_account_tree, quicken.read_account_tree,
-                        'My Reports: "Net Worth Export" or "Year End Export"'),
+        holdings=Reader(
+            lambda path: quicken.is_account_tree(path) or quicken.is_portfolio(path), _quicken_holdings,
+            'My Reports: "Net Worth Export" or "Year End Export"; or, for what one investment account '
+            'holds, the "Portfolio Value & Cost Basis" report of that account alone',
+            unnamed=quicken.is_portfolio, read_named=_quicken_holdings),
         transactions=Reader(quicken.is_transaction_export, quicken.read_transactions,
-                            'My Reports: "Transaction Export"'),
+                            'My Reports: "Transaction Export", or the "All Transactions" report'),
         budget=Reader(quicken.is_budget, quicken.read_budget,
                       'Budget: Export, "Full" (a column for each month) or "Summary"'),
     ),
@@ -98,7 +145,9 @@ def _from_profile(profile: profiles.Profile) -> Source:
     held, moved = profile.holdings, profile.transactions
     return Source(
         name=profile.name, description=profile.description, profile=profile, payees=True,
-        holdings=None if held is None else Reader(held.matches, held.read, held.layout),
+        holdings=None if held is None else Reader(
+            held.matches, held.read, held.layout,
+            unnamed=lambda path: not held.names_account(path), read_named=held.read),
         transactions=None if moved is None else Reader(moved.matches, moved.read, moved.layout),
     )
 
@@ -220,8 +269,8 @@ def unnamed(
     them that don't say which outside account they are: one must be given
     for each (``read_holdings``'s ``account``)."""
     source = _resolve(paths, name, "holdings", imports)
-    held = None if source.profile is None else source.profile.holdings
-    return source, [] if held is None else [path for path in paths if not held.names_account(path)]
+    held = source.holdings
+    return source, [] if held is None or held.unnamed is None else [path for path in paths if held.unnamed(path)]
 
 
 def read_holdings(
@@ -234,14 +283,16 @@ def read_holdings(
     source = _resolve(paths, name, "holdings", imports)
     assert source.holdings is not None
     if account is None:
-        snapshots = [source.holdings.read(path) for path in paths]
-    elif source.profile is None or source.profile.holdings is None:
+        snapshots = []
+        for path in paths:
+            snapshots.append(source.holdings.read(path))
+    elif source.holdings.read_named is None:
         raise SourceError(
             f"a {source.name} file names its accounts itself, so --outside-account doesn't apply")
     elif len(paths) > 1:
         raise SourceError("--outside-account names one file's account; import the files one at a time")
     else:
-        snapshots = [source.profile.holdings.read(paths[0], account)]
+        snapshots = [source.holdings.read_named(paths[0], account)]
     dates = {snapshot.as_of for snapshot in snapshots if snapshot.as_of is not None}
     if len(dates) > 1:
         raise SourceError(
@@ -262,6 +313,11 @@ def read_holdings(
         as_of=next(iter(dates), None),
         notes=tuple(note for snapshot in snapshots for note in snapshot.notes),
         complete=frozenset(account for snapshot in snapshots for account in snapshot.complete),
+        activity={account: activity for snapshot in snapshots for account, activity in snapshot.activity.items()},
+        unaccounted={account: why for snapshot in snapshots for account, why in snapshot.unaccounted.items()},
+        # Only a file read alone keeps its other dates: two files' agree on one.
+        dated=snapshots[0].dated if len(snapshots) == 1 else {},
+        dated_notes=snapshots[0].dated_notes if len(snapshots) == 1 else {},
     )
 
 
