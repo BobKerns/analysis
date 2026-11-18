@@ -5229,7 +5229,7 @@ def init_command(
     shared = code / "data" / "shared"
     if directory is None:
         # The usual step: the data repo is the checkout's own data/shared.
-        if shared.exists() or shared.is_symlink():
+        if os.path.lexists(shared):
             raise click.ClickException(
                 f"{_shown(shared, resolve=False)} is already there"
                 + (f", leading to {_shown(shared.resolve())}" if shared.is_symlink() else "")
@@ -5267,21 +5267,23 @@ def init_command(
     # The data repo is always found at the checkout's data/shared, so one
     # made elsewhere is linked there. Not for a script or a recording
     # (--no-builder), which must leave the checkout it runs from alone.
-    if no_builder:
-        pass
-    elif not shared.exists() and not shared.is_symlink():
-        shared.parent.mkdir(exist_ok=True)
-        shared.symlink_to(root)
-        click.echo(f"linked {_shown(shared, resolve=False)} to {_shown(root)}")
-    elif shared.resolve() != root:
-        click.echo(
-            f"  warning: {_shown(shared, resolve=False)} is already there and was left alone, so this "
-            "checkout still uses "
-            f"{_shown(shared.resolve())}. To use the new data repo, remove it and run: "
-            f"scripts/link-data.sh {_shown(root)}", err=True)
+    linked = os.path.lexists(shared) and shared.resolve() == root
+    if not no_builder and not linked:
+        if not os.path.lexists(shared):
+            shared.parent.mkdir(exist_ok=True)
+            shared.symlink_to(root)
+            linked = True
+            click.echo(f"linked {_shown(shared, resolve=False)} to {_shown(root)}")
+        else:
+            # The script links the checkout it is in and works from there,
+            # so it is named through the checkout and DIR in full.
+            click.echo(
+                f"  warning: {_shown(shared, resolve=False)} is already there and was left alone, so this "
+                "checkout still uses "
+                f"{_shown(shared.resolve())}. To use the new data repo, remove it and run: "
+                f"{_shown(code / 'scripts' / 'link-data.sh')} {root}", err=True)
     if not no_builder and not no_commit and not failed:
         _init_builder(sim)
-    linked = (shared.exists() or shared.is_symlink()) and shared.resolve() == root
     activate = _shown(shared / "sim" / "activate-analysis", resolve=False) if linked \
         else _shown(sim / "activate-analysis")
     # Set apart and in bold: without it no later command finds the data
@@ -5317,7 +5319,14 @@ def _init_in_checkout(checkout: Path, args: list[str]) -> NoReturn:
         click.echo(f"making {_shown(checkout / '.venv')} (uv sync)")
         if subprocess.run(["uv", "sync", "--group", "dev"], cwd=checkout, env=env, check=False).returncode:
             raise click.ClickException(f"uv sync failed in {_shown(checkout)}")
-    raise SystemExit(subprocess.run([str(its_sim), "init", *args], env=env, check=False).returncode)
+    if not its_sim.exists():
+        raise click.ClickException(
+            f"{_shown(checkout)} has no .venv/bin/sim, even after uv sync: run scripts/setup.sh there")
+    try:
+        raise SystemExit(subprocess.run([str(its_sim), "init", *args], env=env, check=False).returncode)
+    except OSError as exc:
+        raise click.ClickException(
+            f"{_shown(its_sim)} can't be run ({exc}): run scripts/setup.sh in {_shown(checkout)}") from None
 
 
 def _init_builder(sim: Path) -> None:

@@ -51,14 +51,28 @@ fi
 # comes first (#654): several worktrees can link one data repo, and each
 # then gets its own code, whichever was activated last or made the data
 # repo. Then ANALYSIS_REPO_DIR, then the checkout remembered in .analysis.
+# The path is taken as it was typed, not from ANALYSIS_DATA_DIR: where the
+# shell follows links on cd (zsh's CHASE_LINKS, bash's set -P) that one is
+# the data repo's own folder, with no checkout around it.
 _ANALYSIS_REPO_CANDIDATE=""
-case "$ANALYSIS_DATA_DIR" in
-    */data/shared/sim)
-        if _analysis_validate_repo_dir "${ANALYSIS_DATA_DIR%/data/shared/sim}"; then
-            _ANALYSIS_REPO_CANDIDATE="${ANALYSIS_DATA_DIR%/data/shared/sim}"
-        fi
-        ;;
+_ANALYSIS_THROUGH=""
+_ANALYSIS_TYPED="$(dirname "$_ANALYSIS_SELF")"
+case "$_ANALYSIS_TYPED" in
+    /*) ;;
+    *) _ANALYSIS_TYPED="$PWD/$_ANALYSIS_TYPED" ;;
 esac
+for _analysis_spelled in "$_ANALYSIS_TYPED" "$ANALYSIS_DATA_DIR"; do
+    case "$_analysis_spelled" in
+        */data/shared/sim)
+            if _analysis_validate_repo_dir "${_analysis_spelled%/data/shared/sim}"; then
+                _ANALYSIS_THROUGH="$(cd "${_analysis_spelled%/data/shared/sim}" && pwd)"
+                _ANALYSIS_REPO_CANDIDATE="$_ANALYSIS_THROUGH"
+                break
+            fi
+            ;;
+    esac
+done
+unset _analysis_spelled _ANALYSIS_TYPED
 if [ -z "$_ANALYSIS_REPO_CANDIDATE" ]; then
     _ANALYSIS_REPO_CANDIDATE="${ANALYSIS_REPO_DIR-}"
 fi
@@ -78,17 +92,32 @@ fi
 
 export ANALYSIS_REPO_DIR="$_ANALYSIS_REPO_CANDIDATE"
 
-# Said only when it isn't the code this data repo last ran with: the wrong
-# checkout's code is otherwise found out much later, by what it lacks. The
-# two are compared as the folders they are, not as they are spelled: `sim
-# init` writes the path it finds itself at, this the one it was sourced
+# The two are compared as the folders they are, not as they are spelled:
+# `sim init` writes the path it finds itself at, this the one it was sourced
 # through, and under a linked folder those differ for one checkout.
 _analysis_same_dir() {
     [ "$1" = "$2" ] && return 0
     [ "$(cd "$1" 2>/dev/null && pwd -P)" = "$(cd "$2" 2>/dev/null && pwd -P)" ]
 }
+# .analysis names the one checkout the data repo is paired with: the
+# builder's hooks run that checkout's sim. Another worktree sourcing this
+# through its own data/shared uses its own code and leaves the pair alone.
+# The pair is written when .analysis names no checkout, or when this is
+# sourced by the data repo's own path with another checkout named
+# (ANALYSIS_REPO_DIR, or typed just now).
+_ANALYSIS_KEEP_POINTER=""
 if [ -n "$_ANALYSIS_REMEMBERED" ] && ! _analysis_same_dir "$_ANALYSIS_REMEMBERED" "$ANALYSIS_REPO_DIR"; then
-    echo "activate-analysis: using the code in $ANALYSIS_REPO_DIR (it was $_ANALYSIS_REMEMBERED)" >&2
+    # Said, since the wrong checkout's code is otherwise found out much
+    # later, by what it lacks.
+    if [ -n "$_ANALYSIS_THROUGH" ] && _analysis_validate_repo_dir "$_ANALYSIS_REMEMBERED"; then
+        _ANALYSIS_KEEP_POINTER=1
+        echo "activate-analysis: using the code in $ANALYSIS_REPO_DIR; the data repo stays paired with $_ANALYSIS_REMEMBERED (its background builds run there)" >&2
+    else
+        echo "activate-analysis: using the code in $ANALYSIS_REPO_DIR (it was $_ANALYSIS_REMEMBERED)" >&2
+    fi
+elif [ -n "$_ANALYSIS_REMEMBERED" ]; then
+    # The same checkout, however it is spelled: nothing to rewrite.
+    _ANALYSIS_KEEP_POINTER=1
 fi
 unset -f _analysis_same_dir
 # `sim init` copied this file from the code's templates/, where it changes.
@@ -102,8 +131,11 @@ if [ -f "$ANALYSIS_REPO_DIR/templates/activate-analysis" ] && \
 fi
 
 # Persist pointer and ensure it is ignored by the data repo.
-printf '%s\n' "$ANALYSIS_REPO_DIR" > "$_ANALYSIS_POINTER_FILE" || \
-    _analysis_fail "unable to write $_ANALYSIS_POINTER_FILE"
+if [ -z "$_ANALYSIS_KEEP_POINTER" ]; then
+    printf '%s\n' "$ANALYSIS_REPO_DIR" > "$_ANALYSIS_POINTER_FILE" || \
+        _analysis_fail "unable to write $_ANALYSIS_POINTER_FILE"
+fi
+unset _ANALYSIS_KEEP_POINTER _ANALYSIS_THROUGH
 
 for _analysis_ignored in .analysis .current_scenario .analysis_user .retention.yaml; do
     if [ ! -f "$ANALYSIS_DATA_DIR/.gitignore" ]; then
