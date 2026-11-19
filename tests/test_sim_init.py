@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -10,6 +11,7 @@ from pathlib import Path
 import pytest
 from click.testing import CliRunner, Result
 
+from analysis import checkout
 from analysis.cli import main
 from analysis.sim import builder, data_repo
 
@@ -32,6 +34,9 @@ def code_repo(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
     code = tmp_path / "code"
     code.mkdir()
     monkeypatch.setattr(data_repo, "CODE_REPO_DIR", code)
+    # Not in the checkout the tests run from: `sim init` would take that as
+    # the one to set up, and run its own sim.
+    monkeypatch.chdir(tmp_path)
     return code
 
 
@@ -87,12 +92,12 @@ def test_init_leaves_os_junk_files_behind(tmp_path: Path, junk_in_templates: tup
     assert sorted(p.name for p in (sim / "scenarios").iterdir()) == ["base"]
 
 
-def test_init_asks_for_what_its_options_leave_out(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.chdir(tmp_path)
-    result = _init(input="repo\nalice\nAlice Example\n1960-05-01\nf\nSingle\n")
+def test_init_asks_for_what_its_options_leave_out(code_repo: Path) -> None:
+    # No directory is asked for: the data repo is the checkout's data/shared.
+    result = _init("--no-commit", input="alice\nAlice Example\n1960-05-01\nf\nSingle\n")
 
     assert result.exit_code == 0, result.output
-    sim = tmp_path / "repo" / "sim"
+    sim = code_repo / "data" / "shared" / "sim"
     assert _rows(sim / "persons.csv") == [{
         "id": "alice", "display": "Alice Example", "birthdate": "1960-05-01", "sex": "f",
         "role": "primary", "meta_json": "{}", "kind": "",
@@ -217,15 +222,164 @@ def test_init_leaves_an_existing_data_shared_alone(
     assert "background builds not turned on" in result.output
 
 
-@pytest.mark.parametrize("flag", ["--no-builder", "--no-commit"])
 def test_init_without_a_builder_touches_neither_repo(
-    tmp_path: Path, code_repo: Path, installs: list[Path], flag: str,
+    tmp_path: Path, code_repo: Path, installs: list[Path],
 ) -> None:
-    result = _init(str(tmp_path / "repo"), *_ALICE, flag)
+    result = _init(str(tmp_path / "repo"), *_ALICE, "--no-builder")
 
     assert result.exit_code == 0, result.output
     assert not (code_repo / "data").exists()
     assert installs == []
+
+
+def test_init_without_a_builder_and_no_dir_still_makes_the_checkout_s_data_shared(
+    code_repo: Path, installs: list[Path],
+) -> None:
+    # Code and data are one to one: that is where it was asked for.
+    usual = _init(*_ALICE, "--no-builder")
+    assert usual.exit_code == 0, usual.output
+    assert (code_repo / "data" / "shared" / "sim" / "persons.csv").is_file() and installs == []
+
+
+def test_init_without_commit_links_data_shared_and_installs_no_builder(
+    tmp_path: Path, code_repo: Path, installs: list[Path],
+) -> None:
+    root = tmp_path / "repo"
+    result = _init(str(root), *_ALICE, "--no-commit")
+
+    assert result.exit_code == 0, result.output
+    # The checkout finds the data repo; the builder needs a git repository.
+    assert (code_repo / "data" / "shared").resolve() == root.resolve() and not (root / ".git").exists()
+    assert "linked code/data/shared to repo\n" in result.output
+    assert "source code/data/shared/sim/activate-analysis" in result.output
+    assert installs == []
+
+
+@pytest.mark.parametrize("linked", [False, True])
+def test_init_with_no_dir_refuses_a_data_shared_that_is_there(
+    tmp_path: Path, code_repo: Path, linked: bool,
+) -> None:
+    shared = code_repo / "data" / "shared"
+    shared.parent.mkdir()
+    if linked:
+        (tmp_path / "elsewhere").mkdir()
+        shared.symlink_to(tmp_path / "elsewhere")
+    else:
+        shared.mkdir()
+
+    result = _init(*_ALICE)
+
+    assert result.exit_code != 0
+    assert "code/data/shared is already there" in result.output
+    assert ("leading to elsewhere" in result.output) == linked
+    assert "source code/data/shared/sim/activate-analysis" in result.output
+    assert not (shared / "sim").exists()
+
+
+def test_init_names_the_link_script_through_the_checkout(tmp_path: Path, code_repo: Path) -> None:
+    (code_repo / "data" / "shared").mkdir(parents=True)
+
+    result = _init("repo", *_ALICE, "--no-commit")
+
+    assert result.exit_code == 0, result.output
+    assert f"remove it and run: code/scripts/link-data.sh {(tmp_path / 'repo').resolve()}" \
+        in " ".join(result.output.split())
+
+
+# ---------- run from another checkout ----------
+
+@pytest.fixture
+def other_checkout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """A second code checkout, which the test is in a subfolder of, whose
+    own ``sim`` writes its arguments and environment to ``argv`` beside it
+    and ends with status 7."""
+    other = tmp_path / "other"
+    for marker in checkout.MARKERS:
+        (other / marker).parent.mkdir(parents=True, exist_ok=True)
+        (other / marker).touch()
+    (other / "docs").mkdir()
+    monkeypatch.chdir(other / "docs")
+    return other
+
+
+_STUB_SIM = (
+    '#!/bin/sh\n'
+    'here="$(cd "$(dirname "$0")/../.." && pwd)"\n'
+    '{ for arg in "$@"; do printf "[%s]\\n" "$arg"; done; echo "again=$ANALYSIS_INIT_AGAIN venv=${VIRTUAL_ENV-}"; }'
+    ' > "$here/argv"\n'
+    'exit 7\n')
+
+
+def _stub_sim(other: Path) -> None:
+    sim = other / ".venv" / "bin" / "sim"
+    sim.parent.mkdir(parents=True)
+    sim.write_text(_STUB_SIM)
+    sim.chmod(0o755)
+
+
+def test_init_from_another_checkout_s_folder_runs_that_checkout_s_sim(
+    tmp_path: Path, other_checkout: Path, code_repo: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _stub_sim(other_checkout)
+    monkeypatch.setenv("VIRTUAL_ENV", str(code_repo / ".venv"))
+
+    result = _init("repo", "--id", "alice", "--display", "Alice Example", "--birthdate", "1960-05-01",
+                   "--sex", "", "--filing-status", "MFJ", "--no-commit", "--no-builder")
+
+    # Its result is this one's, and every option reaches it as given, an empty one too.
+    assert result.exit_code == 7, result.output
+    assert "running that checkout's sim init" in result.output
+    assert (other_checkout / "argv").read_text().splitlines() == [
+        "[init]", "[repo]", "[--id]", "[alice]", "[--display]", "[Alice Example]", "[--birthdate]",
+        "[1960-05-01]", "[--sex]", "[]", "[--filing-status]", "[MFJ]", "[--no-commit]", "[--no-builder]",
+        "again=1 venv="]
+    assert not (tmp_path / "other" / "docs" / "repo").exists()
+
+    # With nothing given, nothing is passed: that sim asks, and makes its own data/shared.
+    assert _init().exit_code == 7
+    assert (other_checkout / "argv").read_text().splitlines() == ["[init]", "again=1 venv="]
+
+
+def test_init_started_by_another_checkout_s_sim_starts_no_third(
+    other_checkout: Path, code_repo: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _stub_sim(other_checkout)
+    monkeypatch.setenv("ANALYSIS_INIT_AGAIN", "1")
+
+    result = _init(*_ALICE, "--no-builder")
+
+    assert result.exit_code == 0, result.output
+    assert not (other_checkout / "argv").exists()
+    assert (code_repo / "data" / "shared" / "sim" / "persons.csv").is_file()
+
+
+def test_init_makes_the_other_checkout_s_venv_or_says_what_is_missing(
+    tmp_path: Path, other_checkout: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tools = tmp_path / "tools"
+    tools.mkdir()
+    monkeypatch.setenv("PATH", str(tools))
+    none = _init(*_ALICE)
+    assert none.exit_code != 0 and "has no .venv, and uv isn't installed" in none.output
+
+    # A uv that syncs without leaving a sim: said, not a traceback.
+    uv = tools / "uv"
+    uv.write_text('#!/bin/sh\necho "$@" > uv-args\n[ -z "$MAKE_SIM" ] || { mkdir -p .venv/bin; '
+                  'printf "#!/bin/sh\\nexit 3\\n" > .venv/bin/sim; chmod +x .venv/bin/sim; }\n')
+    uv.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{tools}:/usr/bin:/bin")
+    empty = _init(*_ALICE)
+    assert empty.exit_code != 0 and "has no .venv/bin/sim, even after uv sync" in empty.output
+    assert (other_checkout / "uv-args").read_text() == "sync --group dev\n"     # run in that checkout
+
+    monkeypatch.setenv("MAKE_SIM", "1")
+    made = _init(*_ALICE)
+    assert made.exit_code == 3 and f"making {other_checkout / '.venv'} (uv sync)" in made.output
+
+    # One that can't be run is said too.
+    (other_checkout / ".venv" / "bin" / "sim").chmod(0o644)
+    broken = _init(*_ALICE)
+    assert broken.exit_code == 1 and "can't be run" in broken.output and "scripts/setup.sh" in broken.output
 
 
 def test_init_with_no_builder_in_the_environment_touches_neither_repo(
@@ -313,3 +467,94 @@ def test_account_list_shows_each_accounts_own_growth(tmp_path: Path, monkeypatch
     assert rows["Asset_Brokerage"].annual_rate_micros is None
     assert rows["Asset_Checking"].rate_series is None
     assert rows["Income_Salary"].rate_series is None
+
+
+# ---------- activate-analysis ----------
+
+def _checkout(path: Path) -> Path:
+    """A folder activate-analysis takes for a code checkout, whose venv
+    says which it is when activated."""
+    for marker in checkout.MARKERS:
+        (path / marker).parent.mkdir(parents=True, exist_ok=True)
+        (path / marker).touch()
+    (path / ".venv" / "bin").mkdir(parents=True)
+    (path / ".venv" / "bin" / "activate").write_text(f"ACTIVATED={path.name}\n")
+    (path / "templates").mkdir()
+    shutil.copy(data_repo.TEMPLATES_DIR / "activate-analysis", path / "templates")
+    return path
+
+
+def test_activate_takes_the_code_of_the_checkout_it_is_sourced_through(tmp_path: Path) -> None:
+    data = tmp_path / "data"
+    (data / "sim").mkdir(parents=True)
+    shutil.copy(data_repo.TEMPLATES_DIR / "activate-analysis", data / "sim")
+    (data / "sim" / "persons.csv").write_text("id,display\nalice,Alice Example\n")
+    (data / "sim" / ".analysis_user").write_text("alice\n")
+    main_checkout, worktree = _checkout(tmp_path / "main"), _checkout(tmp_path / "worktree")
+    for each in (main_checkout, worktree):
+        (each / "data").mkdir()
+        (each / "data" / "shared").symlink_to(data)
+    # The data repo was made by, and last used with, the main checkout.
+    (data / "sim" / ".analysis").write_text(f"{main_checkout}\n")
+
+    def activate(script: str, cwd: Path, **env: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            ["bash", "-c", f'source {script} && echo "$ACTIVATED $ANALYSIS_REPO_DIR"'], cwd=cwd,
+            env={"PATH": "/usr/bin:/bin", "HOME": str(tmp_path), **env}, capture_output=True, text=True, check=False)
+
+    # From the worktree, though the data repo remembers the main checkout and the shell still names it.
+    there = activate("data/shared/sim/activate-analysis", worktree, ANALYSIS_REPO_DIR=str(main_checkout))
+    assert there.stdout == f"worktree {worktree}\n", there.stderr
+    assert f"using the code in {worktree}; the data repo stays paired with {main_checkout}" in there.stderr
+    # The pair is the builder's: its hooks run the sim of the checkout .analysis names.
+    assert (data / "sim" / ".analysis").read_text() == f"{main_checkout}\n"
+    again = activate(str(worktree / "data" / "shared" / "sim" / "activate-analysis"), tmp_path)
+    assert again.stdout == f"worktree {worktree}\n" and "differs" not in again.stderr
+    # The paired checkout itself says nothing.
+    paired = activate("data/shared/sim/activate-analysis", main_checkout)
+    assert paired.stdout == f"main {main_checkout}\n" and "using the code" not in paired.stderr
+
+    # A shell that follows links on cd still sees the checkout in the path as typed.
+    chased = subprocess.run(
+        ["bash", "-c", 'set -P; source data/shared/sim/activate-analysis && echo "$ACTIVATED $ANALYSIS_REPO_DIR"'],
+        cwd=worktree, env={"PATH": "/usr/bin:/bin", "HOME": str(tmp_path), "ANALYSIS_REPO_DIR": str(main_checkout)},
+        capture_output=True, text=True, check=False)
+    assert chased.stdout == f"worktree {worktree}\n", chased.stderr
+
+    # A pair that names no checkout is written by whichever activates.
+    (data / "sim" / ".analysis").write_text(f"{tmp_path / 'gone'}\n")
+    adopted = activate("data/shared/sim/activate-analysis", worktree)
+    assert f"using the code in {worktree} (it was {tmp_path / 'gone'})" in adopted.stderr
+    assert (data / "sim" / ".analysis").read_text() == f"{worktree}\n"
+
+    # Sourced by its own path, the data repo has no checkout around it: the shell's, else the remembered one.
+    named = activate(str(data / "sim" / "activate-analysis"), tmp_path, ANALYSIS_REPO_DIR=str(main_checkout))
+    assert named.stdout == f"main {main_checkout}\n", named.stderr
+    assert f"using the code in {main_checkout} (it was {worktree})" in named.stderr
+    remembered = activate(str(data / "sim" / "activate-analysis"), tmp_path)
+    assert remembered.stdout == f"main {main_checkout}\n", remembered.stderr
+    (data / "sim" / ".analysis").write_text(f"{worktree}\n")
+
+    # A copy the code has since changed is said, with how to refresh it.
+    (worktree / "templates" / "activate-analysis").write_text("# newer\n")
+    stale = activate("data/shared/sim/activate-analysis", worktree)
+    assert f"this copy differs from {worktree}/templates/activate-analysis." in stale.stderr
+    assert "If that checkout has the newest code of those using this data repo" in stale.stderr
+    assert f"cp {worktree}/templates/activate-analysis {worktree}/data/shared/sim/" in stale.stderr
+
+    # One checkout spelled two ways (under a linked folder) is the same code: nothing is said.
+    (tmp_path / "linked").symlink_to(tmp_path)
+    (data / "sim" / ".analysis").write_text(f"{tmp_path / 'linked' / 'worktree'}\n")
+    shutil.copy(data_repo.TEMPLATES_DIR / "activate-analysis", worktree / "templates")
+    same = activate("data/shared/sim/activate-analysis", worktree)
+    assert same.stdout == f"worktree {worktree}\n" and "using the code" not in same.stderr
+
+
+def test_the_script_and_the_program_agree_on_what_a_checkout_is() -> None:
+    script = (data_repo.TEMPLATES_DIR / "activate-analysis").read_text(encoding="utf-8")
+    body = script[script.index("_analysis_validate_repo_dir() {"):script.index("_analysis_enable_completion() {")]
+    assert re.findall(r'\[ -f "\$1/([^"]+)" \]', body) == list(checkout.MARKERS)
+    assert checkout.checkout_of(data_repo.TEMPLATES_DIR) == data_repo.TEMPLATES_DIR.parent
+    assert "\t" not in script
+    prototype = data_repo.TEMPLATES_DIR.parent / "prototype_data" / "activate-analysis"
+    assert script == prototype.read_text(encoding="utf-8")

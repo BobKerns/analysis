@@ -235,13 +235,20 @@ _commit_option = click.option(
 )
 
 
-def _shown(path: Path) -> str:
+def _shown(path: Path, *, resolve: bool = True) -> str:
     """``path`` as the user would type it (#374): relative to the working
     directory when it's inside it, else ``~/...`` under the home folder,
     else absolute. A full temp or home path makes output wrap and hides
-    the part that matters."""
-    full = Path(path).expanduser().resolve()
-    for base, prefix in ((Path.cwd().resolve(), ""), (Path.home().resolve(), "~/")):
+    the part that matters.
+
+    Without ``resolve`` it is shown through a link and not as what the link
+    leads to: data/shared is how a checkout names its data repo, wherever
+    that is."""
+    full = Path(path).expanduser()
+    bases = ((Path.cwd(), ""), (Path.home(), "~/"))
+    if resolve:
+        full, bases = full.resolve(), tuple((base.resolve(), prefix) for base, prefix in bases)
+    for base, prefix in bases:
         try:
             rel = full.relative_to(base)
         except ValueError:
@@ -5184,34 +5191,70 @@ def init_command(
     directory: Path | None, person_id: str | None, display: str | None, birthdate: str | None,
     sex: str | None, filing_status: str | None, no_commit: bool, no_builder: bool,
 ) -> None:
-    """Start a new data repo in DIR (#289), asking for what the options
-    leave out: DIR, you (the operator, its first primary person) and the
-    household's filing status.
+    """Start a new data repo (#289), asking for what the options leave
+    out: you (the operator, its first primary person) and the household's
+    filing status.
 
-    DIR gets sim/ with persons.csv, the other shared CSVs, activate-analysis,
-    .retention.yaml and scenarios/base, made current, from the code
-    repository's templates/. The template scenarios (t_*) and tax-law aux
-    tables aren't copied: they're read from templates/ itself, so they stay
-    current as the code changes. DIR is made a git repository with a first
-    commit, so runs record which data they read from the start.
+    With no DIR, the usual step, the data repo is made at data/shared of the
+    code checkout you are in (or, outside any, the one this sim belongs
+    to). With DIR it is made there, and data/shared is linked to it: a
+    checkout's data repo is always found at its data/shared (#654).
+
+    Run with another checkout's sim (a venv left active from another
+    worktree), it runs the sim init of the checkout you are in instead,
+    making that checkout's .venv first if it has none, so the data repo is
+    paired with the code beside it.
+
+    The data repo gets sim/ with persons.csv, the other shared CSVs,
+    activate-analysis, .retention.yaml and scenarios/base, made current,
+    from the code repository's templates/. The template scenarios (t_*) and
+    tax-law aux tables aren't copied: they're read from templates/ itself,
+    so they stay current as the code changes. It is made a git repository
+    with a first commit, so runs record which data they read from the start.
 
     Then it turns on background builds (ADR-004 §12), as `sim builder
-    install` does: it links this code repository's data/shared to DIR, if
-    data/shared isn't there yet, and installs DIR's git hooks. --no-builder
-    leaves both alone, for scripts and tests, where a background build is
-    no use; so does --no-commit, since the builder needs a git repository.
-    So does ANALYSIS_NO_BUILDER set in the environment, as for setup.sh.
+    install` does, installing the data repo's git hooks. --no-builder
+    installs no hooks and links no DIR to data/shared, for scripts and
+    tests; so does ANALYSIS_NO_BUILDER set in the environment, as for
+    setup.sh. With no DIR the data repo is still made at data/shared,
+    which is where one was asked for.
+    --no-commit skips the builder, which needs a git repository.
 
-    Refuses a DIR that already holds a data repo.
+    Refuses a DIR that already holds a data repo, and with no DIR a
+    data/shared that is already there.
     """
+    from analysis.checkout import checkout_of
     from analysis.sim import data_repo
 
     # The variable setup.sh honors too: a recording (the setup video, #374)
-    # shows `sim init` as typed, so it can't pass --no-builder, and must not
-    # link or hook anything in the checkout it records from.
+    # shows `sim init DIR` as typed, so it can't pass --no-builder, and must
+    # not link or hook anything in the checkout it records from. (With no
+    # DIR the data repo is the checkout's data/shared whatever this says:
+    # code and data are one to one, and that is where it was asked for.)
     no_builder = no_builder or bool(os.environ.get("ANALYSIS_NO_BUILDER"))
+    # The checkout this is run in is the one the data repo is for (#654):
+    # activate-analysis activates the code its data repo was made by, so a
+    # `sim` from another worktree's venv would pair it with the wrong code.
+    here = checkout_of(Path.cwd())
+    if here is not None and here.resolve() != data_repo.CODE_REPO_DIR.resolve() \
+            and not os.environ.get(_INIT_AGAIN):
+        _init_in_checkout(here, [
+            *([str(directory)] if directory is not None else []),
+            *(arg for option, value in (
+                ("--id", person_id), ("--display", display), ("--birthdate", birthdate), ("--sex", sex),
+                ("--filing-status", filing_status)) if value is not None for arg in (option, value)),
+            *(["--no-commit"] if no_commit else []), *(["--no-builder"] if no_builder else [])])
+    code = data_repo.CODE_REPO_DIR
+    shared = code / "data" / "shared"
     if directory is None:
-        directory = Path(click.prompt("directory for the new data repo", default="."))
+        # The usual step: the data repo is the checkout's own data/shared.
+        if os.path.lexists(shared):
+            raise click.ClickException(
+                f"{_shown(shared, resolve=False)} is already there"
+                + (f", leading to {_shown(shared.resolve())}" if shared.is_symlink() else "")
+                + f". To use it: source {_shown(shared / 'sim' / 'activate-analysis', resolve=False)}. For a new data "
+                "repo elsewhere, give its DIR; to start over here, remove it first.")
+        directory = shared
     root = directory.expanduser().resolve()
     if data_repo.is_data_repo(root):
         raise click.ClickException(f"{root} already holds a data repo")
@@ -5240,17 +5283,69 @@ def init_command(
         click.echo("  committed the new files")
     click.echo(f"checking {data_repo.START_SCENARIO}: ", nl=False)
     _check_scenario(sim, data_repo.START_SCENARIO, unused=False)
+    # The data repo is always found at the checkout's data/shared, so one
+    # made elsewhere is linked there. Not for a script or a recording
+    # (--no-builder), which must leave the checkout it runs from alone.
+    linked = os.path.lexists(shared) and shared.resolve() == root
+    if not no_builder and not linked:
+        if not os.path.lexists(shared):
+            shared.parent.mkdir(exist_ok=True)
+            shared.symlink_to(root)
+            linked = True
+            click.echo(f"linked {_shown(shared, resolve=False)} to {_shown(root)}")
+        else:
+            # The script links the checkout it is in and works from there,
+            # so it is named through the checkout and DIR in full.
+            click.echo(
+                f"  warning: {_shown(shared, resolve=False)} is already there and was left alone, so this "
+                "checkout still uses "
+                f"{_shown(shared.resolve())}. To use the new data repo, remove it and run: "
+                f"{_shown(code / 'scripts' / 'link-data.sh')} {root}", err=True)
     if not no_builder and not no_commit and not failed:
         _init_builder(sim)
+    activate = _shown(shared / "sim" / "activate-analysis", resolve=False) if linked \
+        else _shown(sim / "activate-analysis")
     # Set apart and in bold: without it no later command finds the data
     # repo, and after the lines above it was easy to miss.
     click.echo()
     click.secho("Next, activate the data repo in this shell (the sim commands find it that way):", bold=True)
     click.echo()
-    click.secho(f"    source {_shown(sim / 'activate-analysis')}", bold=True)
+    click.secho(f"    source {activate}", bold=True)
     click.echo()
     click.echo("Then add the rest of the household with `sim person add` and accounts to the base "
                "scenario with `sim account add`.")
+
+
+# Set for the `sim init` that one run from another checkout's venv starts,
+# so that a checkout whose `sim` is somehow another's can't start a third.
+_INIT_AGAIN = "ANALYSIS_INIT_AGAIN"
+
+
+def _init_in_checkout(checkout: Path, args: list[str]) -> NoReturn:
+    """Run `sim init` with ``args`` again as ``checkout``'s own ``sim``,
+    making its venv first if it has none, and end with its result."""
+    from analysis.sim import data_repo
+
+    click.echo(f"this sim is {_shown(data_repo.CODE_REPO_DIR)}'s, and you are in {_shown(checkout)}: "
+               "running that checkout's sim init, so the data repo is paired with it")
+    # Another venv's VIRTUAL_ENV would have uv sync into that one.
+    env = {name: value for name, value in os.environ.items() if name != "VIRTUAL_ENV"} | {_INIT_AGAIN: "1"}
+    its_sim = checkout / ".venv" / "bin" / "sim"
+    if not its_sim.exists():
+        if shutil.which("uv") is None:
+            raise click.ClickException(
+                f"{_shown(checkout)} has no .venv, and uv isn't installed to make one: run scripts/setup.sh there")
+        click.echo(f"making {_shown(checkout / '.venv')} (uv sync)")
+        if subprocess.run(["uv", "sync", "--group", "dev"], cwd=checkout, env=env, check=False).returncode:
+            raise click.ClickException(f"uv sync failed in {_shown(checkout)}")
+    if not its_sim.exists():
+        raise click.ClickException(
+            f"{_shown(checkout)} has no .venv/bin/sim, even after uv sync: run scripts/setup.sh there")
+    try:
+        raise SystemExit(subprocess.run([str(its_sim), "init", *args], env=env, check=False).returncode)
+    except OSError as exc:
+        raise click.ClickException(
+            f"{_shown(its_sim)} can't be run ({exc}): run scripts/setup.sh in {_shown(checkout)}") from None
 
 
 def _init_builder(sim: Path) -> None:
@@ -5260,10 +5355,6 @@ def _init_builder(sim: Path) -> None:
     from analysis.sim import builder, data_repo
 
     shared = data_repo.CODE_REPO_DIR / "data" / "shared"
-    if not shared.exists() and not shared.is_symlink():
-        shared.parent.mkdir(exist_ok=True)
-        shared.symlink_to(sim.parent)
-        click.echo(f"linked {shared} to {sim.parent}")
     try:
         done = builder.install(sim)
     except (ValueError, OSError, subprocess.CalledProcessError) as exc:
