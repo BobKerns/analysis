@@ -9192,6 +9192,13 @@ def _not_traded(symbol: str, known: Collection[str]) -> bool:
     return bool(symbol) and symbol not in known and _TICKER_LIKE.fullmatch(symbol) is None
 
 
+def _is_part(cents: int, total: int, left: int) -> bool:
+    """Whether ``cents`` can be a lot's part of ``total`` with ``left`` of
+    it to give out: of the total's sign, and no more than is left. A part
+    of the other sign would leave more to give out than there is."""
+    return cents * total >= 0 and abs(cents) <= abs(left)
+
+
 def _ask_lot_split(
     label: str, total: int, account: str, its_lots: Sequence[str], before: Sequence[import_mapping.LotPart],
     *, basis: bool, investment: bool, new_ok: bool, known: Collection[str] = (),
@@ -9247,9 +9254,15 @@ def _ask_lot_split(
                     symbol = _prompt_with_completion(
                         f"symbol of {name} (a ticker, a CUSIP or a name of your own; blank for none)",
                         choices=list(known), default="").strip().upper()
-                    if any(c.isspace() for c in symbol):
-                        click.echo(f"  a symbol has no spaces: {symbol!r}")
-                    elif not _not_traded(symbol, known) or click.confirm(
+                    try:
+                        # As every command that writes a symbol takes one: it
+                        # names a prices file, and ACCOUNT:LOT is no symbol.
+                        if symbol and (symbols.is_lot_key(symbol) or symbols.normalize_symbol(symbol) != symbol):
+                            raise ValueError(f"symbol {symbol!r} must be one word, with no ':'")
+                    except ValueError as error:
+                        click.echo(f"  {error}")
+                        continue
+                    if not _not_traded(symbol, known) or click.confirm(
                             f"  {symbol} doesn't look like a ticker, and isn't a symbol the plan knows. Fine for a "
                             "fund that isn't traded (a CUSIP, or a name of your own): it is then marked "
                             "no_fetch, so nothing looks for its prices. Use it?", default=True):
@@ -9265,8 +9278,14 @@ def _ask_lot_split(
                         click.echo(f"  {error.format_message()}")
                 new.append((name, symbol, acquired))
             saved = was.get(name)
-            offered = format_dollars(left) if saved is None or (saved.cents is not None and (
-                left - saved.cents) * total < 0) else "rest" if saved.cents is None else format_dollars(saved.cents)
+            # The default: what the lot had last time, where that still
+            # fits; else all that is left.
+            if saved is not None and saved.cents is None:
+                offered = "rest"
+            elif saved is not None and saved.cents is not None and _is_part(saved.cents, total, left):
+                offered = format_dollars(saved.cents)
+            else:
+                offered = format_dollars(left)
             cents: int | None
             while True:
                 text = _prompt_with_completion(f"amount for {name}, or rest", choices=["rest"], default=offered).strip()
@@ -9278,9 +9297,10 @@ def _ask_lot_split(
                 except ValueError as error:
                     click.echo(f"  {error}")
                     continue
-                if (left - cents) * total >= 0:
+                if _is_part(cents, total, left):
                     break
-                click.echo(f"  that is more than the {format_dollars(left)} left")
+                click.echo(f"  that is more than the {format_dollars(left)} left" if cents * total > 0 else
+                           f"  a part of {format_dollars(total)} is between 0.00 and the {format_dollars(left)} left")
             basis_cents: int | None = None
             while basis:
                 kept = saved.basis_cents if saved is not None else None
@@ -13820,6 +13840,17 @@ def import_holdings(
                 if (target.action, target.account, target.lot) == ("map", account, was) and now is not None \
                         and (dry_run or now.lot == name):
                     each.set(*key, dataclasses.replace(target, lot=name))
+        # The saved splits likewise: this run's copy is written whole when
+        # a split is asked for, and must not put the old name back.
+        if dry_run:
+            for key, parts in lot_splits.parts.items():
+                found = account_map.lookup(*key)
+                if found is not None and (found.action, found.account) == ("split", account):
+                    lot_splits.parts[key] = [
+                        dataclasses.replace(part, lot=name) if part.lot == was else part for part in parts]
+        else:
+            lot_splits.parts = import_mapping.load_lot_splits(splits_path).parts | {
+                key: lot_splits.parts[key] for key in split_asked}
         return True
 
     def add_balance_lot(account: str, name: str) -> bool:
@@ -13833,15 +13864,18 @@ def import_holdings(
         except click.ClickException as e:
             click.echo(f"  {e.format_message()}")
             return False
-        its = [i for i, lot in enumerate(lots) if lot.account == account]
+        # A deleted lot is a zeroed row still, and no lot of the account's.
+        its = [i for i, lot in enumerate(lots) if lot.account == account and not lot.deleted]
         only = lots[its[0]] if len(its) == 1 and its[0] not in fresh else None
-        # Another of this file's numbers goes into the lot: it isn't this one's.
+        # Another of this file's numbers goes into the lot, whole or as a
+        # part of one that is divided: it isn't this one's.
         claimed = any(
-            (found.action, found.account) == ("map", account) and found.lot in ("", registries.DEFAULT_LOT)
+            found.account == account and (found.action == "split" or (
+                found.action == "map" and found.lot in ("", registries.DEFAULT_LOT)))
             for holding in snapshot.holdings
             if (found := account_map.lookup(holding.account, holding.asset)) is not None)
         if only is not None and only.lot == registries.DEFAULT_LOT and not claimed and not (
-                only.implicit or only.deleted or only.row.get("symbol", "").strip()):
+                only.implicit or only.row.get("symbol", "").strip()):
             # A lot called `default` is whatever the account held before it
             # had lots worth naming: the same money as this, as likely as not.
             try:
@@ -13980,7 +14014,7 @@ def import_holdings(
             return import_holdings_.plan(
                 snapshot, account_map, accounts, rows, year_end=year_end, split=split, fresh=fresh,
                 prune=prune, prices={symbol: price for symbol, (_, price) in latest.items()},
-                recount=recount, keep_count=keep_count)
+                recount=recount, keep_count=keep_count, splits=lot_splits.parts)
 
         def decided(holding: import_forms.Holding) -> tuple[str, str]:
             """The mapping row that says where ``holding`` goes: its own, or
@@ -13993,7 +14027,8 @@ def import_holdings(
 
         result = replan()
         to_save = False
-        split_asked = False
+        # The outside numbers whose division among lots was asked for in this run.
+        split_asked: set[tuple[str, str]] = set()
         # Symbols taken for funds that aren't traded: marked no_fetch with the lots.
         never_fetch: set[str] = set()
         # Whether each (account, symbol) the file has by tax lot gets a lot for each.
@@ -14013,9 +14048,12 @@ def import_holdings(
                     account_map.set(*key, target)
                     saved_map.set(*key, target)
                     to_save = progress = True
-                stale = {decided(h): old for h, old in (*result.unknown, *result.no_lot)}
+                # A part of a divided number that has no lot is its split's to
+                # put right, below, and not its mapping's.
+                astray = [(h, old) for h, old in (*result.unknown, *result.no_lot) if not h.lot]
+                stale = {decided(h): old for h, old in astray}
                 for key, old in stale.items():
-                    covered = of_row(key, (h for h, _ in (*result.unknown, *result.no_lot)))
+                    covered = of_row(key, (h for h, _ in astray))
                     target = _ask_holding_target(
                         _outside_label(covered, whole=not key[1]), sum(h.value_cents for h in covered),
                         snapshot.source, rows,
@@ -14038,67 +14076,63 @@ def import_holdings(
                 # ask about; ask those once every account is settled.
                 result = replan()
                 continue
-            # A number its mapping divides among lots: as the saved split says
-            # where that still comes to the file's number, else asked for.
-            for at in dict.fromkeys((h.account, h.asset) for h, _ in result.to_split):
-                covered = [h for h, _ in result.to_split if (h.account, h.asset) == at]
-                target = next(t for h, t in result.to_split if h is covered[0])
+            # A number its mapping divides among lots, which the plan could
+            # not divide: no split is saved, the saved one doesn't come to
+            # the file's number, or it names a lot that isn't there.
+            lost = [h for h, _ in result.no_lot if h.lot]
+            for at in dict.fromkeys((h.account, h.asset) for h in (*(h for h, _ in result.to_split), *lost)):
+                covered = [h for h in snapshot.holdings if (h.account, h.asset) == at]
+                account = next(t.account for h, t in (*result.to_split, *result.no_lot)
+                               if (h.account, h.asset) == at)
                 total = sum(h.value_cents for h in covered)
                 label = _outside_label(covered, whole=not at[1])
                 before = lot_splits.parts.get(at, [])
-                its_lots = [_lot.lot for _lot in lots if _lot.account == target.account and not _lot.deleted]
-                shares = import_mapping.divide(before, total)
-                why = ""
+                its_lots = [_lot.lot for _lot in lots if _lot.account == account and not _lot.deleted]
                 if not before:
                     why = f"{_shown(splits_path)} has no split of {label} yet"
-                elif shares is None:
+                elif missing := sorted({h.lot for h in lost if (h.account, h.asset) == at}):
+                    why = f"the saved split of {label} names lot(s) {', '.join(missing)}, which {account} doesn't have"
+                else:
                     fixed = sum(part.cents for part in before if part.cents is not None)
                     why = (f"the saved split of {label} gives out {format_dollars(fixed)}, and the file has "
                            f"{format_dollars(total)}")
-                elif missing := [part.lot for part, _ in shares if part.lot not in its_lots]:
-                    why = (f"the saved split of {label} names lot(s) {', '.join(missing)}, which "
-                           f"{target.account} doesn't have")
-                if why:
-                    if not _interactive():
-                        raise click.ClickException(
-                            f"{why}; run at a terminal to be asked, or change its rows in {splits_path} "
-                            f"(columns {', '.join(import_mapping.LOT_SPLITS_HEADER)}; one lot's amount may "
-                            "be blank, to take the rest)")
-                    if before:
-                        click.echo(f"{why}.")
-                    subkind = accounts[target.account][1]
-                    known_symbols = {*context().securities, *context().growing, *registries.SYMBOL_ASSET_CLASS}
-                    while True:
-                        parts, added = _ask_lot_split(
-                            label, total, target.account, its_lots, before,
-                            basis=subkind == InvestmentAssetSubkind.BROKERAGE_TAXABLE,
-                            investment=subkind in INVESTMENT_ASSET_SUBKINDS,
-                            known=known_symbols,
-                            # Last year's file can't say what a new lot holds now.
-                            new_ok=not year_end)
-                        try:
-                            for name, symbol, acquired in added:
-                                if name not in its_lots:
-                                    add_lot(target.account, name, symbol, acquired)
-                                    its_lots.append(name)
-                                    if _not_traded(symbol, known_symbols):
-                                        never_fetch.add(symbol)
-                            break
-                        except click.ClickException as e:
-                            click.echo(f"  not added: {e.format_message()}")
-                            before = parts
-                    lot_splits.parts[at] = parts
-                    split_asked = True
-                    shares = import_mapping.divide(parts, total)
-                assert shares is not None
-                # Each part is a holding of its own from here, which names its lot.
-                pieces = tuple(
-                    dataclasses.replace(covered[0], value_cents=cents, quantity=None, acquired=None,
-                                        cost_basis_cents=part.basis_cents, lot=part.lot)
-                    for part, cents in shares)
-                snapshot = dataclasses.replace(snapshot, holdings=(
-                    *(h for h in snapshot.holdings if (h.account, h.asset) != at), *pieces))
+                if not _interactive():
+                    raise click.ClickException(
+                        f"{why}; run at a terminal to be asked, or change its rows in {splits_path} "
+                        f"(columns {', '.join(import_mapping.LOT_SPLITS_HEADER)}; one lot's amount may "
+                        "be blank, to take the rest)")
+                if before:
+                    click.echo(f"{why}.")
                 progress = True
+                if year_end and not its_lots:
+                    # Last year's file can't say what a new lot holds now,
+                    # so there is no lot to name: left out of this run only.
+                    click.echo(f"{account} has no lot for a part of {label}, and --year-end adds none: "
+                               "it is left out of this import.")
+                    account_map.set(*at, import_mapping.AccountTarget("skip"))
+                    continue
+                subkind = accounts[account][1]
+                known_symbols = {*context().securities, *context().growing, *registries.SYMBOL_ASSET_CLASS}
+                while True:
+                    parts, added = _ask_lot_split(
+                        label, total, account, its_lots, before,
+                        basis=subkind == InvestmentAssetSubkind.BROKERAGE_TAXABLE,
+                        investment=subkind in INVESTMENT_ASSET_SUBKINDS, known=known_symbols,
+                        new_ok=not year_end)
+                    try:
+                        for name, symbol, acquired in added:
+                            if name not in its_lots:
+                                add_lot(account, name, symbol, acquired)
+                                its_lots.append(name)
+                                if _not_traded(symbol, known_symbols):
+                                    never_fetch.add(symbol)
+                        break
+                    except click.ClickException as e:
+                        click.echo(f"  not added: {e.format_message()}")
+                        before = parts
+                # The plan divides the number by it from here.
+                lot_splits.parts[at] = parts
+                split_asked.add(at)
             if progress:
                 result = replan()
                 continue

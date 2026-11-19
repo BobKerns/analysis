@@ -5,6 +5,7 @@ from __future__ import annotations
 import datetime as dt
 import re
 from collections.abc import Callable
+from decimal import Decimal
 from pathlib import Path
 
 import pandas as pd
@@ -275,6 +276,10 @@ def test_lot_splits_round_trip_and_divide_a_number(write_import_map: Callable[[s
     assert mapping.divide(funds, 500000) is None
     assert [cents for _, cents in mapping.divide(bank, 30000) or []] == [25000, 5000]
     assert mapping.divide(bank, 30001) is None and mapping.divide([], 0) is None
+    # Of nothing, no lot gets a part: the rest would be what the others were given, taken back.
+    assert mapping.divide(funds, 0) is None and mapping.divide(funds, -1) is None
+    assert [cents for _, cents in mapping.divide([mapping.LotPart("vti", 0), mapping.LotPart("bnd", None)], 0) or []] \
+        == [0, 0]
 
 
 def test_load_account_map_rejects_another_header(quicken_account_map: Path) -> None:
@@ -308,11 +313,13 @@ def test_renames_follow_in_every_saved_mapping(
     # another account's lot of the same name is left alone.
     accounts.write_text(accounts.read_text(encoding="utf-8")
                         + "Total,,split,Asset_Brokerage_Joint,,\nOther,,split,Asset_Roth_Alice,,\n", encoding="utf-8")
-    splits = write_import_map("quicken/lot_splits.csv", "Total,,bnd,10.00,\nTotal,,voo,,\nOther,,bnd,,\n")
+    # A split of one holding (VTI) finds its row as the holding does: the outside account's.
+    splits = write_import_map(
+        "quicken/lot_splits.csv", "Total,,bnd,10.00,\nTotal,,voo,,\nOther,,bnd,,\nTotal,VTI,bnd,,\n")
     assert mapping.rename_lot(test_data_dir, "Asset_Brokerage_Joint", "bnd", "bonds") == [
         "imports/quicken/accounts.csv", "imports/quicken/lot_splits.csv"]
     assert splits.read_text(encoding="utf-8").splitlines()[1:] == [
-        "Total,,bonds,10.00,", "Total,,voo,,", "Other,,bnd,,"]
+        "Total,,bonds,10.00,", "Total,,voo,,", "Other,,bnd,,", "Total,VTI,bonds,,"]
     assert mapping.rename_account(test_data_dir, "Asset_Roth_Alice", "Asset_Roth") == ["imports/quicken/accounts.csv"]
     assert mapping.load_account_map(accounts).entries["Other", ""] == mapping.AccountTarget("split", "Asset_Roth")
     assert mapping.rename_lot(test_data_dir, "Asset_Brokerage_Joint", "bonds", "bnd") == [
@@ -468,22 +475,28 @@ def test_plan_reports_what_the_mapping_leaves_open() -> None:
     assert result.changes == [] and result.cells == {}
 
 
-def test_plan_leaves_a_split_open_until_its_parts_name_their_lots() -> None:
+def test_plan_divides_a_number_by_its_split_and_leaves_open_one_that_does_not_fit() -> None:
     account_map = _map(Funds=mapping.AccountTarget("split", "Asset_Brokerage_Joint"))
-    whole = holdings.plan(_snapshot(Funds=10000), account_map, _ACCOUNTS, _lots())
-    assert not whole.complete and [h.account for h, _ in whole.to_split] == ["Funds"]
-    assert whole.changes == []
+    snapshot = Snapshot("quicken", (Holding("Funds", 6000, quantity=Decimal(3)), Holding("Funds", 4000)))
+    # No split, or one whose amounts come to another number: nothing is set.
+    for splits in ({}, {("Funds", ""): [mapping.LotPart("vti", 7000), mapping.LotPart("bnd", 2000)]}):
+        whole = holdings.plan(snapshot, account_map, _ACCOUNTS, _lots(), splits=splits)
+        assert not whole.complete and [h.value_cents for h, _ in whole.to_split] == [6000, 4000]
+        assert whole.changes == []
 
-    parts = Snapshot("quicken", (
-        Holding("Funds", 7000, lot="vti", cost_basis_cents=5000), Holding("Funds", 3000, lot="bnd"),
-        Holding("Funds", 1, lot="voo")))
-    result = holdings.plan(parts, account_map, _ACCOUNTS, _lots())
-    # A part for a lot the account doesn't have is as a mapping to one.
-    assert [(h.lot, t.label) for h, t in result.no_lot] == [("voo", "Asset_Brokerage_Joint:voo")]
-    assert not result.to_split
+    # The outside account's holdings are divided as their total, and a part has no share count.
+    result = holdings.plan(snapshot, account_map, _ACCOUNTS, _lots(), splits={
+        ("Funds", ""): [mapping.LotPart("vti", 7000, 5000), mapping.LotPart("bnd", None)]})
+    assert result.complete
     assert {(c.lot, c.column): c.after for c in result.changes if c.column != "prior_year_end_balance"} == {
         ("vti", "opening_balance"): "70.00", ("vti", "opening_cost_basis"): "50.00",
         ("bnd", "opening_balance"): "30.00"}
+
+    # A part for a lot the account doesn't have is as a mapping to one, and names its lot.
+    astray = holdings.plan(snapshot, account_map, _ACCOUNTS, _lots(), splits={
+        ("Funds", ""): [mapping.LotPart("vti", 7000), mapping.LotPart("voo", None)]})
+    assert [(h.lot, h.value_cents, t.label) for h, t in astray.no_lot] == [("voo", 3000, "Asset_Brokerage_Joint:voo")]
+    assert not astray.to_split
 
 
 # ---------- the flows applier ----------

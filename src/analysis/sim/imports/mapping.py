@@ -265,10 +265,13 @@ def load_lot_splits(path: Path | str) -> LotSplits:
 def divide(parts: Sequence[LotPart], total_cents: int) -> list[tuple[LotPart, int]] | None:
     """Each of ``parts`` with its cents of ``total_cents``; None when they
     don't come to it: no part takes the rest and the others add up to
-    another number, or the rest would be of the other sign (more is given
-    out than there is)."""
-    rest = total_cents - sum(part.cents for part in parts if part.cents is not None)
-    if not parts or (rest and (all(part.cents is not None for part in parts) or rest * total_cents < 0)):
+    another number, or a part (the rest too) is not of the number's sign:
+    more is given out than there is, or anything at all of nothing."""
+    fixed = [part.cents for part in parts if part.cents is not None]
+    rest = total_cents - sum(fixed)
+    # Zero is a part of any number; anything else is one only of its sign.
+    if not parts or any(cents and cents * total_cents <= 0 for cents in (*fixed, rest)) \
+            or (rest and len(fixed) == len(parts)):
         return None
     return [(part, rest if part.cents is None else part.cents) for part in parts]
 
@@ -465,7 +468,8 @@ def rename_lot(data_dir: Path, account: str, old: str, new: str) -> list[str]:
     for accounts, found in splits:
         before = {key: list(parts) for key, parts in found.parts.items()}
         for key, parts in found.parts.items():
-            target = accounts.entries.get(key)
+            # As a holding finds its row: its own, else its outside account's.
+            target = accounts.lookup(*key)
             if target is not None and target.action == "split" and target.account == account:
                 found.parts[key] = [dataclasses.replace(part, lot=new) if part.lot == old else part
                                     for part in parts]

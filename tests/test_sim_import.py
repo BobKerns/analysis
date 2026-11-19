@@ -3487,13 +3487,29 @@ def test_sim_import_holdings_renames_the_default_lot_a_named_balance_is(
     assert "0 lot(s)" in again.output
 
 
+@pytest.mark.usefixtures("at_a_terminal")
+def test_sim_import_holdings_keeps_a_rename_in_the_splits_it_then_saves(
+    test_data_dir: Path, ofx_bank_like_accounts_download: Path, write_import_map: MapWriter,
+) -> None:
+    # Another institution's number is divided among Asset_Checking's lots, by the lot's old name.
+    write_import_map("ofx/accounts.csv", "Elsewhere Bank checking ...9999,,split,Asset_Checking,,\n")
+    split = write_import_map("ofx/lot_splits.csv", "Elsewhere Bank checking ...9999,,default,,\n")
+    # One run renames that lot, and then asks for a split of its own, which writes the file whole.
+    result = _import(test_data_dir, "holdings", str(ofx_bank_like_accounts_download),
+                     input="Asset_Checking\nmain\nrename\nAsset_Savings\nsplit\ndefault\nrest\n\n")
+    assert result.exit_code == 0, result.output
+    assert split.read_text(encoding="utf-8").splitlines()[1:] == [
+        "Elsewhere Bank checking ...9999,,main,,", "First Example Bank savings ...4321,,default,,"]
+    assert _all_lots(test_data_dir)["Asset_Savings", ""]["opening_balance"] == "4321.09"
+
+
 def test_sim_import_holdings_divides_one_number_among_lots_and_keeps_the_split(
     test_data_dir: Path, ofx_bank_download: Path, rewrite_download: Rewrite, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(cli, "_interactive", lambda: True)
     # 1000.00 stays in the one lot there is; a new lot takes the rest. A
     # lot named twice, and more than is left, are asked for again.
-    answers = "Asset_Checking\nsplit\ndefault\n1000\ndefault\ncd\ny\n9000\nrest\n\n"
+    answers = "Asset_Checking\nsplit\ndefault\n-500\n1000\ndefault\ncd\ny\n9000\nrest\n\n"
     dry = _import(test_data_dir, "holdings", str(ofx_bank_download), "--dry-run", input=answers)
     assert dry.exit_code == 0, dry.output
     assert "(dry run) the mappings you gave were not saved" in dry.output
@@ -3507,6 +3523,8 @@ def test_sim_import_holdings_divides_one_number_among_lots_and_keeps_the_split(
     assert "lot (3321.09 left)" in result.output
     assert "default has its part already" in result.output
     assert "that is more than the 3321.09 left" in result.output
+    # A part of the other sign would leave more to give out than the file has.
+    assert "a part of 4321.09 is between 0.00 and the 4321.09 left" in result.output
     lots = _all_lots(test_data_dir)
     assert lots["Asset_Checking", ""]["opening_balance"] == "1000.00"
     assert lots["Asset_Checking", "cd"]["opening_balance"] == "3321.09"
@@ -3555,13 +3573,16 @@ def test_sim_import_holdings_splits_a_brokerage_total_into_lots_with_a_symbol_an
     # What stays in `default`, with its basis; then a new lot of one fund,
     # with the day it was bought (asked again when it isn't a day), for the rest.
     # The fund isn't traded, so its symbol is its CUSIP: any name without a space is one.
-    answers = ("default\n100000\n80000\nplan\ny\n92290 8769\n92290876\nn\n922908769\ny\nsoon\n2020-03-02\n"
-               "rest\n150000\n\n")
+    answers = ("default\n100000\n80000\nplan\ny\n92290 8769\nfund:a\nabc/1\n92290876\nn\n922908769\ny\n"
+               "soon\n2020-03-02\nrest\n150000\n\n")
     result = _import(test_data_dir, "holdings", str(quicken_net_worth_export), input=answers)
     assert result.exit_code == 0, result.output
     assert "date must be YYYY-MM-DD: 'soon'" in result.output
     lots = _all_lots(test_data_dir)
-    assert "a symbol has no spaces: '92290 8769'" in result.output and "--never-fetch" in result.output
+    # A symbol names a prices file, as for every command that writes one.
+    for refused in ("92290 8769", "FUND:A", "ABC/1"):
+        assert f"symbol {refused!r} must be one word" in result.output
+    assert "--never-fetch" in result.output
     # Not a ticker: asked about, since it may be a slip (one digit short, declined), and taken on a yes.
     assert "92290876 doesn't look like a ticker, and isn't a symbol the plan knows." in result.output
     # Nothing can fetch a price for it, so it is marked.
