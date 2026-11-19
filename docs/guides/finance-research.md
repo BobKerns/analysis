@@ -1,3 +1,5 @@
+![Zabob Retirement](../assets/brand/banner.jpg)
+
 # Finance research: tear sheets with Claude
 
 > To read a formatted `.md` file:

@@ -1,3 +1,5 @@
+![Zabob Retirement](../assets/brand/banner.jpg)
+
 # Startup stock options: what they're worth, and how to model them
 
 > To read a formatted `.md` file:

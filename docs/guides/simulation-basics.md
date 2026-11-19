@@ -1,3 +1,5 @@
+![Zabob Retirement](../assets/brand/banner.jpg)
+
 # How the simulator draws random futures
 
 > To read a formatted `.md` file:

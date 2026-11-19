@@ -1,3 +1,5 @@
+![Zabob Retirement](../assets/brand/banner.jpg)
+
 # ADR-006: Ensemble scenarios — parameter variation and Monte Carlo runs
 
 - **Status:** Accepted

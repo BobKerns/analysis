@@ -1,3 +1,5 @@
+![Zabob Retirement](../assets/brand/banner.jpg)
+
 # ADR-005: Lots and per-lot state
 
 - **Status:** Accepted

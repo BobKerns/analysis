@@ -1,0 +1,284 @@
+<!doctype html>
+<!-- cspell:ignore importmap fract Catmull lerp Kuwahara outc -->
+<html><head><meta charset="utf-8">
+<style>html,body{margin:0;background:#000;overflow:hidden}canvas{display:block}</style>
+<script type="importmap">{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"}}</script>
+</head><body>
+<script type="module">
+// A daylight valley: a stream leaves the footbridge we stand on and braids into
+// many channels across the meadow, one per possible future. Autumn trees on the
+// left, evergreens on the right, a painted finish.
+import * as THREE from 'three';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+
+const q = new URLSearchParams(location.search);
+const W = +q.get('w') || 1280, H = +q.get('h') || 640;
+const view = q.get('view') || 'hero';
+const paint = +(q.get('paint') ?? 4);
+
+let seed = 11;
+const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+const gauss = () => { let u = 0; while (!u) u = rnd(); return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * rnd()); };
+
+const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
+renderer.setSize(W, H); renderer.setPixelRatio(1);
+renderer.toneMapping = THREE.ACESFilmicToneMapping; renderer.toneMappingExposure = 1.1;
+renderer.shadowMap.enabled = true; renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.fog = new THREE.Fog(new THREE.Color('#bfe3df'), 120, 620);
+
+// Sky: deep teal overhead to pale aqua, with soft painted cloud banks.
+scene.add(new THREE.Mesh(new THREE.SphereGeometry(900, 48, 24), new THREE.ShaderMaterial({
+  side: THREE.BackSide, depthWrite: false, fog: false,
+  vertexShader: `varying vec3 d; void main(){ d = normalize(position); gl_Position = projectionMatrix*modelViewMatrix*vec4(position,1.); }`,
+  fragmentShader: `varying vec3 d;
+    float h21(vec2 p){ return fract(sin(dot(p, vec2(127.1,311.7)))*43758.5453); }
+    float n2(vec2 p){ vec2 i=floor(p), f=fract(p); f=f*f*(3.-2.*f);
+      return mix(mix(h21(i),h21(i+vec2(1,0)),f.x), mix(h21(i+vec2(0,1)),h21(i+vec2(1,1)),f.x), f.y); }
+    float fbm(vec2 p){ float s=0., a=.5; for(int i=0;i<5;i++){ s+=a*n2(p); p*=2.03; a*=.5; } return s; }
+    void main(){
+      float h = clamp(d.y, 0., 1.);
+      vec3 top = vec3(0.02,0.42,0.52), mid = vec3(0.16,0.66,0.72), low = vec3(0.78,0.93,0.88);
+      vec3 c = mix(low, mid, smoothstep(0.0, 0.16, h));
+      c = mix(c, top, smoothstep(0.14, 0.6, h));
+      vec2 uv = d.xz / max(d.y, 0.06) * 0.9;
+      float cl = smoothstep(0.52, 0.8, fbm(uv * 0.9 + vec2(3.0, 1.0)));
+      cl *= smoothstep(0.02, 0.12, h) * (1. - smoothstep(0.3, 0.6, h));
+      c = mix(c, vec3(0.97,0.98,0.95), cl * 0.75);
+      gl_FragColor = vec4(c, 1.);
+    }`
+})));
+
+// Channels: one main stream from under the bridge, braiding into N futures.
+const N = 15;
+const channels = [];
+const qs = [];
+for (let k = 0; k < N; k++) qs.push(gauss());
+qs.sort((a, b) => a - b);
+const medianK = Math.floor(N / 2);
+qs.forEach((qn, k) => {
+  const pts = [];
+  const w1 = rnd() * 6.28, w2 = rnd() * 6.28;
+  for (let i = 0; i <= 90; i++) {
+    const t = i / 90;
+    const z = 14 - t * 470;
+    const split = Math.max(0, (t - 0.08) / 0.92);
+    const spread = Math.pow(split, 1.25);
+    const room = 26 + (-z) * 0.13;   // stay inside the valley floor
+    const x = 2 + room * Math.tanh(qn * spread * 150 / room) + Math.sin(t * 7 + w1) * 5 * spread + Math.sin(t * 17 + w2) * 1.6 * spread
+      + Math.sin(t * 9) * 3 * (1 - split);
+    pts.push(new THREE.Vector3(x, 0, z));
+  }
+  channels.push({ curve: new THREE.CatmullRomCurve3(pts), pts, qn, k });
+});
+// Distance from (x,z) to the nearest channel, and that channel's width there.
+function nearest(x, z) {
+  let best = 1e9, wid = 0;
+  for (const c of channels) {
+    // the points are evenly spaced in z: look only near this z
+    const i0 = Math.max(0, Math.min(90, Math.round((14 - z) / 470 * 90)));
+    for (let i = Math.max(0, i0 - 3); i <= Math.min(90, i0 + 3); i++) {
+      const p = c.pts[i]; const dd = Math.hypot(p.x - x, p.z - z);
+      if (dd < best) { best = dd; const t = i / 90; wid = channelWidth(c, t); }
+    }
+  }
+  return [best, wid];
+}
+function channelWidth(c, t) {
+  const split = Math.max(0, (t - 0.12) / 0.88);
+  const main = 6.5 * (1 - split * 0.8);
+  return Math.max(1.2 + split * 1.6, main / (1 + split * 5)) + (c.k === medianK ? 0.5 : 0);
+}
+
+// Terrain: a broad meadow valley, banks rising to the woods on both sides.
+function base(x, z) {
+  const side = Math.max(0, Math.abs(x) - 30 - (-z) * 0.12);
+  let y = 0.6 + side * side * 0.012 + Math.min(side, 40) * 0.12;
+  y += Math.sin(x * 0.05 + z * 0.03) * 1.1 + Math.cos(x * 0.13 - z * 0.07) * 0.4;
+  return y;
+}
+function height(x, z) {
+  const [dd, wid] = nearest(x, z);
+  const bank = THREE.MathUtils.smoothstep(dd, wid * 0.55, wid * 1.6);
+  return THREE.MathUtils.lerp(-0.7, base(x, z), bank);
+}
+const tg = new THREE.PlaneGeometry(700, 560, 260, 220);
+tg.rotateX(-Math.PI / 2); tg.translate(0, 0, -250);
+{
+  const pos = tg.attributes.position, col = [];
+  const g1 = new THREE.Color('#2f8f2a'), g2 = new THREE.Color('#79c23a'), g3 = new THREE.Color('#b8d24a'), mud = new THREE.Color('#6b5a33');
+  for (let i = 0; i < pos.count; i++) {
+    const x = pos.getX(i), z = pos.getZ(i), y = height(x, z);
+    pos.setY(i, y);
+    const n = (Math.sin(x * 0.31 + z * 0.17) + Math.sin(x * 0.07 - z * 0.23)) * 0.25 + 0.5;
+    let c = g1.clone().lerp(g2, n);
+    if (n > 0.8) c.lerp(g3, (n - 0.8) * 3);
+    if (y < 0.15) c.lerp(mud, THREE.MathUtils.clamp((0.15 - y) * 1.4, 0, 0.8));
+    col.push(c.r, c.g, c.b);
+  }
+  tg.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
+  tg.computeVertexNormals();
+}
+const terrain = new THREE.Mesh(tg, new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.92 }));
+terrain.receiveShadow = true;
+scene.add(terrain);
+
+// Water: a ribbon per channel, sky-teal with brown depth and bright glints.
+const waterMat = (gold) => new THREE.ShaderMaterial({
+  transparent: true, depthWrite: false, side: THREE.DoubleSide,
+  uniforms: { gold: { value: gold ? 1 : 0 } },
+  vertexShader: `varying vec2 vUv; varying vec3 vW; void main(){ vUv = uv; vec4 w = modelMatrix*vec4(position,1.); vW = w.xyz; gl_Position = projectionMatrix*viewMatrix*w; }`,
+  fragmentShader: `varying vec2 vUv; varying vec3 vW; uniform float gold;
+    float h(vec2 p){ return fract(sin(dot(p, vec2(12.9898,78.233)))*43758.5453); }
+    void main(){
+      float edge = smoothstep(0.0, 0.25, vUv.y) * smoothstep(1.0, 0.75, vUv.y);
+      float dist = clamp(-vW.z / 460., 0., 1.);
+      vec3 deep = vec3(0.035,0.032,0.012), sky = vec3(0.02,0.13,0.15), far = vec3(0.30,0.62,0.62);
+      vec3 c = mix(deep, sky, 0.6 + 0.4 * (1. - abs(vUv.y - .5) * 2.)); c = mix(c, far, smoothstep(0.08, 0.6, dist));
+      float ripple = sin(vW.z * 1.7 + sin(vW.x * 0.9) * 2.0) * 0.5 + 0.5;
+      float glint = step(0.985, h(floor(vec2(vW.x * 3., vW.z * 1.2)))) * (0.6 + ripple);
+      c += vec3(0.8,0.85,0.8) * glint * 0.6;
+      c = mix(c, vec3(1.0, 0.62, 0.18), gold * 0.85 * (0.7 + 0.3 * ripple));
+      gl_FragColor = vec4(c * (gold > 0.5 ? 2.6 : 1.0), edge * 0.92);
+    }`
+});
+for (const c of channels) {
+  const seg = 300, posA = [], uvA = [], idx = [];
+  for (let i = 0; i <= seg; i++) {
+    const t = i / seg, p = c.curve.getPointAt(t), tan = c.curve.getTangentAt(t);
+    const nrm = new THREE.Vector3(-tan.z, 0, tan.x).normalize();
+    const w = channelWidth(c, t);
+    for (const s of [-1, 1]) { posA.push(p.x + nrm.x * w * s, 0.02 + c.k * 0.001, p.z + nrm.z * w * s); uvA.push(t, s < 0 ? 0 : 1); }
+  }
+  for (let i = 0; i < seg; i++) { const a = 2 * i; idx.push(a, a + 2, a + 1, a + 1, a + 2, a + 3); }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(posA, 3));
+  g.setAttribute('uv', new THREE.Float32BufferAttribute(uvA, 2));
+  g.setIndex(idx);
+  scene.add(new THREE.Mesh(g, waterMat(c.k === medianK)));
+}
+
+// Light: bright afternoon sun from behind-left, cool sky fill.
+const sun = new THREE.DirectionalLight('#fff1d2', 3.0);
+sun.position.set(-160, 170, -120); sun.castShadow = true;
+sun.shadow.mapSize.set(4096, 4096);
+Object.assign(sun.shadow.camera, { left: -220, right: 220, top: 220, bottom: -220, near: 10, far: 900 });
+sun.target.position.set(0, 0, -120); scene.add(sun, sun.target);
+scene.add(new THREE.HemisphereLight('#9fe3ea', '#3d5a22', 1.15));
+
+// Trees. Autumn blobs on the left, tall evergreens and fresh green on the right.
+const autumn = ['#c0392b', '#e0662f', '#f08a24', '#d4a017', '#a93226', '#e9b44c'].map(c => new THREE.MeshStandardMaterial({ color: c, roughness: 0.85, flatShading: true }));
+const fresh = ['#4fae3b', '#78c043', '#9bd14d'].map(c => new THREE.MeshStandardMaterial({ color: c, roughness: 0.85, flatShading: true }));
+const pine = ['#1d5e3a', '#24704a', '#2e7f4a'].map(c => new THREE.MeshStandardMaterial({ color: c, roughness: 0.9, flatShading: true }));
+const bark = new THREE.MeshStandardMaterial({ color: '#4b3424' });
+function blobTree(x, z, s, mats) {
+  const g = new THREE.Group();
+  const trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.35 * s, 0.5 * s, 4 * s, 6), bark); trunk.position.y = 2 * s; trunk.castShadow = true; g.add(trunk);
+  const n = 14 + Math.floor(rnd() * 10);
+  const crownR = (2.6 + rnd() * 1.4) * s, crownY = (5.2 + rnd() * 2) * s;
+  for (let i = 0; i < n; i++) {
+    const th = rnd() * Math.PI * 2, ph = Math.acos(rnd() * 1.6 - 0.6);
+    const m = new THREE.Mesh(new THREE.IcosahedronGeometry((0.9 + rnd() * 0.9) * s, 0), mats[Math.floor(rnd() * mats.length)]);
+    m.position.set(Math.sin(ph) * Math.cos(th) * crownR, crownY + Math.cos(ph) * crownR * 0.75, Math.sin(ph) * Math.sin(th) * crownR);
+    m.rotation.set(rnd() * 3, rnd() * 3, rnd() * 3);
+    m.castShadow = true; g.add(m);
+  }
+  g.position.set(x, height(x, z) - 0.2, z); scene.add(g);
+}
+function pineTree(x, z, s) {
+  const g = new THREE.Group();
+  const trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.3 * s, 0.45 * s, 3 * s, 6), bark); trunk.position.y = 1.5 * s; g.add(trunk);
+  const m = pine[Math.floor(rnd() * pine.length)];
+  for (let i = 0; i < 5; i++) {
+    const c = new THREE.Mesh(new THREE.ConeGeometry((3.2 - i * 0.55) * s, 4.2 * s, 8), m);
+    c.position.y = (3.5 + i * 2.6) * s; c.castShadow = true; g.add(c);
+  }
+  g.position.set(x, height(x, z) - 0.2, z); scene.add(g);
+}
+const bankX = (z) => 34 + (-z) * 0.13;
+for (let i = 0; i < 700; i++) {
+  const z = 10 - Math.pow(rnd(), 0.8) * 470;
+  const left = rnd() < 0.5;
+  const x = (left ? -1 : 1) * (bankX(z) + 4 + Math.pow(rnd(), 1.4) * 140);
+  const s = 1.0 + rnd() * 1.4 + Math.max(0, z + 60) * 0.012;
+  if (left) blobTree(x, z, s, rnd() < 0.82 ? autumn : fresh);
+  else if (rnd() < 0.7) pineTree(x, z, s * 1.25); else blobTree(x, z, s, fresh);
+}
+// a few shrubs along the near banks
+for (let i = 0; i < 60; i++) {
+  const z = 8 - rnd() * 90, side = rnd() < 0.5 ? -1 : 1;
+  const x = side * (14 + rnd() * 18);
+  const m = new THREE.Mesh(new THREE.IcosahedronGeometry(0.8 + rnd() * 1.2, 1), (side < 0 && rnd() < 0.5 ? autumn : fresh)[Math.floor(rnd() * 3)]);
+  m.position.set(x, height(x, z) + 0.4, z); m.castShadow = true; scene.add(m);
+}
+
+// Wooden fences: one zig-zagging down the left bank, as in the reference.
+const wood = new THREE.MeshStandardMaterial({ color: '#6e4b33', roughness: 0.9 });
+function fence(a, b) {
+  const len = Math.hypot(b.x - a.x, b.z - a.z), ang = Math.atan2(b.z - a.z, b.x - a.x);
+  const ya = height(a.x, a.z), yb = height(b.x, b.z);
+  for (const h of [0.9, 1.7]) {
+    const r = new THREE.Mesh(new THREE.BoxGeometry(len, 0.22, 0.16), wood);
+    r.position.set((a.x + b.x) / 2, (ya + yb) / 2 + h, (a.z + b.z) / 2); r.rotation.y = -ang; r.castShadow = true; scene.add(r);
+  }
+  for (const p of [a, b]) { const post = new THREE.Mesh(new THREE.BoxGeometry(0.28, 2.2, 0.28), wood); post.position.set(p.x, height(p.x, p.z) + 1.0, p.z); post.castShadow = true; scene.add(post); }
+}
+const fp = [[-13, 6], [-22, -6], [-16, -18], [-26, -34], [-21, -52]].map(([x, z]) => ({ x, z }));
+for (let i = 0; i < fp.length - 1; i++) fence(fp[i], fp[i + 1]);
+const fr = [[14, 4], [20, -14], [17, -30]].map(([x, z]) => ({ x, z }));
+for (let i = 0; i < fr.length - 1; i++) fence(fr[i], fr[i + 1]);
+
+// The footbridge rail we look over, red-brown and weathered.
+const rail = new THREE.Mesh(new THREE.BoxGeometry(60, 0.55, 0.5), new THREE.MeshStandardMaterial({ color: '#7a2e24', roughness: 0.7 }));
+
+// Cameras.
+const cam = new THREE.PerspectiveCamera(46, W / H, 0.3, 2000);
+if (view === 'banner') { cam.fov = 24; cam.position.set(2, 34, 40); cam.lookAt(6, 4, -200); }
+else { cam.position.set(2, 26, 30); cam.lookAt(6, 0, -150); }
+cam.updateProjectionMatrix();
+if (view !== 'banner') {
+  // place the rail just in front of the camera, across the bottom of the frame
+  rail.position.set(2, 23.2, 27.2); rail.scale.set(1, 1.3, 1); scene.add(rail);
+  const posts = new THREE.MeshStandardMaterial({ color: '#6a2a21', roughness: 0.75 });
+}
+
+// Painted finish: a 4-sector Kuwahara filter, then a gentle saturation lift.
+const Kuwahara = {
+  uniforms: { tDiffuse: { value: null }, res: { value: new THREE.Vector2(W, H) }, r: { value: paint } },
+  vertexShader: `varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix*modelViewMatrix*vec4(position,1.); }`,
+  fragmentShader: `uniform sampler2D tDiffuse; uniform vec2 res; uniform float r; varying vec2 vUv;
+    void main(){
+      if (r < 0.5) { gl_FragColor = texture2D(tDiffuse, vUv); return; }
+      vec3 m[4]; vec3 s[4];
+      for (int k=0;k<4;k++){ m[k]=vec3(0.); s[k]=vec3(0.); }
+      float n = 0.;
+      for (int j=0;j<=6;j++){ for (int i=0;i<=6;i++){
+        if (float(i) > r || float(j) > r) continue;
+        vec2 o = vec2(float(i), float(j)) / res;
+        vec3 c0 = texture2D(tDiffuse, vUv + vec2(-o.x,-o.y)).rgb;
+        vec3 c1 = texture2D(tDiffuse, vUv + vec2( o.x,-o.y)).rgb;
+        vec3 c2 = texture2D(tDiffuse, vUv + vec2(-o.x, o.y)).rgb;
+        vec3 c3 = texture2D(tDiffuse, vUv + vec2( o.x, o.y)).rgb;
+        m[0]+=c0; s[0]+=c0*c0; m[1]+=c1; s[1]+=c1*c1; m[2]+=c2; s[2]+=c2*c2; m[3]+=c3; s[3]+=c3*c3; n+=1.;
+      }}
+      float best = 1e9; vec3 outc = vec3(0.);
+      for (int k=0;k<4;k++){ vec3 mu = m[k]/n; vec3 v = abs(s[k]/n - mu*mu); float vv = v.r+v.g+v.b; if (vv < best){ best = vv; outc = mu; } }
+      float l = dot(outc, vec3(0.299,0.587,0.114));
+      outc = mix(vec3(l), outc, 1.18);
+      gl_FragColor = vec4(outc, 1.);
+    }`
+};
+const composer = new EffectComposer(renderer);
+composer.addPass(new RenderPass(scene, cam));
+composer.addPass(new UnrealBloomPass(new THREE.Vector2(W, H), 0.35, 0.4, 0.92));
+composer.addPass(new OutputPass());
+composer.addPass(new ShaderPass(Kuwahara));
+composer.render();
+window.DONE = true;
+</script></body></html>

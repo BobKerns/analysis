@@ -1,3 +1,5 @@
+![Zabob Retirement](../assets/brand/banner.jpg)
+
 # ADR-001: Overall architecture of the finance simulator
 
 - **Status:** Accepted

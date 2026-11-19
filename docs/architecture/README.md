@@ -1,3 +1,5 @@
+![Zabob Retirement](../assets/brand/banner.jpg)
+
 # Architecture
 
 How the finance simulator is put together: an overview in diagrams, and the

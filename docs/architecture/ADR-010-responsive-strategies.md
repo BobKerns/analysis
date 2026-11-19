@@ -1,3 +1,5 @@
+![Zabob Retirement](../assets/brand/banner.jpg)
+
 # ADR-010: Responsive strategies
 
 - **Status:** Accepted

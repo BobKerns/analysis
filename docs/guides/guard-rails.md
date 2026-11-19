@@ -1,3 +1,5 @@
+![Zabob Retirement](../assets/brand/banner.jpg)
+
 # Guard rails: is the plan spending more than it should?
 
 > To read a formatted `.md` file:

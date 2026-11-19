@@ -1,3 +1,5 @@
+![Zabob Retirement](assets/brand/banner.jpg)
+
 # Spending Data Guide (Non-SQL)
 
 > To read a formatted `.md` file:
