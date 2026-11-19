@@ -36,6 +36,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from analysis.checkout import checkout_of
 from analysis.videos import captions, notebook, render, youtube
 from analysis.videos import script as scripts
 from analysis.videos import theme as themes
@@ -155,10 +156,10 @@ class VideoBuild:
 
 
 def repo_root(start: Path) -> Path:
-    for parent in (start.resolve(), *start.resolve().parents):
-        if (parent / "pyproject.toml").is_file() and (parent / "src" / "analysis").is_dir():
-            return parent
-    raise ScriptError(f"{start}: not inside the analysis repository")
+    found = checkout_of(start.resolve())
+    if found is None:
+        raise ScriptError(f"{start}: not inside the analysis repository")
+    return found
 
 
 class _Demos:
