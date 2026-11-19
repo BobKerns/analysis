@@ -43,17 +43,9 @@ class Inheritance:
         return RULES.get(self.rule, self.rule)
 
 
-def _has_table(con: sqlite3.Connection, table: str) -> bool:
-    return con.execute(
-        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (table,)
-    ).fetchone() is not None
-
-
 def inheritances(con: sqlite3.Connection) -> list[Inheritance]:
     """The run's inheritances in the order they happened; empty for a run
-    with none (or from before #274). A lot that was empty is left out."""
-    if not _has_table(con, "inheritance"):
-        return []
+    with none. A lot that was empty is left out."""
     rows = con.execute(
         "SELECT i.date, COALESCE(p.display, i.decedent), a.name, a.subkind, m.lot, "
         "       COALESCE(i.owner, c.name), CASE WHEN i.owner IS NULL THEN i.placed ELSE i.balance END, "
@@ -85,9 +77,7 @@ def run_inheritances(run_path: Path) -> list[Inheritance]:
 def owner_changes(con: sqlite3.Connection) -> list[tuple[str, str, str]]:
     """Each account a death passed to a new owner, no money moving:
     ``(account name, final month, new owner)``, in order. The new owner
-    holds it from the month after. Empty for a run from before #274."""
-    if not _has_table(con, "inheritance"):
-        return []
+    holds it from the month after."""
     return [(str(a), str(d), str(o)) for a, d, o in con.execute(
         "SELECT a.name, i.date, i.owner FROM inheritance i JOIN account a ON a.id = i.account_id "
         "WHERE i.owner IS NOT NULL ORDER BY i.date, i.id")]

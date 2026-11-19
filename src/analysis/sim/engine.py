@@ -238,9 +238,10 @@ def run_scenario(
         outside_lots = frozenset(
             lot for (lot,) in con.execute(
                 "SELECT m.id FROM account_lot m JOIN account a ON a.id = m.account_id "
-                "JOIN person p ON p.id = a.owner "
-                "WHERE p.role IS NULL AND p.id != 'joint' "
-                "AND COALESCE(json_extract(p.meta_json, '$.household'), 0) = 0"))
+                # The loader decides who is outside (loader.outside_parties)
+                # and gives each its own gift account, named by its id.
+                "WHERE a.kind = ? AND a.subkind = ? AND a.owner = a.name",
+                (registries.OUTSIDE_ACCOUNT_KIND, registries.OUTSIDE_ACCOUNT_SUBKIND)))
         refill_ctx = RefillContext(
             chain_graph, aux, _parse_date(start_s), inflation_factor_cache,
             account_tax_treatment, account_subkind, account_name, cost_bases,
@@ -1016,6 +1017,13 @@ def _inheritance_plan(
         if subkind == "roth_ira":
             roth_ira_lots.add(lot_id)
     account_of = {lot: account for account, lots in lots_of.items() for lot, _ in lots}
+    # A chain step a dead person's account would receive is skipped: any lot
+    # money is placed in (an asset, or an outside party's gift account), not
+    # a liability, which the money pays down whoever owed it.
+    receiving = dict(con.execute(
+        "SELECT m.id, a.id FROM account_lot m JOIN account a ON a.id = m.account_id "
+        "WHERE a.kind IN ('asset', 'expense')").fetchall())
+    static_owner = {a: o or "joint" for a, o in con.execute("SELECT id, owner FROM account")}
     meta = json.loads(con.execute("SELECT meta_json FROM scenario").fetchone()[0] or "{}")
     estate = None
     if name := meta.get("estate"):
@@ -1037,7 +1045,8 @@ def _inheritance_plan(
             if owner in ownership.JOINT_OWNERS:
                 return bool(members) and not any(household.alive_after(p, month) for p in members)
             return not household.alive_after(owner, month)
-        return frozenset(lot for lot, account in account_of.items() if gone(owner_now[account]))
+        return frozenset(lot for lot, account in receiving.items()
+                         if gone(owner_now.get(account, static_owner[account])))
 
     for person, month in sorted(household.final_months.items(), key=lambda d: (d[1], d[0])):
         last = person in members and not any(
@@ -1082,7 +1091,7 @@ def _inheritance_plan(
                         continue
                     # A Roth IRA rolled into a survivor's own Roth IRA is
                     # theirs to treat as their own (Treas. Reg. §1.408A-6 Q&A-7(b)).
-                    for reached in _chain_leaves(chain, graph, set()):
+                    for reached in _sweep_leaves(chain, graph, entry.dead):
                         heir = owner_now.get(account_of.get(reached, -1))
                         if reached in roth_ira_lots and reached not in entry.dead and heir:
                             roth_heirs.setdefault(person, set()).add(heir)
@@ -2646,6 +2655,34 @@ def _load_chain_graph(con) -> ChainGraph:
     return ChainGraph(members, leaf_lot, minimum_of, refill_chain_of,
                        refill_target_of, refill_amount_of,
                        maximum_of, overflow_chain_of)
+
+
+def _sweep_leaves(chain_id: int, graph: ChainGraph, dead: frozenset[int]) -> list[int]:
+    """The lots a death's sweep of a whole balance into ``chain_id`` can
+    place money in: its steps in order, skipping a dead owner's lot, up to
+    the first that takes everything left (100%, no maximum). Later steps,
+    contingent ones, get nothing then."""
+    found: list[int] = []
+
+    def walk(chain: int, seen: set[int]) -> bool:
+        """Add ``chain``'s lots; whether it takes everything it is given."""
+        if chain in seen:
+            return False
+        seen.add(chain)
+        lot = graph.leaf_lot.get(chain)
+        if lot is not None:
+            if lot in dead:
+                return False
+            found.append(lot)
+            return graph.maximum_of.get(lot) is None
+        for step in graph.members.get(chain, []):
+            draw_from, maximum, percent = step[0], step[1], step[2]
+            if walk(draw_from, seen) and maximum is None and percent == 1_000_000:
+                return True
+        return False
+
+    walk(chain_id, set())
+    return found
 
 
 def _chain_leaves(chain_id: int, graph: ChainGraph, seen: set[int]) -> set[int]:

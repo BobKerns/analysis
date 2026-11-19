@@ -20,7 +20,8 @@ import pytest
 from click.testing import CliRunner
 
 from analysis.cli import main
-from analysis.sim import chain_edit, registries, rename
+from analysis.sim import chain_edit, engine, registries, rename, reports
+from analysis.sim.connection import open_run, open_scenario
 from analysis.sim.loader import LoadError, LoadResult
 
 ALICE_DIES = "alice,70,,,,,,"  # born 1965-03-15: final month 2035-03
@@ -331,6 +332,25 @@ def test_a_relatives_bequest_comes_into_the_household_at_her_death(
         ("grandma", "designated", 20_000_000)]
 
 
+
+def test_a_bequest_coming_in_keeps_the_income_report_adding_up(
+    grandma: Callable[[str], None], write_lifespans: Callable[..., None],
+    run_test_copy: Callable[[], Path], test_data_dir: Path,
+) -> None:
+    grandma(BROKERAGE)
+    write_lifespans(GRANDMA_DIES)
+    run = run_test_copy()
+    with open_scenario(test_data_dir, "retire_alice") as scenario, \
+            open_run(run, scenario, scenarios_dir=test_data_dir / "scenarios") as rc:
+        story = reports.flows_by_year(rc, "income", after_tax=False)
+    year = story.loc[2032]
+    # Money back out of a gift account is a negative gift: net worth rose by it.
+    assert year[reports.GIFTS_AND_BEQUESTS] == pytest.approx(-200_000)
+    assert year[reports.NET_WORTH_CHANGE] == pytest.approx(
+        year[reports.ECONOMIC_INCOME] - year["tax_paid"] - year["spending"]
+        - year[reports.GIFTS_AND_BEQUESTS], abs=0.01)
+
+
 def test_a_relatives_bequest_skips_an_heir_who_died_first(
     heirs: None, grandma: Callable[[str], None], update_account: Callable[..., None],
     write_chain: Callable[..., None], write_lifespans: Callable[..., None],
@@ -352,3 +372,72 @@ def test_a_relatives_account_cant_be_taken_over_by_the_household(
     grandma("alice")
     with pytest.raises(LoadError, match="can't take over an account outside the household"):
         load_test_copy()
+
+
+def test_a_dead_heir_outside_the_household_is_skipped_too(
+    heirs: None, add_person: Callable[..., None], write_lifespans: Callable[..., None],
+    update_account: Callable[..., None], write_chain: Callable[..., None],
+    run_test_copy: Callable[[], Path],
+) -> None:
+    add_person("eve", birthdate="1990-01-01")
+    write_chain("brokerage_heirs", "eve,,", "dana,,")
+    update_account(BROKERAGE, owner="alice", beneficiary="brokerage_heirs")
+    write_lifespans(ALICE_DIES, BILL_DIES, "eve,40,,,,,,")  # Eve dies in 2030
+    assert _legs(run_test_copy()) == [(ALICE_FINAL, BROKERAGE, "dana", registries.BEQUEST)]
+
+
+def test_a_contingent_spouse_reached_by_no_money_does_not_take_the_roth_as_their_own(
+    heirs: None, write_lifespans: Callable[..., None], update_account: Callable[..., None],
+    write_chain: Callable[..., None], load_test_copy: Callable[[], LoadResult],
+) -> None:
+    def roth_heirs(*steps: str) -> dict[str, frozenset[str]]:
+        write_chain("alice_roth_heirs", *steps)
+        update_account("Asset_Roth_Alice", beneficiary="alice_roth_heirs")
+        write_lifespans(ALICE_DIES, BILL_DIES)
+        with closing(sqlite3.connect(load_test_copy().intent_path)) as con:
+            return engine._inheritance_plan(
+                con, engine._household(con), engine._load_chain_graph(con)).roth_heirs
+
+    # Dana takes all of it, so Bill's Roth, a later step, receives nothing.
+    assert roth_heirs("dana,,", "Asset_Roth_Bill,default,") == {}
+    assert roth_heirs("Asset_Roth_Bill,default,", "dana,,") == {"alice": frozenset({"bill"})}
+
+
+@pytest.mark.parametrize(("estate", "problem"), [
+    ("Asset_Savings", "reaches no one outside the household"),
+    ("dana", None),
+])
+def test_an_estate_must_reach_someone_outside_the_household(
+    estate: str, problem: str | None, heirs: None, set_scenario_meta: Callable[..., None],
+    load_test_copy: Callable[[], LoadResult],
+) -> None:
+    set_scenario_meta(estate=estate)
+    if problem is None:
+        load_test_copy()
+        return
+    with pytest.raises(LoadError, match=problem):
+        load_test_copy()
+
+
+def test_an_outside_party_has_one_account_named_by_their_id(
+    heirs: None, retire_alice_csv: Callable[[str], Path], load_test_copy: Callable[[], LoadResult],
+) -> None:
+    path = retire_alice_csv("accounts.csv")
+    accounts = pd.read_csv(path, dtype=str, keep_default_na=False)
+    accounts.loc[len(accounts)] = {
+        **dict.fromkeys(accounts.columns, ""), "name": "dana_college", "kind": "expense",
+        "subkind": "gift", "owner": "dana", "meta_json": "{}"}
+    accounts.to_csv(path, index=False)
+    with pytest.raises(LoadError, match=r"dana_college.*one account is named by their id"):
+        load_test_copy()
+
+
+def test_a_stand_in_with_no_kind_stays_in_the_household(
+    add_person: Callable[..., None], update_account: Callable[..., None],
+    load_test_copy: Callable[[], LoadResult],
+) -> None:
+    # A custodial account's owner, say: no role and no kind, so not an heir.
+    add_person("kids", kind="")
+    update_account("Asset_Savings", owner="kids")
+    with closing(sqlite3.connect(load_test_copy().intent_path)) as con:
+        assert con.execute("SELECT 1 FROM account WHERE name = 'kids'").fetchall() == []

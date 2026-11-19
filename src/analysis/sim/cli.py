@@ -18858,12 +18858,12 @@ def _check_sex(text: str) -> str:
 
 
 def _check_person_kind(text: str) -> str:
-    """Blank (a person), or one of PERSON_KINDS; a person is written blank."""
+    """Blank (someone in the household), or one of PERSON_KINDS (outside it)."""
     kind = text.strip().lower()
     if kind and kind not in registries.PERSON_KINDS:
         raise click.ClickException(
             f"kind must be one of {list(registries.PERSON_KINDS)} or blank: {text!r}")
-    return "" if kind == registries.DEFAULT_PERSON_KIND else kind
+    return kind
 
 
 def _person_fields(
@@ -18908,8 +18908,9 @@ def _person_fields(
             )
         if kind is None and role.strip() in ("", _NO_ROLE):
             kind = _prompt_with_completion(
-                "kind (person, trust or charity)", list(registries.PERSON_KINDS),
-                default=current.get("kind") or registries.DEFAULT_PERSON_KIND,
+                "kind (person, trust or charity: outside the household, an heir; "
+                "blank for a stand-in such as joint)", list(registries.PERSON_KINDS),
+                default=current.get("kind") or "",
             )
         if meta_json is None:
             meta_json = click.prompt("meta_json", default=current.get("meta_json") or "{}")
@@ -18947,7 +18948,8 @@ _PERSON_OPTIONS = (
     click.option("--role", default=None,
                  help="primary, secondary, or another role; '' for none."),
     click.option("--kind", default=None,
-                 help="person, trust or charity ('' for person); reporting only."),
+                 help="person, trust or charity: someone outside the household (an heir), "
+                      "with no role; '' for someone in it."),
     click.option("--meta-json", default=None, help="JSON metadata (default {})."),
     click.option("--scenario", type=completion.SCENARIO, default=None,
                  help="Scenario checked first (default: the current one); "

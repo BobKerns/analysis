@@ -1245,11 +1245,16 @@ class RunConnection(Connection):
 
     def expense_events(self) -> pd.DataFrame:
         """Transfers into expense accounts, and a tax refund out of one
-        (#568) as a negative transfer into it, so a tax expense nets to what
-        the year cost."""
+        (#568) or money out of a gift account (#274) as a negative transfer
+        into it, so a tax expense nets to what the year cost, and gifts to
+        what stayed given."""
         into = self.items("transfer_event", to_kind="expense")
-        back = self.items("transfer_event", from_kind="expense", reason_kind="tax")
-        back = back[back["to_kind"] != "expense"]
+        back = self.items("transfer_event", from_kind="expense")
+        # A tax refund (#568), or money coming back out of a gift account
+        # (#274: a loan repaid, an outside party's bequest to the household,
+        # or on to another outside party, whose own gift then nets to nothing).
+        back = back[((back["reason_kind"] == "tax") & (back["to_kind"] != "expense"))
+                    | (back["from_subkind"] == registries.OUTSIDE_ACCOUNT_SUBKIND)]
         if back.empty:
             return into
         back = back.copy()

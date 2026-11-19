@@ -902,9 +902,10 @@ account, the household's last death), the account goes where its optional
 - **A person in the household, or `joint`:** they take it over the same way.
   A retirement account can pass only to a person.
 - **A person outside the household** (a child, a trust, a charity): the
-  money leaves the household. Add them to `persons.csv` with no role
-  (`sim person add dana --role '' --birthdate ''`, and `--kind trust` or
-  `--kind charity` when that is what they are). Each such person gets an
+  money leaves the household. Add them to `persons.csv` with no role and a
+  `kind` (`sim person add dana --role '' --birthdate '' --kind person`, or
+  `--kind trust` or `--kind charity`); a row with neither stays a stand-in
+  in the household. Each such person gets an
   account of their own, named by their id. What lands there, as a bequest
   or as a gift you schedule while alive, is out of net worth but still
   shown: the income report lists it as `gifts_and_bequests`, apart from

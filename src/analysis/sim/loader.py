@@ -2712,7 +2712,7 @@ def _validate_birthdates(rows: list[dict[str, str]], issues: list[str]) -> None:
                 f"{where} ({row.get('id') or '?'}): kind must be one of "
                 f"{list(registries.PERSON_KINDS)} or blank (got '{kind}')"
             )
-        elif kind not in ("", registries.DEFAULT_PERSON_KIND) and (
+        elif kind not in ("", "person") and (
                 row.get("role") or "").strip() in registries.PERSON_ROLES:
             issues.append(
                 f"{where} ({row.get('id') or '?'}): a {row['role'].strip()} member of the "
@@ -3092,11 +3092,13 @@ def _validate_lot_money(
 
 def outside_parties(persons: Iterable[Mapping[str, str]]) -> list[str]:
     """The ids of everyone outside the household (#274): a persons.csv row
-    with no role that isn't the household's own pseudo-person (``joint``)."""
+    with a ``kind`` (person, trust or charity) and no role. Outside is opted
+    into: a row with neither (``joint``, a custodial account's owner) is a
+    stand-in in the household, and may own its accounts."""
     return [
         p.get("id", "") for p in persons
         if p.get("id") and p.get("id") != "joint" and not (p.get("role") or "").strip()
-        and not (_safe_json(p.get("meta_json")) or {}).get("household")
+        and (p.get("kind") or "").strip()
     ]
 
 
@@ -3118,9 +3120,16 @@ def _add_outside_accounts(
         name = a.get("name", "")
         if owner in outside and (a.get("kind"), a.get("subkind")) != (kind, subkind):
             issues.append(
-                f"{where} ({name}): its owner {owner!r} is outside the household (no role "
-                f"in persons.csv), so it must be a {kind} account of subkind {subkind}, "
+                f"{where} ({name}): its owner {owner!r} is outside the household (a kind "
+                f"and no role in persons.csv), so it must be a {kind} account of subkind {subkind}, "
                 "which net worth leaves out"
+            )
+        elif owner in outside and name != owner:
+            # One account each: the engine knows an outside party's account by
+            # its name being its owner's.
+            issues.append(
+                f"{where} ({name}): its owner {owner!r} is outside the household, whose "
+                f"one account is named by their id ({owner!r})"
             )
         elif name in outside and owner != name:
             issues.append(
@@ -3248,6 +3257,13 @@ def _validate_inheritance(
             issues.append(f"{label}: {_ref_problem(estate, leaves, frozenset(chains))}")
         elif problem := target_problem(estate):
             issues.append(f"{label}: {problem}")
+        elif not any(leaves.account_of.get(leaf, leaf) in outside for leaf in (
+                _chain_leaf_names(estate, chains) if estate in chains else [estate])):
+            # At the last death every household account is a dead owner's,
+            # which a sweep skips, so only someone outside can take it.
+            issues.append(f"{label}: '{estate}' reaches no one outside the household, so "
+                          "nothing could go to it at the last death; name an heir's account, "
+                          "or a chain with one")
         else:
             # F (#274): the estate settles debts before heirs see anything,
             # by its own liability steps; the engine pays none on its own.
@@ -7169,7 +7185,7 @@ def _write_intent(
                 (p.get("sex") or "").strip() or None,
                 p.get("role") or None,
                 p.get("meta_json") or "{}",
-                (p.get("kind") or "").strip() or registries.DEFAULT_PERSON_KIND,
+                (p.get("kind") or "").strip() or None,
             ),
         )
     counts["person"] = len(persons)

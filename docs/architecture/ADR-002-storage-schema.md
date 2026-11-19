@@ -132,9 +132,9 @@ CREATE TABLE person (
     sex         TEXT,  -- 'f' or 'm', or NULL; a life_table lifespan needs it
     role        TEXT,
     meta_json   TEXT NOT NULL DEFAULT '{}',
-    -- #274: what the person is, for reports: one with no role is outside
-    -- the household and gets an account of their own.
-    kind        TEXT NOT NULL DEFAULT 'person' CHECK (kind IN ('person','trust','charity'))
+    -- #274: set on someone with no role, outside the household (an heir, a
+    -- trust, a charity), who gets an account of their own; NULL in it.
+    kind        TEXT CHECK (kind IN ('person','trust','charity'))
 );
 
 -- Names for the symbols lots hold (data repo securities.csv); shared reference

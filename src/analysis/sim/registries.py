@@ -276,11 +276,12 @@ RETIREMENT_SUBKIND = "retirement"
 # such as `joint`, or someone who only appears (an ancestor, an heir).
 PERSON_ROLES: frozenset[str] = frozenset({"primary", "secondary"})
 
-# persons.csv `kind` (#274): what an outside party is, for reports only; the
-# engine treats the three alike. Blank is `person`. A household member
-# (PERSON_ROLES) is a person.
+# persons.csv `kind` (#274): set, on a row with no role, it marks someone
+# outside the household (an heir, a trust, a charity), and says which for
+# reports; the engine treats the three alike. Blank is someone in the
+# household: a member, or a stand-in such as `joint` or a custodial account's
+# owner. A household member (PERSON_ROLES) may say `person`, nothing else.
 PERSON_KINDS: tuple[str, ...] = ("person", "trust", "charity")
-DEFAULT_PERSON_KIND = "person"
 
 # The account the loader gives each outside party (#274): an expense account
 # of this subkind, named by the party's id and owned by them, so a gift or a
