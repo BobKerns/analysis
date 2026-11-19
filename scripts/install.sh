@@ -188,7 +188,8 @@ main() {
     fi
     say ""
     say "Installed. Open a new terminal window, then:"
-    say "    source $shared/sim/activate-analysis"
+    # Through the checkout's link, so the code activated is this checkout's.
+    say "    source $code/data/shared/sim/activate-analysis"
     say "    sim run"
     say "To update later, run the same install line again."
 }
