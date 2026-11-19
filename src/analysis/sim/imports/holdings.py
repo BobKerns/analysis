@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
 
 from analysis.sim.imports.forms import UNLISTED, Holding, Snapshot, format_dollars
-from analysis.sim.imports.mapping import AccountMap, AccountTarget
+from analysis.sim.imports.mapping import AccountMap, AccountTarget, LotPart, divide
 from analysis.sim.registries import CASH_SYMBOL, DEFAULT_LOT, RETIREMENT_LOT_SUBKINDS
 from analysis.sim.types import INVESTMENT_ASSET_SUBKINDS, InvestmentAssetSubkind
 from analysis.sim.units import dollars_to_cents
@@ -78,6 +78,9 @@ class HoldingsPlan:
     add them together into that lot, or keep each as a lot of its own?"""
     new: list[tuple[Holding, AccountTarget]] = field(default_factory=list)
     """Holdings with a symbol none of the account's lots has."""
+    to_split: list[tuple[Holding, AccountTarget]] = field(default_factory=list)
+    """Holdings whose mapping divides them among lots, with no split that
+    fits their number."""
     skipped: list[str] = field(default_factory=list)
     pruned: list[str] = field(default_factory=list)
     """Lots emptied because their account's file no longer has them."""
@@ -92,7 +95,8 @@ class HoldingsPlan:
     @property
     def complete(self) -> bool:
         """Whether every holding found a place (or was skipped on purpose)."""
-        return not (self.unmapped or self.unknown or self.no_lot or self.undecided or self.new)
+        return not (self.unmapped or self.unknown or self.no_lot or self.undecided or self.new
+                    or self.to_split)
 
 
 @dataclass
@@ -180,6 +184,7 @@ def plan(
     split: Collection[str] = (), fresh: Collection[int] = (), prune: bool = False,
     prices: Mapping[str, Decimal] | None = None, recount: Collection[int] = (),
     keep_count: Collection[int] = (),
+    splits: Mapping[tuple[str, str], Sequence[LotPart]] | None = None,
 ) -> HoldingsPlan:
     """What importing ``snapshot`` would change.
 
@@ -261,6 +266,16 @@ def plan(
     A holding with no symbol, where the mapping names no lot, goes to the
     account's lot with no symbol when it has one, and not into a fund's.
 
+    **A number divided among lots.** A mapping whose action is ``split``
+    says the file's one number is several lots' together, and ``splits``
+    (``lot_splits.csv``) how: by outside account and asset, each lot's part.
+    The holdings of one outside account and asset are divided as their
+    total. Where the split fits it (``mapping.divide``), each part is a
+    holding of its own, with no share count or acquisition date, that goes
+    to its lot as if its mapping named that lot; a part for a lot the
+    account doesn't have is ``no_lot``. With no split, or one that doesn't
+    fit, the holdings are ``to_split``.
+
     A liability is stored as a non-negative debt, so its total is negated.
     """
     result = HoldingsPlan(rows=[dict(row) for row in lots])
@@ -280,11 +295,12 @@ def plan(
     based: set[str] = set()
     # Each (account, symbol) the file lists by tax lot: what it has of the
     # symbol with no date is then no tax lot's, whatever order they come in.
+    holdings = _divided(snapshot.holdings, account_map, splits or {})
     tax_lotted = {
-        (target.account, holding.asset.upper()) for holding in snapshot.holdings
+        (target.account, holding.asset.upper()) for holding in holdings
         if holding.acquired is not None and holding.asset
         and (target := account_map.lookup(holding.account, holding.asset)) is not None and not target.lot}
-    for holding in snapshot.holdings:
+    for holding in holdings:
         target = account_map.lookup(holding.account, holding.asset)
         if target is None:
             result.unmapped.append(holding)
@@ -299,6 +315,12 @@ def plan(
         if year_end and not is_investment_asset(*info):
             result.ineligible.append(target.account)
             continue
+        if target.action == "split":
+            if not holding.lot:
+                result.to_split.append((holding, target))
+                continue
+            # One part of the file's number, which names its lot.
+            target = AccountTarget("map", target.account, holding.lot, target.note)
         of_account = [i for i, row in enumerate(result.rows) if row.get("account_name") == target.account]
         if holding.account in snapshot.complete:
             full.add(target.account)
@@ -491,10 +513,10 @@ def plan(
     listed |= {target.account for _, target in result.new} | full
     # An account that another outside account fills too, one this file
     # doesn't have: the file then doesn't say all that the account holds.
-    present = {holding.account for holding in snapshot.holdings}
+    present = {holding.account for holding in holdings}
     shared: dict[str, set[str]] = {}
     for (outside, _), target in account_map.entries.items():
-        if target.action == "map" and outside not in present:
+        if target.action != "skip" and outside not in present:
             shared.setdefault(target.account, set()).add(outside)
     unsaid: set[str] = set()
     for index, row in enumerate(result.rows):
@@ -597,6 +619,34 @@ def plan(
             "aren't in the file were left as they are; import the accounts together to empty them"
             for account in sorted(unsaid))
     return result
+
+
+def _divided(
+    holdings: Sequence[Holding], account_map: AccountMap,
+    splits: Mapping[tuple[str, str], Sequence[LotPart]],
+) -> list[Holding]:
+    """``holdings``, with those a ``split`` mapping covers replaced by their
+    parts where the saved split fits their total, in the first one's place."""
+    groups: dict[tuple[str, str], list[Holding]] = {}
+    for holding in holdings:
+        target = account_map.lookup(holding.account, holding.asset)
+        if target is not None and target.action == "split" and not holding.lot:
+            groups.setdefault((holding.account, holding.asset), []).append(holding)
+    found: list[Holding] = []
+    for holding in holdings:
+        key = (holding.account, holding.asset)
+        covered = groups.get(key)
+        if covered is None or holding.lot:
+            found.append(holding)
+        elif holding is covered[0]:
+            shares = divide(splits.get(key, ()), sum(each.value_cents for each in covered))
+            # A part is money and, at most, its basis: the file's share
+            # count and dates are the whole's, and no one part's.
+            found.extend(covered if shares is None else (
+                dataclasses.replace(holding, value_cents=cents, quantity=None, acquired=None,
+                                    cost_basis_cents=part.basis_cents, lot=part.lot)
+                for part, cents in shares))
+    return found
 
 
 def roth_basis_note(account: str, lot: str) -> str:
