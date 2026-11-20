@@ -10,7 +10,7 @@ summary = """
 Windowsの人向けです。Windows以外の人は、「次へ」で第2回へ進んでください。\
 アリスが、Windowsに組み込まれたLinuxであるWSLをオンにして、\
 第2回の出発点になるターミナルを用意します。セットアップガイド(英語): \
-https://github.com/BobKerns/analysis/blob/main/docs/SETUP.md#windows-set-up-wsl-first"""
+https://github.com/BobKerns/zabob-retirement/blob/main/docs/SETUP.md#windows-set-up-wsl-first"""
 contents = [
   "なぜWSLか",
   "オンにする(wsl --install)",

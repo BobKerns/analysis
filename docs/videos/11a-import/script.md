@@ -13,7 +13,7 @@ what each account holds, so they stop typing numbers into the plan. They \
 export two reports and two downloads, tell the simulator once which of their \
 accounts, lots and categories each outside name means, and from then on an \
 import is one command. Guide: \
-https://github.com/BobKerns/analysis/blob/main/docs/guides/importing-data.md"""
+https://github.com/BobKerns/zabob-retirement/blob/main/docs/guides/importing-data.md"""
 contents = [
   "Match each name once",
   "Exporting the reports and downloads",

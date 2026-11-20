@@ -4,7 +4,7 @@
 - **Date:** 2026-10-28
 - **Supersedes:** —
 - **Amended:** see [Amendments](#amendments) at the end.
-- **Related:** [ADR-006](ADR-006-ensemble-scenarios.md) (ensembles: keyed draws, batches, member 0, pairing, the series store and the draws database), [ADR-004](ADR-004-reproducibility-and-activation.md) §11-12 (what can't have changed; the background builder), [ADR-007](ADR-007-sensitivity-analysis.md) (sensitivity), [ADR-003](ADR-003-registries-and-csv-schemas.md) §4.5 (`scenario.csv`), issues [#292](https://github.com/BobKerns/analysis/issues/292) (this design; decisions recorded there) and [#340](https://github.com/BobKerns/analysis/issues/340) (a compound-episode template and the history weights).
+- **Related:** [ADR-006](ADR-006-ensemble-scenarios.md) (ensembles: keyed draws, batches, member 0, pairing, the series store and the draws database), [ADR-004](ADR-004-reproducibility-and-activation.md) §11-12 (what can't have changed; the background builder), [ADR-007](ADR-007-sensitivity-analysis.md) (sensitivity), [ADR-003](ADR-003-registries-and-csv-schemas.md) §4.5 (`scenario.csv`), issues [#292](https://github.com/BobKerns/zabob-retirement/issues/292) (this design; decisions recorded there) and [#340](https://github.com/BobKerns/zabob-retirement/issues/340) (a compound-episode template and the history weights).
 
 ## Context
 
@@ -88,8 +88,8 @@ The draws database (ADR-006 §6) is kept per component. `member` gains `componen
 - Positive: a mixture of worlds costs no simulation beyond the components themselves; every report, chart and notebook works on it unchanged; it pairs with its components' parent; trying other weights takes seconds.
 - Negative: every component needs at least the pool's member count, so components that exist only to feed a pool cost their count times the pool's size in simulation; a pool's members can't be reweighted (importance sampling) without weighted statistics in every report.
 - Limits:
-  - **One component, one world.** A member has only the episodes its component carries, and history often has two or more in 30 years (`docs/guides/ensembles.md`), so a pool of single-episode components has a probably optimistic deepest tail. A component built from two templates, the second dated from the first, adds a compound world without code: `t_crisis_then_spike` ([#340](https://github.com/BobKerns/analysis/issues/340)) is one.
-  - **A pool of plans assumes the plan is fixed in advance.** Weighting alternative plans answers "what's my risk if I don't yet know which plan I'll follow", but only when the choice doesn't depend on how the future goes; a choice that responds to the path is a responsive strategy ([#326](https://github.com/BobKerns/analysis/issues/326)), not a mixture. To choose between plans, compare them; a pool hides the choice.
+  - **One component, one world.** A member has only the episodes its component carries, and history often has two or more in 30 years (`docs/guides/ensembles.md`), so a pool of single-episode components has a probably optimistic deepest tail. A component built from two templates, the second dated from the first, adds a compound world without code: `t_crisis_then_spike` ([#340](https://github.com/BobKerns/zabob-retirement/issues/340)) is one.
+  - **A pool of plans assumes the plan is fixed in advance.** Weighting alternative plans answers "what's my risk if I don't yet know which plan I'll follow", but only when the choice doesn't depend on how the future goes; a choice that responds to the path is a responsive strategy ([#326](https://github.com/BobKerns/zabob-retirement/issues/326)), not a mixture. To choose between plans, compare them; a pool hides the choice.
   - No pools of pools, and no sensitivity batch as a component.
 
 ## Open questions deferred
@@ -101,4 +101,4 @@ The draws database (ADR-006 §6) is kept per component. `member` gains `componen
 
 Each entry changed this ADR's design. The sections it names were rewritten in place to describe the current design; git history has the earlier text.
 
-- [#340](https://github.com/BobKerns/analysis/issues/340): a compound episode template exists, so pool members can meet two episodes (Consequences, Limits).
+- [#340](https://github.com/BobKerns/zabob-retirement/issues/340): a compound episode template exists, so pool members can meet two episodes (Consequences, Limits).
