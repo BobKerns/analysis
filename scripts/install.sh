@@ -1,5 +1,5 @@
 #!/bin/sh
-# Install the simulator with one line, no git knowledge needed (#308):
+# Install Zabob Retirement with one line, no git knowledge needed (#308):
 #
 #   curl -fsSL https://raw.githubusercontent.com/BobKerns/analysis/main/scripts/install.sh | sh
 #
@@ -144,7 +144,7 @@ main() {
     # A terminal for questions, even when stdin is this script.
     if (: </dev/tty) 2>/dev/null; then tty=/dev/tty; else tty=/dev/null; fi
 
-    say "This installs the retirement simulator."
+    say "This installs Zabob Retirement, a retirement simulator."
     code=$(full_path "${code:-$(ask "Where should the code go?" "$HOME/retirement/analysis")}")
     need_git
     get_code
