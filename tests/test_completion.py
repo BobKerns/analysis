@@ -7,9 +7,9 @@ from pathlib import Path
 import click
 from click.testing import CliRunner
 
-from analysis.sim import names
-from analysis.sim.cli import sim_group_command
-from analysis.sim.completion import NameType
+from zabob.retirement.sim import names
+from zabob.retirement.sim.cli import sim_group_command
+from zabob.retirement.sim.completion import NameType
 
 
 def _complete(data_dir: Path | None, line: str) -> list[str]:

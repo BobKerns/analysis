@@ -37,7 +37,7 @@ image=analysis-videos
 # The image is built from docker/videos alone; a change to a file there
 # rebuilds it.
 context=docker/videos
-label=analysis.videos.inputs
+label=zabob.retirement.videos.inputs
 env_volume=analysis-videos-env
 # The checkout, mounted read-only over the image's /repo: piece by piece,
 # so the host's .venv (perhaps for another OS) stays out.
@@ -124,10 +124,10 @@ fi
 
 case $command in
     build)
-        exec "${docker_run[@]}" "$image" python -m analysis.videos build "docs/videos/$name" --out /out "$@"
+        exec "${docker_run[@]}" "$image" python -m zabob.retirement.videos build "docs/videos/$name" --out /out "$@"
         ;;
     check)
-        exec "${docker_run[@]}" "$image" python -m analysis.videos check ${folders[@]+"${folders[@]}"}
+        exec "${docker_run[@]}" "$image" python -m zabob.retirement.videos check ${folders[@]+"${folders[@]}"}
         ;;
     shell)
         exec "${docker_run[@]}" -w /data "$image" bash "$@"

@@ -13,8 +13,8 @@ from pathlib import Path
 import git
 import pytest
 
-from analysis.sim import builder, freshness, locks, price_schedule, provenance
-from analysis.sim.builder import BuilderPaths
+from zabob.retirement.sim import builder, freshness, locks, price_schedule, provenance
+from zabob.retirement.sim.builder import BuilderPaths
 
 
 
@@ -352,7 +352,7 @@ def test_a_reader_waits_for_a_queued_build(
 def test_the_builder_never_queues_a_disabled_scenario(
     daemon: builder._Daemon, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from analysis.sim.loader import DISABLE_FILE
+    from zabob.retirement.sim.loader import DISABLE_FILE
 
     daemon.scan()
     assert "base" in daemon.queue and "base" not in daemon.cancelled
@@ -419,7 +419,7 @@ def test_an_edit_cancels_the_build_and_its_dependents_wait_for_a_commit(
     the build is cancelled, not requeued, until the edit is committed."""
     from click.testing import CliRunner
 
-    from analysis.cli import main
+    from zabob.retirement.cli import main
 
     data_repo = git.Repo(daemon.data_dir.parent)
     commit_files(data_repo, {}, "the scenarios")
@@ -429,7 +429,7 @@ def test_an_edit_cancels_the_build_and_its_dependents_wait_for_a_commit(
     daemon.start_next(("t1",))
     build = daemon.build
     assert build is not None and build.scenario == "base"
-    from analysis.sim import loader
+    from zabob.retirement.sim import loader
 
     waited: list[str] = []
     monkeypatch.setattr(loader, "_await_fresh", lambda _runs, name, *_mode: waited.append(name))
@@ -509,7 +509,7 @@ def test_looking_up_a_scenario_never_waits_for_its_build(
 ) -> None:
     """#309: the lookup hands back the run as something to wait on; only
     asking for the run itself waits."""
-    from analysis.sim import loader
+    from zabob.retirement.sim import loader
 
     paths = running_daemon
     config = builder.read_config(paths)
@@ -533,7 +533,7 @@ def test_looking_up_a_scenario_never_waits_for_its_build(
 def test_a_builds_output_is_logged_indented_under_its_record(
     daemon: builder._Daemon, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from analysis.sim import builder_log
+    from zabob.retirement.sim import builder_log
 
     monkeypatch.setattr(builder, "_sim_executable", lambda: [
         "sh", "-c", 'echo "loading"; echo "oops" >&2; exit 3', "sim"])
@@ -552,7 +552,7 @@ def test_a_builds_output_is_logged_indented_under_its_record(
 def test_a_cancelled_builds_output_stays_under_its_record(
     daemon: builder._Daemon, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from analysis.sim import builder_log
+    from zabob.retirement.sim import builder_log
 
     monkeypatch.setattr(builder, "_sim_executable", lambda: [
         "sh", "-c", 'echo "started"; sleep 30', "sim"])
@@ -691,7 +691,7 @@ def test_each_step_runs_its_own_command(daemon: builder._Daemon) -> None:
 def test_a_sensitivity_batch_is_made_again_with_its_quantiles(
     daemon: builder._Daemon, fake_state: Callable[..., Path],
 ) -> None:
-    from analysis.sim.ensemble import write_batch_manifest
+    from zabob.retirement.sim.ensemble import write_batch_manifest
 
     batch = daemon.paths.runs_dir / "e" / "sensitivity" / "2026-01-01T000000Z"
     batch.mkdir(parents=True)
@@ -708,7 +708,7 @@ def test_which_steps_an_ensemble_needs(
     store needs one; an ensemble needs a sensitivity batch unless its latest
     one is current, whatever its Monte Carlo results are, so a reader of a
     stale sensitivity batch always has a job to wait on."""
-    from analysis.sim import scenario, series_db
+    from zabob.retirement.sim import scenario, series_db
 
     runs = daemon.paths.runs_dir
     batch = runs / "e" / "monte-carlo" / "2026-01-01T000000Z"
@@ -829,7 +829,7 @@ def test_a_behind_main_is_noted_once_where_the_builder_builds_from_it(
 def test_the_daemon_fetches_prices_when_due_and_waits_for_the_fetch(
     daemon: builder._Daemon, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from analysis.sim import price_schedule
+    from zabob.retirement.sim import price_schedule
 
     lines: list[str] = []
     daemon.echo = lines.append
@@ -851,7 +851,7 @@ def test_the_daemon_fetches_prices_when_due_and_waits_for_the_fetch(
 def test_the_daemon_rolls_scenarios_when_due_and_waits_for_the_roll(
     daemon: builder._Daemon, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from analysis.sim import roll_schedule
+    from zabob.retirement.sim import roll_schedule
 
     lines: list[str] = []
     daemon.echo = lines.append
@@ -876,7 +876,7 @@ def test_the_daemon_merges_fetched_prices_only_between_builds(
     from datetime import date, timedelta
     from decimal import Decimal
 
-    from analysis.sim import price_schedule
+    from zabob.retirement.sim import price_schedule
 
     class OneClose:
         name = "one"

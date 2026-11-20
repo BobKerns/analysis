@@ -10,10 +10,10 @@ from typing import Any
 
 import pytest
 
-from analysis.videos import script as scripts
-from analysis.videos import youtube
-from analysis.videos.commands import check
-from analysis.videos.script import ScriptError
+from zabob.retirement.videos import script as scripts
+from zabob.retirement.videos import youtube
+from zabob.retirement.videos.commands import check
+from zabob.retirement.videos.script import ScriptError
 
 
 def _video(root: Path, name: str, *, youtube_toml: str, scenes: tuple[str, ...] = ("title", "one", "two", "end"),
@@ -242,7 +242,7 @@ def test_build_writes_the_scene_lengths_and_the_description(videos_root: Path, r
                                                              tmp_path: Path) -> None:
     from playwright.sync_api import Error
 
-    from analysis.videos.build import build
+    from zabob.retirement.videos.build import build
 
     folder = _video(videos_root, "01-x", youtube_toml=YT, scenes=("title", "end"))
     try:

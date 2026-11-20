@@ -11,8 +11,8 @@ from pathlib import Path
 import pytest
 from click.testing import CliRunner, Result
 
-from analysis.cli import main
-from analysis.sim.loader import current_scenario_path, read_current_scenario
+from zabob.retirement.cli import main
+from zabob.retirement.sim.loader import current_scenario_path, read_current_scenario
 
 
 def _sim(data_dir: Path, *args: str, input: str | None = None) -> Result:

@@ -7,7 +7,7 @@
 Exploratory notebooks live here.
 
 Notes:
-- Keep reusable logic in the `src/analysis/` package, not in notebooks.
+- Keep reusable logic in the `src/zabob/retirement/` package, not in notebooks.
 - Read inputs from `../data/` and write generated artifacts to `../out/`.
 - Treat `../state/` as persistent runtime state used by CLI and notebooks.
 
@@ -81,7 +81,7 @@ to see the real (usually empty) diff. See
 ## Writing a widget for a notebook
 
 Show a widget with `CONNECTIONS.show(fn, ...)` or `CONNECTIONS.show_scenario(fn, ...)`
-(`analysis.sim.notebook_ui.pickers`); they own the draw and redraw logic, so a widget
+(`zabob.retirement.sim.notebook_ui.pickers`); they own the draw and redraw logic, so a widget
 function should not.
 
 - **Return the widget** (or return `None` if the function displays things itself). Do not

@@ -14,9 +14,9 @@ import pandas as pd
 import pytest
 from ipywidgets import widgets
 
-from analysis.sim import setup_listings
-from analysis.sim.connection import open_scenario
-from analysis.sim.notebook_ui.scenario_plots import (
+from zabob.retirement.sim import setup_listings
+from zabob.retirement.sim.connection import open_scenario
+from zabob.retirement.sim.notebook_ui.scenario_plots import (
     SCHEDULED_OPTIONAL_COLUMNS,
     scheduled_styler,
     show_calendar_view,
@@ -26,9 +26,9 @@ from analysis.sim.notebook_ui.scenario_plots import (
     show_tags,
     show_ytd_view,
 )
-from analysis.sim.readme import description_view
-from analysis.sim.notebook_ui.accounts_plots import show_account_setup
-from analysis.sim.notebook_ui.scenario_view import (
+from zabob.retirement.sim.readme import description_view
+from zabob.retirement.sim.notebook_ui.accounts_plots import show_account_setup
+from zabob.retirement.sim.notebook_ui.scenario_view import (
     calendar_view,
     manifest_view,
     UNUSED,
@@ -131,7 +131,7 @@ def test_leaf_rows_map_a_chain_name_to_its_account_and_lot(
 
 def test_show_chains_displays_the_lot_column(test_data_dir: Path, monkeypatch) -> None:
     shown = []
-    monkeypatch.setattr("analysis.sim.notebook_ui.scenario_plots.display",
+    monkeypatch.setattr("zabob.retirement.sim.notebook_ui.scenario_plots.display",
                         lambda styled, **_: shown.append(styled))
     with open_scenario(test_data_dir, "retire_alice") as scenario:
         show_chains(scenario)
@@ -171,7 +171,7 @@ def test_show_chains_rules_off_each_chain_and_flags_an_unused_one(
 ) -> None:
     _outer_chain(retire_alice_csv)
     shown = []
-    monkeypatch.setattr("analysis.sim.notebook_ui.scenario_plots.display",
+    monkeypatch.setattr("zabob.retirement.sim.notebook_ui.scenario_plots.display",
                         lambda styled, **_: shown.append(styled))
     with open_scenario(test_data_dir, "retire_alice") as scenario:
         show_chains(scenario)
@@ -411,7 +411,7 @@ def test_overview_tables_show_authored_text_not_html(
 ) -> None:
     """A description or an itemization's note is text: ``<pending>`` shows as
     written rather than vanishing as a tag."""
-    from analysis.sim.notebook_ui import scenario_plots
+    from zabob.retirement.sim.notebook_ui import scenario_plots
 
     (test_data_dir / "itemizations" / "fees.csv").write_text(
         "Item,Note <b>,Value\nclosing,<pending>,10.00\n", encoding="utf-8")
@@ -458,7 +458,7 @@ def overriding_child(
 def test_overview_views_say_where_each_row_is_defined(
     test_data_dir: Path, overriding_child: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from analysis.sim.notebook_ui import accounts_plots
+    from zabob.retirement.sim.notebook_ui import accounts_plots
 
     shown: list[object] = []
     monkeypatch.setattr(accounts_plots, "display", shown.append)
@@ -498,7 +498,7 @@ def test_sim_chain_list_says_a_chain_overrides_its_ancestors(
 ) -> None:
     from click.testing import CliRunner
 
-    from analysis.sim.cli import sim_group_command
+    from zabob.retirement.sim.cli import sim_group_command
 
     result = CliRunner().invoke(sim_group_command, [
         "chain", "list", "--scenario", "child", "--data-dir", str(test_data_dir)])
@@ -535,7 +535,7 @@ def test_manifest_view_names_the_run_file_the_notebooks_open(test_data_dir: Path
 def test_origins_are_dashes_when_a_row_is_gone_from_the_folders_since_the_load(
     test_data_dir: Path, overriding_child: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from analysis.sim.notebook_ui import accounts_plots
+    from zabob.retirement.sim.notebook_ui import accounts_plots
 
     shown: list[object] = []
     monkeypatch.setattr(accounts_plots, "display", shown.append)
@@ -556,7 +556,7 @@ def test_every_origin_is_a_dash_once_the_folders_differ_from_the_load(
     test_data_dir: Path, overriding_child: Path,
     scheduled_override: Callable[..., str], monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from analysis.sim.notebook_ui import accounts_plots
+    from zabob.retirement.sim.notebook_ui import accounts_plots
 
     shown: list[object] = []
     monkeypatch.setattr(accounts_plots, "display", shown.append)
@@ -613,7 +613,7 @@ def test_a_run_file_gone_since_it_was_found_has_no_stamp(tmp_path: Path) -> None
 def test_chain_origins_name_a_chain_with_two_files_in_one_folder(
     test_data_dir: Path, overriding_child: Path,
 ) -> None:
-    from analysis.sim import chain_edit
+    from zabob.retirement.sim import chain_edit
 
     source = overriding_child / "chains" / "source" / "asset_checking_liquidity.csv"
     destination = overriding_child / "chains" / "destination" / source.name

@@ -12,9 +12,9 @@ from pathlib import Path
 import pytest
 from click.testing import CliRunner
 
-from analysis.cli import main
-from analysis.sim import builder_log as blog
-from analysis.sim.retention import DEFAULT_RETENTION, RETENTION_FILENAME, parse_retention
+from zabob.retirement.cli import main
+from zabob.retirement.sim import builder_log as blog
+from zabob.retirement.sim.retention import DEFAULT_RETENTION, RETENTION_FILENAME, parse_retention
 
 
 @pytest.fixture

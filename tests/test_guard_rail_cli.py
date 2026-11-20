@@ -10,11 +10,11 @@ import pandas as pd
 import pytest
 from click.testing import CliRunner, Result
 
-from analysis.cli import main
-from analysis.sim import cli as sim_cli
-from analysis.sim import guard_rails as gr
-from analysis.sim.connection import RunConnection
-from analysis.sim.registries import GUARD_RAILS_CSV_HEADER
+from zabob.retirement.cli import main
+from zabob.retirement.sim import cli as sim_cli
+from zabob.retirement.sim import guard_rails as gr
+from zabob.retirement.sim.connection import RunConnection
+from zabob.retirement.sim.registries import GUARD_RAILS_CSV_HEADER
 
 
 def _report(run_file: Path, data_dir: Path, *args: str) -> Result:

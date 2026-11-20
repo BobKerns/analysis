@@ -1,4 +1,4 @@
-"""analysis.historical.charts (``analysis historical-charts``): the statistics
+"""zabob.retirement.historical.charts (``analysis historical-charts``): the statistics
 behind the century-of-rates charts, and that every chart draws."""
 
 from __future__ import annotations
@@ -8,7 +8,7 @@ import math
 import pandas as pd
 import pytest
 
-from analysis.historical import charts
+from zabob.retirement.historical import charts
 
 
 def by_year(values: dict[int, float]) -> pd.Series:

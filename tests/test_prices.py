@@ -11,9 +11,9 @@ import pandas as pd
 import pytest
 from click.testing import CliRunner
 
-from analysis.cli import main
-from analysis.sim import prices
-from analysis.sim.prices import PriceError, YahooProvider, fetch_prices, format_price, month_end_closes
+from zabob.retirement.cli import main
+from zabob.retirement.sim import prices
+from zabob.retirement.sim.prices import PriceError, YahooProvider, fetch_prices, format_price, month_end_closes
 
 
 class FakeProvider:
@@ -187,7 +187,7 @@ def test_fetched_files_feed_the_opening_balance(
 def test_check_compares_balances_with_the_start_price_and_the_latest_price(
     priced_lots: None, test_data_dir: Path, load_test_copy,
 ) -> None:
-    from analysis.sim.connection import ScenarioConnection
+    from zabob.retirement.sim.connection import ScenarioConnection
     load_test_copy()
     with ScenarioConnection(test_data_dir, "retire_alice") as scenario:
         frame = prices.check_prices(scenario).set_index("lot")
@@ -230,7 +230,7 @@ def test_http_get_verifies_with_the_system_trust_store(monkeypatch: pytest.Monke
 
     import truststore
 
-    from analysis.sim import prices
+    from zabob.retirement.sim import prices
 
     seen: dict[str, object] = {}
 
@@ -297,7 +297,7 @@ def test_other_connection_failures_still_say_unreachable() -> None:
 
 
 def test_the_default_yahoo_provider_uses_the_real_http_get() -> None:
-    from analysis.sim import prices
+    from zabob.retirement.sim import prices
 
     assert prices.YahooProvider()._get is prices._http_get
 

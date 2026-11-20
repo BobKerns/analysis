@@ -13,7 +13,7 @@ import git
 import pandas as pd
 import pytest
 
-from analysis.sim.loader import (
+from zabob.retirement.sim.loader import (
     DEFAULT_SCENARIO_NAME,
     DataDirtyRefused,
     LoadError,
@@ -24,7 +24,7 @@ from analysis.sim.loader import (
     resolve_scenario_name,
     write_current_scenario,
 )
-from analysis.sim.provenance import data_stamps
+from zabob.retirement.sim.provenance import data_stamps
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PROTOTYPE = REPO_ROOT / "prototype_data"
@@ -1067,7 +1067,7 @@ def test_scheduled_ytd_amount_and_preroll_mutually_exclusive(tmp_path: Path) -> 
 def test_on_death_requires_tax_free(tmp_path: Path) -> None:
     import pandas as pd
 
-    from analysis.sim.registries import SCHEDULED_CSV_HEADER
+    from zabob.retirement.sim.registries import SCHEDULED_CSV_HEADER
 
     repo = tmp_path / "data"
     shutil.copytree(PROTOTYPE, repo)

@@ -12,9 +12,9 @@ import click
 import pytest
 from click.testing import CliRunner
 
-from analysis.cli import main
-from analysis.sim import cli
-from analysis.sim.retention import (
+from zabob.retirement.cli import main
+from zabob.retirement.sim import cli
+from zabob.retirement.sim.retention import (
     DEFAULT_RETENTION,
     RETENTION_FILENAME,
     Retention,

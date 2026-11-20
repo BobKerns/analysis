@@ -10,10 +10,10 @@ from pathlib import Path
 import pytest
 from click.testing import CliRunner, Result
 
-from analysis.cli import main
-from analysis.sim.connection import ScenarioConnection
-from analysis.sim.lifespan_curves import PersonLifespan, household, lifespan_figure, person_lifespans
-from analysis.sim.loader import LoadResult
+from zabob.retirement.cli import main
+from zabob.retirement.sim.connection import ScenarioConnection
+from zabob.retirement.sim.lifespan_curves import PersonLifespan, household, lifespan_figure, person_lifespans
+from zabob.retirement.sim.loader import LoadResult
 
 # Alice (f, born 1965-03) and Bill (m, born 1967-08) have a sex in the
 # prototype's persons.csv; joint doesn't. retire_alice starts 2026-05.
@@ -197,7 +197,7 @@ def test_the_terminal_figure_leaves_room_for_the_prompt(monkeypatch: pytest.Monk
     import os
     import shutil
 
-    from analysis.sim import cli
+    from zabob.retirement.sim import cli
 
     monkeypatch.setattr(shutil, "get_terminal_size", lambda *a, **k: os.terminal_size((200, 50)))
     cell = (10.0, 24.0)
@@ -218,7 +218,7 @@ def test_a_terminal_chart_is_no_wider_than_the_terminal_nor_too_large(
     import os
     import shutil
 
-    from analysis.sim import cli
+    from zabob.retirement.sim import cli
 
     monkeypatch.setattr(shutil, "get_terminal_size", lambda *a, **k: os.terminal_size((100, 50)))
     cell = (20.0, 48.0)  # a Retina terminal's 2x pixels: 288 dpi for 10pt text

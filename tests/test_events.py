@@ -7,8 +7,8 @@ from datetime import date
 
 import pytest
 
-from analysis.sim.connection import RunConnection
-from analysis.sim.notebook_ui.events_widgets import events_view, events_widget, run_date_bounds
+from zabob.retirement.sim.connection import RunConnection
+from zabob.retirement.sim.notebook_ui.events_widgets import events_view, events_widget, run_date_bounds
 
 
 def test_no_filters_returns_everything_sorted_by_date(two_lot_run: RunConnection) -> None:
@@ -110,7 +110,7 @@ def test_running_balance_needs_one_account_with_a_balance(two_lot_run: RunConnec
 
 
 def test_empty_detail_cells_show_a_dash(two_lot_run: RunConnection) -> None:
-    from analysis.sim.notebook_ui.events_widgets import _styled
+    from zabob.retirement.sim.notebook_ui.events_widgets import _styled
 
     _heading, table = events_view(two_lot_run, accounts=("Asset_Checking",))
     html = _styled(table.head(20)).to_html()
@@ -129,7 +129,7 @@ def test_events_widget_returns_a_box_without_displaying_it(
     two_lot_run: RunConnection, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from ipywidgets import widgets
-    from analysis.sim.notebook_ui import events_widgets
+    from zabob.retirement.sim.notebook_ui import events_widgets
 
     shown: list[object] = []
     monkeypatch.setattr(events_widgets, "display", lambda *args, **kwargs: shown.extend(args))
@@ -166,7 +166,7 @@ def test_a_rules_tag_comes_before_its_accounts(report_run: RunConnection) -> Non
 
 
 def test_a_tag_comes_from_the_income_or_expense_account_as_reports_group(report_run: RunConnection) -> None:
-    from analysis.sim import reports
+    from zabob.retirement.sim import reports
 
     _heading, work = events_view(report_run, tags=("source:work",))
     assert len(work) > 0

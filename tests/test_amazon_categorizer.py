@@ -4,8 +4,8 @@ from pathlib import Path
 
 import pandas as pd
 
-from analysis.amazon.categorizer import categorize_amazon_csv
-from analysis.storage import JsonStateStore
+from zabob.retirement.amazon.categorizer import categorize_amazon_csv
+from zabob.retirement.storage import JsonStateStore
 
 DATA_DIR = Path(__file__).resolve().parent / "data" / "amazon"
 
@@ -129,7 +129,7 @@ def test_categorize_amazon_csv_marks_open_billing_month_as_pending(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
-    from analysis.amazon import categorizer as categorizer_module
+    from zabob.retirement.amazon import categorizer as categorizer_module
     monkeypatch.setattr(
         categorizer_module,
         "_today_date",
@@ -157,7 +157,7 @@ def test_categorize_amazon_csv_does_not_write_pending_when_open_interval_is_empt
     tmp_path: Path,
     monkeypatch,
 ) -> None:
-    from analysis.amazon import categorizer as categorizer_module
+    from zabob.retirement.amazon import categorizer as categorizer_module
 
     monkeypatch.setattr(categorizer_module, "_today_date", lambda: date(2026, 5, 15))
 

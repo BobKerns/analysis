@@ -17,8 +17,8 @@ import click
 import pytest
 from click.testing import CliRunner
 
-from analysis.cli import main
-from analysis.sim import provenance, research, symbols
+from zabob.retirement.cli import main
+from zabob.retirement.sim import provenance, research, symbols
 
 
 def _sim(data_dir: Path, *args: str, input: str | None = None):

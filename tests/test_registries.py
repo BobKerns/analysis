@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from analysis.sim.registries import format_calendar_amount
+from zabob.retirement.sim.registries import format_calendar_amount
 
 
 @pytest.mark.parametrize(("kind", "amount", "expected"), [

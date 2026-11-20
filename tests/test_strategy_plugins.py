@@ -1,6 +1,6 @@
 """Household strategy kinds that build on a built-in (#411, ADR-010 §3):
 ``ctx.rule_budgets``, ``ctx.with_memory``, ``Strategy.delegate``, and the
-built-in classes exported from :mod:`analysis.sim.strategies`.
+built-in classes exported from :mod:`zabob.retirement.sim.strategies`.
 
 The persona kinds are ``whole_items`` (a subclass of ``Guardrail``) and
 ``whole_items_delegated`` (the same, delegating to one), in the
@@ -22,10 +22,10 @@ from pathlib import Path
 
 import pytest
 
-from analysis.sim import strategies
-from analysis.sim.strategies import Guardrail
-from analysis.sim.strategy_api import Context, Strategy, StrategyError, Tag, register
-from analysis.sim.strategy_code import builtin_kinds
+from zabob.retirement.sim import strategies
+from zabob.retirement.sim.strategies import Guardrail
+from zabob.retirement.sim.strategy_api import Context, Strategy, StrategyError, Tag, register
+from zabob.retirement.sim.strategy_code import builtin_kinds
 
 SCENARIO = "alice_spending"
 FLEX = "strategies/flex.csv"
@@ -163,7 +163,7 @@ def test_subclassing_and_delegating_decide_the_same(
 
 
 def test_an_unknown_parameter_lists_the_kind_s_in_declared_order() -> None:
-    from analysis.sim.strategy_guide import parse_param_specs
+    from zabob.retirement.sim.strategy_guide import parse_param_specs
 
     with pytest.raises(ValueError, match=r"has no parameter 'ordr' \(it has portfolio, upper, lower, adjust, "
                                          r"skip_inflation_after_loss, final_years\)"):

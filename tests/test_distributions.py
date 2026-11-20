@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import pytest
 
-from analysis.sim.distributions import (
+from zabob.retirement.sim.distributions import (
     DistributionError,
     Triangular,
     TruncatedNormal,

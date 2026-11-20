@@ -15,13 +15,13 @@ from typing import Any
 
 import pytest
 
-from analysis.sim import registries
-from analysis.sim.connection import RunConnection
-from analysis.sim.engine import EngineError, TaxRule, _prepare_tax
-from analysis.sim.tax_api import Extra, Return
-from analysis.sim.loader import LoadError, LoadResult
-from analysis.sim.reports import tax_by_year, tax_reconciliation
-from analysis.sim.run_charts import tax_figure
+from zabob.retirement.sim import registries
+from zabob.retirement.sim.connection import RunConnection
+from zabob.retirement.sim.engine import EngineError, TaxRule, _prepare_tax
+from zabob.retirement.sim.tax_api import Extra, Return
+from zabob.retirement.sim.loader import LoadError, LoadResult
+from zabob.retirement.sim.reports import tax_by_year, tax_reconciliation
+from zabob.retirement.sim.run_charts import tax_figure
 
 Aux = dict[tuple[str, str | None], list[tuple[str, dict[str, Any]]]]
 

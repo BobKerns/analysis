@@ -6,9 +6,9 @@ from pathlib import Path
 
 import pytest
 
-from analysis.sim import draws_charts as dc
-from analysis.sim.draws_db import draws_frames
-from analysis.sim.ensemble import EnsembleError
+from zabob.retirement.sim import draws_charts as dc
+from zabob.retirement.sim.draws_db import draws_frames
+from zabob.retirement.sim.ensemble import EnsembleError
 
 
 def test_views_draw_a_node_and_a_pair(mc_batch: Path) -> None:

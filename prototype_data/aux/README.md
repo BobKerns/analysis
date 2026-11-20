@@ -62,9 +62,9 @@ dollars or percents.
   law is a shared fact, like the federal brackets beside it). `rate__*` is
   per-scenario, under `series/`.
 
-The loader (`src/analysis/sim/loader.py`) parses the filename to figure out the
+The loader (`src/zabob/retirement/sim/loader.py`) parses the filename to figure out the
 kind and series; the required columns per kind are listed in
-`src/analysis/sim/registries.py` (`AUX_KIND_COLUMNS`) and [ADR-003](../../docs/architecture/ADR-003-registries-and-csv-schemas.md) §4.4.
+`src/zabob/retirement/sim/registries.py` (`AUX_KIND_COLUMNS`) and [ADR-003](../../docs/architecture/ADR-003-registries-and-csv-schemas.md) §4.4.
 
 ## Per-scenario overrides
 
@@ -233,7 +233,7 @@ Authoritative sources the AI should pull from:
 2. Re-run `uv run pytest` from the repo root — there are loader tests that will
    catch missing columns, bad date formats, and unknown filing statuses.
 3. If you added a brand-new file kind (not just a new series), you also have to
-   register it in `src/analysis/sim/registries.py` (`AUX_KIND_COLUMNS`) and
+   register it in `src/zabob/retirement/sim/registries.py` (`AUX_KIND_COLUMNS`) and
    teach the loader.
 
 ## See also

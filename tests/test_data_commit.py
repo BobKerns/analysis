@@ -11,10 +11,10 @@ import git
 import pytest
 from click.testing import CliRunner, Result
 
-from analysis.cli import main
-from analysis.sim import cli, data_commit
-from analysis.sim.locks import BUILDER_CHILD_ENV
-from analysis.sim.provenance import scoped_changes
+from zabob.retirement.cli import main
+from zabob.retirement.sim import cli, data_commit
+from zabob.retirement.sim.locks import BUILDER_CHILD_ENV
+from zabob.retirement.sim.provenance import scoped_changes
 
 
 @pytest.fixture
@@ -231,7 +231,7 @@ def test_the_commit_holds_off_the_builder_for_the_scenarios_it_changes(
     data: Path, intent_dir: Path, runs_dir: Path, monkeypatch: pytest.MonkeyPatch,
     edited: str, held: list[str],
 ) -> None:
-    from analysis.sim import builder
+    from zabob.retirement.sim import builder
 
     calls: list[list[str]] = []
     monkeypatch.setattr(builder, "hold", lambda _data, names: calls.append(sorted(names)))
@@ -282,7 +282,7 @@ def test_a_background_build_skips_a_run_made_while_it_waited(
 def test_sim_init_gives_a_new_repo_an_identity(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from analysis.sim import data_repo
+    from zabob.retirement.sim import data_repo
 
     empty = tmp_path / "empty-gitconfig"
     empty.write_text("[init]\n\tdefaultBranch = main\n[commit]\n\tgpgsign = false\n")

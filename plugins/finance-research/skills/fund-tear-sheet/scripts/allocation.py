@@ -5,7 +5,7 @@ Usage:
     python allocation.py fund-work/data.csv --ticker VTWNX [--holdings fund-work/holdings.csv]
                          [--out-dir fund-work]
 
-Categories (the simulator's asset classes, analysis.sim.registries.BASE_ASSET_CLASSES, in its order, plus unclassified; percentages of the fund's net assets, summing to 100):
+Categories (the simulator's asset classes, zabob.retirement.sim.registries.BASE_ASSET_CLASSES, in its order, plus unclassified; percentages of the fund's net assets, summing to 100):
     stock_us        stocks of companies domiciled in the US
     stock_intl      stocks of companies domiciled outside the US (ADRs count as international)
     stock           stocks whose US/international split couldn't be determined (ideally 0)
@@ -53,7 +53,7 @@ import os
 import sys
 from collections import defaultdict
 
-# The simulator's asset classes (analysis.sim.registries.BASE_ASSET_CLASSES), in its display order,
+# The simulator's asset classes (zabob.retirement.sim.registries.BASE_ASSET_CLASSES), in its display order,
 # plus "unclassified", which the simulator also shows but which can't be written to allocations.csv.
 SIM_CLASSES = ["stock_us", "stock_intl", "stock", "bond", "muni", "cd", "cash", "real_estate", "other"]
 CATS = SIM_CLASSES + ["unclassified"]

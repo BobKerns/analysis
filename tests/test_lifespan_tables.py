@@ -12,9 +12,9 @@ import pandas as pd
 import pytest
 from click.testing import CliRunner, Result
 
-from analysis.cli import main
-from analysis.sim import lifespan_tables
-from analysis.sim.life_table import LifeTable
+from zabob.retirement.cli import main
+from zabob.retirement.sim import lifespan_tables
+from zabob.retirement.sim.life_table import LifeTable
 
 MONTH = 1 / 12
 
@@ -129,7 +129,7 @@ def test_at_age_frame_has_a_row_per_table_and_years_left(data_dir: Path) -> None
 def test_at_age_widget_redraws_for_a_new_age(
     data_dir: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from analysis.sim.notebook_ui import life_table_widgets
+    from zabob.retirement.sim.notebook_ui import life_table_widgets
 
     asked: list[float] = []
 
@@ -267,7 +267,7 @@ def test_lifespan_blend_asks_for_the_rest_after_one_table(sim: Callable[..., Res
 def test_lifespan_blend_asks_again_for_a_mistyped_table_at_a_terminal(
     sim: Callable[..., Result], monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from analysis.sim import cli
+    from zabob.retirement.sim import cli
 
     monkeypatch.setattr(cli, "_interactive", lambda: True)
     result = sim("lifespan", "blend", "mix", "--table", "defualt", "--table", "jp",

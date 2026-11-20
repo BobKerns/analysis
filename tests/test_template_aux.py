@@ -12,9 +12,9 @@ from pathlib import Path
 import pytest
 from click.testing import CliRunner
 
-from analysis.cli import main
-from analysis.sim.lineage import TEMPLATE_AUX_DIR
-from analysis.sim.loader import LoadError, LoadResult, template_aux_copies
+from zabob.retirement.cli import main
+from zabob.retirement.sim.lineage import TEMPLATE_AUX_DIR
+from zabob.retirement.sim.loader import LoadError, LoadResult, template_aux_copies
 
 
 def _aux_kinds(intent: Path) -> set[str]:

@@ -11,8 +11,8 @@ import git
 import pytest
 from click.testing import CliRunner
 
-from analysis.cli import main
-from analysis.sim import freshness
+from zabob.retirement.cli import main
+from zabob.retirement.sim import freshness
 
 
 

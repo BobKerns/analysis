@@ -13,12 +13,12 @@ from typing import Any
 
 import pytest
 
-from analysis.sim import registries
-from analysis.sim.engine import TaxRule, _drawdown_tax, _prepare_tax, run_scenario
-from analysis.sim.loader import LoadResult
-from analysis.sim.tax_api import NO_EXTRA, Extra, Return
-from analysis.sim.taxes.common import progressive_tax
-from analysis.sim.lineage import TEMPLATE_AUX_DIR
+from zabob.retirement.sim import registries
+from zabob.retirement.sim.engine import TaxRule, _drawdown_tax, _prepare_tax, run_scenario
+from zabob.retirement.sim.loader import LoadResult
+from zabob.retirement.sim.tax_api import NO_EXTRA, Extra, Return
+from zabob.retirement.sim.taxes.common import progressive_tax
+from zabob.retirement.sim.lineage import TEMPLATE_AUX_DIR
 
 Aux = dict[tuple[str, str | None], list[tuple[str, dict[str, Any]]]]
 

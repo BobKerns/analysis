@@ -14,11 +14,11 @@ from typing import Any
 import pandas as pd
 import pytest
 
-from analysis.sim import registries
-from analysis.sim.engine import IrmaaContext, run_scenario
-from analysis.sim.loader import LoadError, LoadResult
-from analysis.sim.registries import SCHEDULED_CSV_HEADER
-from analysis.sim.reports import tax_by_year
+from zabob.retirement.sim import registries
+from zabob.retirement.sim.engine import IrmaaContext, run_scenario
+from zabob.retirement.sim.loader import LoadError, LoadResult
+from zabob.retirement.sim.registries import SCHEDULED_CSV_HEADER
+from zabob.retirement.sim.reports import tax_by_year
 
 Run = Callable[..., Path]
 
@@ -192,7 +192,7 @@ def test_a_survivor_pays_on_the_death_years_joint_return_then_files_single(
 
 
 def test_the_tax_report_shows_magi_and_the_tier_it_sets(irmaa_run: Run) -> None:
-    from analysis.sim.connection import RunConnection
+    from zabob.retirement.sim.connection import RunConnection
 
     run = irmaa_run(_bonus(2029, "400000.00"))
     with RunConnection(run) as rc:
@@ -266,7 +266,7 @@ def test_a_death_after_a_return_before_the_table_leaves_that_return_joint() -> N
 
 
 def test_a_missing_federal_magi_is_an_error() -> None:
-    from analysis.sim.engine import EngineError
+    from zabob.retirement.sim.engine import EngineError
 
     aux = {(registries.IRMAA_TIERS, None): _tiers(("MFJ", 1, 1, None))}
     with closing(_con_with_magi()) as con, pytest.raises(EngineError, match="no federal MAGI for 2027"):
@@ -496,7 +496,7 @@ def _cliff_at(floor: int, jump: int) -> Callable[[int], int]:
 def test_a_cliff_is_crossed_only_when_the_span_past_it_pays_for_it(
     amount: int, expected: int,
 ) -> None:
-    from analysis.sim.engine import _within_marginal_rate
+    from zabob.retirement.sim.engine import _within_marginal_rate
 
     tax, cliff = _flat_tax(0.2), _cliff_at(10_000_00, 2_000_00)
     assert _within_marginal_rate(tax, cliff, amount, 300_000) == expected
@@ -504,7 +504,7 @@ def test_a_cliff_is_crossed_only_when_the_span_past_it_pays_for_it(
 
 
 def test_the_tax_rate_alone_still_stops_a_crossing_span() -> None:
-    from analysis.sim.engine import _within_marginal_rate
+    from zabob.retirement.sim.engine import _within_marginal_rate
 
     # 20% up to 30,000, then 40%: past the floor at 10,000 stepping stops at
     # 30,000, and that span, (4,000 + 1,000) / 20,000 = 25%, pays.

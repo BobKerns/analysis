@@ -19,8 +19,8 @@ from pathlib import Path
 
 import pytest
 
-from analysis.sim.loader import LoadError, load_scenario
-from analysis.sim.strategy_api import StrategyError
+from zabob.retirement.sim.loader import LoadError, load_scenario
+from zabob.retirement.sim.strategy_api import StrategyError
 
 SCENARIO = "alice_buckets"
 BUCKETS = "strategies/buckets.csv"
@@ -81,7 +81,7 @@ def _legs(run: Path, hook: str) -> list[tuple[str, str, str, str, int, str]]:
 # ---------- ctx.trailing_return ----------
 
 _PROBE = '''
-from analysis.sim.strategy_api import Decision, Strategy, register
+from zabob.retirement.sim.strategy_api import Decision, Strategy, register
 
 @register
 class Probe(Strategy):

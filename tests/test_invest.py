@@ -12,10 +12,10 @@ import pandas as pd
 import pytest
 from click.testing import CliRunner, Result
 
-from analysis.cli import main
-from analysis.sim import cli
-from analysis.sim.engine import run_scenario
-from analysis.sim.loader import LoadResult
+from zabob.retirement.cli import main
+from zabob.retirement.sim import cli
+from zabob.retirement.sim.engine import run_scenario
+from zabob.retirement.sim.loader import LoadResult
 
 BROKERAGE = "Asset_Brokerage_Joint"
 

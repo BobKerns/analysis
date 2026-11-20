@@ -9,8 +9,8 @@ from pathlib import Path
 
 import pytest
 
-from analysis.sim.loader import LoadError, LoadResult
-from analysis.sim.provenance import _scoped_paths
+from zabob.retirement.sim.loader import LoadError, LoadResult
+from zabob.retirement.sim.provenance import _scoped_paths
 
 
 def _securities(loaded: LoadResult) -> list[tuple[str, str]]:

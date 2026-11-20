@@ -15,17 +15,17 @@ matplotlib.use("Agg")
 
 import matplotlib.pyplot as plt
 
-from analysis.sim.engine import run_scenario
-from analysis.sim.ensemble import (
+from zabob.retirement.sim.engine import run_scenario
+from zabob.retirement.sim.ensemble import (
     latest_ensemble_batch,
     load_ensemble,
     members_net_worth_by_month,
     resolve_member,
     summary_with_percentiles,
 )
-from analysis.sim.loader import LoadResult
-from analysis.sim import ensemble_plots
-from analysis.sim.notebook_ui.ensemble_widgets import (
+from zabob.retirement.sim.loader import LoadResult
+from zabob.retirement.sim import ensemble_plots
+from zabob.retirement.sim.notebook_ui.ensemble_widgets import (
     ensemble_summary_view,
     ensemble_widget,
     list_ensemble_recipes,
@@ -95,7 +95,7 @@ def test_ensemble_widget_returns_a_box_without_displaying_it(
 ) -> None:
     from ipywidgets import widgets
 
-    from analysis.sim.notebook_ui import ensemble_widgets
+    from zabob.retirement.sim.notebook_ui import ensemble_widgets
 
     shown: list[object] = []
     monkeypatch.setattr(ensemble_widgets, "display", lambda *args, **kwargs: shown.extend(args))
@@ -133,10 +133,10 @@ def test_ensemble_widget_matches_cli_summary_numbers(small_ensemble_runs_dir: Pa
 def test_ensemble_widget_dollar_mode_is_passed_through_to_aggregation(
     small_ensemble_runs_dir: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from analysis.sim.notebook_ui.pickers import DollarModePicker
-    from analysis.sim.types import DollarMode
+    from zabob.retirement.sim.notebook_ui.pickers import DollarModePicker
+    from zabob.retirement.sim.types import DollarMode
 
-    from analysis.sim.series_db import EnsembleSeries
+    from zabob.retirement.sim.series_db import EnsembleSeries
 
     modes_seen: list[DollarMode] = []
     real = EnsembleSeries.frame
@@ -159,9 +159,9 @@ def test_ensemble_widget_dollar_mode_is_passed_through_to_aggregation(
 def test_ensemble_widget_years_redraw_without_reading_members_again(
     small_ensemble_runs_dir: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from analysis.sim.notebook_ui import ensemble_widgets
-    from analysis.sim.notebook_ui.pickers import TimeRangePicker
-    from analysis.sim.series_db import EnsembleSeries
+    from zabob.retirement.sim.notebook_ui import ensemble_widgets
+    from zabob.retirement.sim.notebook_ui.pickers import TimeRangePicker
+    from zabob.retirement.sim.series_db import EnsembleSeries
 
     reads: list[object] = []
     real = EnsembleSeries._nominal
@@ -191,8 +191,8 @@ def test_ensemble_widget_years_redraw_without_reading_members_again(
 def test_ensemble_widget_log_linear_mode_sets_the_yscale(
     small_ensemble_runs_dir: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from analysis.sim.notebook_ui.pickers import LogLinearModePicker
-    from analysis.sim.types import LogLinearMode
+    from zabob.retirement.sim.notebook_ui.pickers import LogLinearModePicker
+    from zabob.retirement.sim.types import LogLinearMode
 
     axes: list = []
     real_fan_chart = ensemble_plots.ensemble_fan_chart
@@ -216,9 +216,9 @@ def test_ensemble_widget_log_mode_falls_back_to_linear_for_non_positive_net_wort
     """Log scale can't represent zero or negative net worth -- silently
     switching to linear there would clip exactly the insolvency tail a fan
     chart exists to show, so LOG mode must fall back, not just render oddly."""
-    from analysis.sim.notebook_ui import ensemble_widgets
-    from analysis.sim.notebook_ui.pickers import LogLinearModePicker
-    from analysis.sim.types import LogLinearMode
+    from zabob.retirement.sim.notebook_ui import ensemble_widgets
+    from zabob.retirement.sim.notebook_ui.pickers import LogLinearModePicker
+    from zabob.retirement.sim.types import LogLinearMode
 
     axes: list = []
     real_fan_chart = ensemble_plots.ensemble_fan_chart
@@ -254,7 +254,7 @@ def test_ensemble_widget_shows_progress_per_member_then_hides_it(
 ) -> None:
     """#235: a progress line counts members while they load, and goes away
     once the chart is drawn."""
-    from analysis.sim.notebook_ui.ensemble_widgets import LoadingIndicator
+    from zabob.retirement.sim.notebook_ui.ensemble_widgets import LoadingIndicator
 
     labels: list[str] = []
     real_counter = LoadingIndicator.counter
@@ -290,7 +290,7 @@ def test_ensemble_widget_account_picker_lists_net_worth_then_accounts(
     small_ensemble_runs_dir: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """#163: any one account's spread, not just net worth's."""
-    from analysis.sim.notebook_ui import ensemble_widgets
+    from zabob.retirement.sim.notebook_ui import ensemble_widgets
 
     axes: list = []
     real_fan_chart = ensemble_plots.ensemble_fan_chart
@@ -313,7 +313,7 @@ def test_ensemble_widget_account_picker_lists_net_worth_then_accounts(
 def test_account_named_net_worth_is_not_mistaken_for_net_worth() -> None:
     """The picker's net-worth value is a sentinel, not its label, so an
     account that happens to be named "Net worth" can still be picked."""
-    from analysis.sim.notebook_ui import ensemble_widgets
+    from zabob.retirement.sim.notebook_ui import ensemble_widgets
 
     assert ensemble_widgets._account(ensemble_widgets._NET_WORTH_CHOICE) is None
     assert ensemble_widgets._account(ensemble_widgets.NET_WORTH) == ensemble_widgets.NET_WORTH
@@ -323,7 +323,7 @@ def test_account_named_net_worth_is_not_mistaken_for_net_worth() -> None:
 def test_ensemble_widget_table_adds_tail_means_and_reserve_shares(
     small_ensemble_runs_dir: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from analysis.sim.notebook_ui import ensemble_widgets
+    from zabob.retirement.sim.notebook_ui import ensemble_widgets
 
     tables: list[pd.DataFrame] = []
     real_view = ensemble_widgets.ensemble_summary_view
@@ -354,8 +354,8 @@ def test_ensemble_compare_widget_offers_only_recipes_that_pair_with_the_baseline
     from IPython.display import Image
     from pandas.io.formats.style import Styler
 
-    from analysis.sim.notebook_ui import ensemble_widgets
-    from analysis.sim.notebook_ui.styled import StyledMarkdown
+    from zabob.retirement.sim.notebook_ui import ensemble_widgets
+    from zabob.retirement.sim.notebook_ui.styled import StyledMarkdown
 
     seeded_ensemble_batch("baseline", 1)
     seeded_ensemble_batch("child", 1)
@@ -396,7 +396,7 @@ def test_ensemble_table_widget_lists_each_paired_recipe_by_year(
     indexed by (year, recipe), for the paired recipes picked."""
     from pandas.io.formats.style import Styler
 
-    from analysis.sim.notebook_ui import ensemble_widgets
+    from zabob.retirement.sim.notebook_ui import ensemble_widgets
 
     for name in ("baseline", "child", "sibling"):
         seeded_ensemble_batch(name, 1)
@@ -429,8 +429,8 @@ def test_ensemble_compare_widget_lists_every_recipes_accounts_and_skips_one_side
 
     from IPython.display import Image
 
-    from analysis.sim.notebook_ui import ensemble_widgets
-    from analysis.sim.notebook_ui.styled import StyledMarkdown
+    from zabob.retirement.sim.notebook_ui import ensemble_widgets
+    from zabob.retirement.sim.notebook_ui.styled import StyledMarkdown
 
     seeded_ensemble_batch("baseline", 1)
     for member in seeded_ensemble_batch("child", 1).glob("member_*.sqlite3"):
@@ -462,8 +462,8 @@ def test_ensemble_compare_widget_says_so_when_no_shown_recipe_has_the_account(
     none of the compared ones: a note, not an error."""
     import sqlite3
 
-    from analysis.sim.notebook_ui import ensemble_widgets
-    from analysis.sim.notebook_ui.styled import StyledMarkdown
+    from zabob.retirement.sim.notebook_ui import ensemble_widgets
+    from zabob.retirement.sim.notebook_ui.styled import StyledMarkdown
 
     seeded_ensemble_batch("baseline", 1)
     seeded_ensemble_batch("other", 1)

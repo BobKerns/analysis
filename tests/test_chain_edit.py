@@ -9,8 +9,8 @@ from pathlib import Path
 import pytest
 from click.testing import CliRunner
 
-from analysis.cli import main
-from analysis.sim import chain_edit
+from zabob.retirement.cli import main
+from zabob.retirement.sim import chain_edit
 
 
 def _sim(data_dir: Path, *args: str, scenario: str = "retire_alice", input: str | None = None):

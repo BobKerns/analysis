@@ -14,9 +14,9 @@ from typing import Any
 import pandas as pd
 import pytest
 
-from analysis.sim import registries
-from analysis.sim.engine import run_scenario
-from analysis.sim.loader import LoadResult, growth_rule_name
+from zabob.retirement.sim import registries
+from zabob.retirement.sim.engine import run_scenario
+from zabob.retirement.sim.loader import LoadResult, growth_rule_name
 
 HSA = "Asset_HSA_Alice"
 PAYOUT = growth_rule_name(HSA, "default", prefix="interest_")
@@ -121,7 +121,7 @@ def _hsa_context(cost_bases: dict[int, int | None]):
     """Lots 1 and 2 are HSAs, 3 is checking and 4 a growth counterparty."""
     from datetime import date
 
-    from analysis.sim.engine import ChainGraph, RefillContext
+    from zabob.retirement.sim.engine import ChainGraph, RefillContext
 
     graph = ChainGraph(members={}, leaf_lot={}, minimum_of={}, refill_chain_of={},
                        refill_target_of={}, refill_amount_of={}, maximum_of={}, overflow_chain_of={})
@@ -140,7 +140,7 @@ def _hsa_context(cost_bases: dict[int, int | None]):
 def test_an_hsa_withdrawal_takes_its_share_of_the_basis(
     ledger_con: sqlite3.Connection, to_id: int, gains: list[tuple[int]], basis_2: int,
 ) -> None:
-    from analysis.sim.engine import _post_transfer
+    from zabob.retirement.sim.engine import _post_transfer
 
     balances = {1: 6_000_00, 2: 0, 3: 0, 4: 0}
     kinds = {1: "asset", 2: "asset", 3: "asset", 4: "income"}
@@ -159,7 +159,7 @@ def test_an_hsa_withdrawal_takes_its_share_of_the_basis(
 def test_an_overdrawn_hsa_realizes_nothing_past_its_balance(ledger_con: sqlite3.Connection) -> None:
     """Money drawn past an HSA's balance (the run lets it go negative) had
     no growth: only what the lot held is weighed against its basis."""
-    from analysis.sim.engine import _post_transfer
+    from zabob.retirement.sim.engine import _post_transfer
 
     balances = {1: 2_000_00, 2: 0, 3: 0, 4: 0}
     kinds = {1: "asset", 2: "asset", 3: "asset", 4: "income"}

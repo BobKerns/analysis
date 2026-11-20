@@ -13,9 +13,9 @@ import pandas as pd
 import pytest
 from click.testing import CliRunner, Result
 
-from analysis.cli import main
-from analysis.sim.engine import run_scenario
-from analysis.sim.loader import LoadError, LoadResult
+from zabob.retirement.cli import main
+from zabob.retirement.sim.engine import run_scenario
+from zabob.retirement.sim.loader import LoadError, LoadResult
 
 ROLLOVER = {
     "date": "2030-01-31", "kind": "transfer_balance",
@@ -243,7 +243,7 @@ def test_calendar_edit_rewrites_the_row_in_place(
 
 
 def test_a_varying_rollover_reports_the_accounts_it_moves_between() -> None:
-    from analysis.sim.draws_db import row_affects
+    from zabob.retirement.sim.draws_db import row_affects
 
     with closing(sqlite3.connect(":memory:")) as con:
         con.row_factory = sqlite3.Row

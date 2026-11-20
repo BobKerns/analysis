@@ -8,10 +8,10 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from analysis.frames import index_years
-from analysis.sim.connection import RunConnection, ScenarioConnection, find_latest_run, open_run, open_scenario
-from analysis.sim.engine import run_scenario
-from analysis.sim.loader import ScenarioRef, load_scenario
+from zabob.retirement.frames import index_years
+from zabob.retirement.sim.connection import RunConnection, ScenarioConnection, find_latest_run, open_run, open_scenario
+from zabob.retirement.sim.engine import run_scenario
+from zabob.retirement.sim.loader import ScenarioRef, load_scenario
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PROTOTYPE = REPO_ROOT / "prototype_data"
@@ -352,7 +352,7 @@ def test_ss_gross_by_month_only_includes_ss_benefit_character(retire_alice_run: 
 
 
 def test_year_end_values_and_yearly_totals(retire_alice_run: RunConnection) -> None:
-    from analysis.sim.connection import year_end_values, yearly_totals
+    from zabob.retirement.sim.connection import year_end_values, yearly_totals
 
     rc = retire_alice_run
     nw = rc.net_worth_frame()
@@ -400,7 +400,7 @@ def test_a_query_from_a_different_thread_falls_back_to_a_temporary_connection(
 
 def test_live_reader_reads_through_the_given_connection(retire_alice_run_file: Path) -> None:
     """``RunConnection.live`` skips __init__; it still reads (#448 review)."""
-    from analysis.sim.schema import connect_sim_file
+    from zabob.retirement.sim.schema import connect_sim_file
 
     con = connect_sim_file(retire_alice_run_file)
     try:
@@ -415,8 +415,8 @@ def test_handle_budget_never_exceeds_its_limit(
     """A member makes room before it opens, so at no moment are more than
     ``limit`` handles open: at the descriptor limit, opening first would
     fail before eviction could free one (#448)."""
-    import analysis.sim.connection as connection
-    from analysis.sim.connection import HandleBudget
+    import zabob.retirement.sim.connection as connection
+    from zabob.retirement.sim.connection import HandleBudget
 
     budget = HandleBudget(2)
     live: set[int] = set()

@@ -13,10 +13,10 @@ from pathlib import Path
 import pytest
 from click.testing import CliRunner, Result
 
-from analysis.cli import main
-from analysis.sim import pool as pl
-from analysis.sim.draws_db import component_frames, components, draws_frames
-from analysis.sim.loader import LoadError, load_scenario
+from zabob.retirement.cli import main
+from zabob.retirement.sim import pool as pl
+from zabob.retirement.sim.draws_db import component_frames, components, draws_frames
+from zabob.retirement.sim.loader import LoadError, load_scenario
 
 
 def _sim(*args: str) -> Result:
@@ -179,7 +179,7 @@ def test_a_component_with_no_seed_is_refused(
 ) -> None:
     # A lineage that never reaches a seed (the base template sets one, so
     # the test data's always do): its members couldn't be drawn.
-    from analysis.sim import scenario
+    from zabob.retirement.sim import scenario
 
     real = scenario.ensemble_settings
 
@@ -237,7 +237,7 @@ def test_scenario_edit_points_a_pool_at_pool_edit(test_data_dir: Path, pool_scen
 def test_a_component_member_that_failed_mid_run_is_a_pool_failure(
     test_data_dir: Path, pool_scenarios: str, fake_batch: Callable[..., Path],
 ) -> None:
-    from analysis.sim.ensemble import read_batch_manifest
+    from zabob.retirement.sim.ensemble import read_batch_manifest
 
     pool = pl.read_pool(test_data_dir / "scenarios", pool_scenarios)
     sources = {c: fake_batch(c, members=4, failures={1: "boom"} if c == "e_b" else {})
@@ -256,7 +256,7 @@ def test_a_pools_meta_is_its_base_components_when_member_0_failed(fake_batch: Ca
     import numpy as np
     import pandas as pd
 
-    from analysis.sim.series_db import MemberSeries, series_db_path, write_series_db
+    from zabob.retirement.sim.series_db import MemberSeries, series_db_path, write_series_db
 
     batch = fake_batch("mix", member_count=3, failures={0: "boom"},
                        pool={"base": "e_a", "member_components": ["e_a", "e_b", "e_a"]})
@@ -313,7 +313,7 @@ def test_a_pool_reuses_components_that_are_up_to_date(
     commit_test_data: Callable[[], Path], stamp_runs: Callable[[Path], None],
     write_scenario_meta: Callable[..., None],
 ) -> None:
-    from analysis.sim import freshness
+    from zabob.retirement.sim import freshness
 
     commit_test_data()
     args = ("--data-dir", str(test_data_dir), "--allow-dirty-code")
@@ -414,7 +414,7 @@ def test_a_pools_rails_must_name_what_every_component_has(test_data_dir: Path, p
 def test_a_pools_data_scope_covers_its_components(
     test_data_dir: Path, pool_scenarios: str, commit_test_data: Callable[[], Path],
 ) -> None:
-    from analysis.sim.provenance import data_stamps
+    from zabob.retirement.sim.provenance import data_stamps
 
     commit_test_data()
     before = data_stamps(test_data_dir, pool_scenarios)
@@ -482,7 +482,7 @@ def test_a_pool_is_not_built_from_dirty_data(
 
 
 def test_a_pools_names_to_complete_are_every_components(test_data_dir: Path, pool_scenarios: str) -> None:
-    from analysis.sim import names
+    from zabob.retirement.sim import names
 
     # gift is e_b's row; the base is e_a.
     assert "gift" in names.calendar_row_names(test_data_dir, pool_scenarios)
@@ -502,7 +502,7 @@ def test_replacing_a_pools_base_component_resets_its_base(test_data_dir: Path, p
 
 
 def test_the_guided_base_choices_are_component_names() -> None:
-    from analysis.sim import calendar_guide, scenario_guide
+    from zabob.retirement.sim import calendar_guide, scenario_guide
 
     field = scenario_guide.pool_spec(["e_a", "e_b"]).field_named("base")
     assert field is not None and field.choices is not None
@@ -539,7 +539,7 @@ def test_ensemble_guard_rails_show_a_pools_own_rails(
     pool_batch: Path, test_data_dir: Path, pool_scenarios: str, state_dir: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from analysis.sim.notebook_ui import ensemble_widgets
+    from zabob.retirement.sim.notebook_ui import ensemble_widgets
 
     data = ("--data-dir", str(test_data_dir))
     own = _sim("guard-rail", "add", "pool_budget", "--measure", "spending", "--side", "above",

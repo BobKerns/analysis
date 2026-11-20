@@ -14,7 +14,7 @@ import time
 
 import pytest
 
-from analysis.sim.cli import _line_completions
+from zabob.retirement.sim.cli import _line_completions
 
 KINDS = ["latent-factor", "retire-scheduled", "set-amount", "set-rate", "transfer"]
 
@@ -44,7 +44,7 @@ def test_line_completions_handle_names_with_spaces() -> None:
 
 
 _PROMPT_SCRIPT = (
-    "from analysis.sim.cli import _prompt_with_completion\n"
+    "from zabob.retirement.sim.cli import _prompt_with_completion\n"
     f"print('ANSWER=' + _prompt_with_completion('kind', choices={KINDS!r}))\n"
 )
 

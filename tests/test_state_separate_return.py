@@ -14,14 +14,14 @@ from typing import Any
 
 import pytest
 
-from analysis.sim import registries
-from analysis.sim.engine import TaxRule, _prepare_tax
-from analysis.sim.connection import RunConnection
-from analysis.sim.loader import LoadError, LoadResult
-from analysis.sim.reports import tax_return
-from analysis.sim.tax_api import Extra, Return
-from analysis.sim.taxes.state_base import Adjustment, Basis, Income
-from analysis.sim.taxes.state_tables import StateTablesYear
+from zabob.retirement.sim import registries
+from zabob.retirement.sim.engine import TaxRule, _prepare_tax
+from zabob.retirement.sim.connection import RunConnection
+from zabob.retirement.sim.loader import LoadError, LoadResult
+from zabob.retirement.sim.reports import tax_return
+from zabob.retirement.sim.tax_api import Extra, Return
+from zabob.retirement.sim.taxes.state_base import Adjustment, Basis, Income
+from zabob.retirement.sim.taxes.state_tables import StateTablesYear
 
 Aux = dict[tuple[str, str | None], list[tuple[str, dict[str, Any]]]]
 

@@ -1,4 +1,4 @@
-"""Tests for analysis.sim.runs (ADR-002 Ledger layer)."""
+"""Tests for zabob.retirement.sim.runs (ADR-002 Ledger layer)."""
 
 from __future__ import annotations
 
@@ -10,8 +10,8 @@ from pathlib import Path
 
 import pytest
 
-from analysis.sim.loader import load_scenario
-from analysis.sim.runs import finalize_run, open_run_file
+from zabob.retirement.sim.loader import load_scenario
+from zabob.retirement.sim.runs import finalize_run, open_run_file
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PROTOTYPE = REPO_ROOT / "prototype_data"
@@ -156,7 +156,7 @@ def test_sim_files_skip_fsync_but_keep_the_journal_on_disk(tmp_path: Path) -> No
     # In a fresh interpreter: conftest turns off fsync and the on-disk journal
     # for every connection the suite opens, which would hide both settings.
     script = (
-        "import sys; from analysis.sim.schema import connect_sim_file; "
+        "import sys; from zabob.retirement.sim.schema import connect_sim_file; "
         "con = connect_sim_file(sys.argv[1]); "
         "print(con.execute('PRAGMA synchronous').fetchone()[0], "
         "con.execute('PRAGMA journal_mode').fetchone()[0])"

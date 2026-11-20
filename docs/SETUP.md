@@ -214,7 +214,7 @@ hand with `.venv/bin/analysis research-plugin install` or `uninstall`; see
 6. Run `uv sync --group dev` (installing the pinned Python from
    `.python-version` first with `uv python install` only if this fails)
 
-   This also puts `analysis_truststore.pth` in the venv's site-packages. It
+   This also puts `zabob_retirement_truststore.pth` in the venv's site-packages. It
    runs `truststore.inject_into_ssl()` at the start of every Python process
    there (the JupyterLab server, kernels, the CLI), so HTTPS everywhere is
    verified with the operating system's trust store and a root you've

@@ -11,9 +11,9 @@ import pytest
 from click.testing import CliRunner, Result
 import pandas as pd
 
-from analysis.cli import main
-from analysis.sim import compare
-from analysis.sim.connection import RunConnection
+from zabob.retirement.cli import main
+from zabob.retirement.sim import compare
+from zabob.retirement.sim.connection import RunConnection
 
 
 @pytest.fixture
@@ -176,7 +176,7 @@ def test_comparison_figure_draws_values_over_each_variants_difference() -> None:
     import numpy as np
     import pandas as pd
 
-    from analysis.sim.compare_charts import comparison_figure
+    from zabob.retirement.sim.compare_charts import comparison_figure
 
     months = pd.date_range("2027-01-31", periods=3, freq="ME")
     values = pd.DataFrame({"a": [1.0, 2.0, 3.0], "b": [1.0, 3.0, 5.0]}, index=months)
@@ -197,7 +197,7 @@ def test_account_completion_offers_every_compared_scenarios_accounts(
         "accounts.csv": (test_data_dir / "scenarios" / "retire_alice" / "accounts.csv")
         .read_text().splitlines()[0] + "\nAsset_Extra_Only,asset,cash,joint,taxable,,,,,{},\n"})
     monkeypatch.setenv("ANALYSIS_DATA_DIR", str(test_data_dir))
-    from analysis.sim.cli import compare_command as command
+    from zabob.retirement.sim.cli import compare_command as command
 
     ctx = command.make_context("compare", ["retire_alice", "extra"], resilient_parsing=True)
     account = next(p for p in command.params if p.name == "account")
@@ -236,8 +236,8 @@ def test_sim_compare_refuses_a_cpi_constant_balance_without_a_cpi_index(
     """A run with no CPI index has an all-NaN CPI-constant balance: an error
     naming the cause, not a balance of zero."""
 
-    from analysis.sim.connection import RunConnection
-    from analysis.sim.types import DollarMode
+    from zabob.retirement.sim.connection import RunConnection
+    from zabob.retirement.sim.types import DollarMode
 
     original = RunConnection.account_balance
 
@@ -253,7 +253,7 @@ def test_sim_compare_refuses_a_cpi_constant_balance_without_a_cpi_index(
 def test_balance_by_month_keeps_an_all_nan_balance_and_zero_fills_a_missing_one() -> None:
     import pandas as pd
 
-    from analysis.sim.compare import balance_by_month
+    from zabob.retirement.sim.compare import balance_by_month
 
     months = pd.period_range("2030-01", periods=2, freq="M").to_timestamp()
 
@@ -277,7 +277,7 @@ def test_balance_by_month_keeps_an_all_nan_balance_and_zero_fills_a_missing_one(
 def test_breakeven_of_no_months_is_none() -> None:
     import pandas as pd
 
-    from analysis.sim.compare import breakeven_month
+    from zabob.retirement.sim.compare import breakeven_month
 
     assert breakeven_month(pd.Series([], dtype=float)) is None
 
@@ -299,7 +299,7 @@ def test_breakeven_month_finds_first_month_that_stays_ahead() -> None:
 def test_scenario_run_path_matches_the_whole_scenario_name(runs_dir: Path) -> None:
     """``base``'s run is never ``higher_base``'s, though the file names share
     a ``_base_`` segment."""
-    from analysis.sim.loader import scenario_run_path
+    from zabob.retirement.sim.loader import scenario_run_path
 
     runs_dir.mkdir(parents=True, exist_ok=True)
     other = runs_dir / "2030-01-02T000000Z_higher_base_abc1234.sqlite3"
@@ -316,7 +316,7 @@ def test_runs_with_different_horizons_compare_over_their_shared_months() -> None
     looks only at the months both runs cover."""
     import pandas as pd
 
-    from analysis.sim.compare import all_nan_columns, breakeven_summary, variant_delta
+    from zabob.retirement.sim.compare import all_nan_columns, breakeven_summary, variant_delta
 
     months = pd.period_range("2030-01", periods=4, freq="M").to_timestamp()
     nw = pd.DataFrame({"a": [1.0, 1.0, 1.0, None], "b": [None, 0.0, 2.0, 3.0]}, index=months)
@@ -374,7 +374,7 @@ def test_sim_compare_guard_rails_refuses_cpi_constant_without_a_cpi_index(
 ) -> None:
     """The guard-rails section alone reads no net worth, so it checks for a
     CPI index itself rather than showing the rails as covering no years."""
-    from analysis.sim.connection import RunConnection
+    from zabob.retirement.sim.connection import RunConnection
 
     original = RunConnection.cpi_index
     monkeypatch.setattr(RunConnection, "cpi_index",
@@ -478,10 +478,10 @@ def test_sim_compare_social_security_by_year_and_over_the_run(
 def test_sim_compare_tax_matches_sim_report_tax(
     business_scenarios: Path, test_data_dir: Path, intent_dir: Path, runs_dir: Path,
 ) -> None:
-    from analysis.sim.connection import open_run
-    from analysis.sim.loader import scenario_run_path
-    from analysis.sim.reports import tax_by_year
-    from analysis.sim.types import DollarMode
+    from zabob.retirement.sim.connection import open_run
+    from zabob.retirement.sim.loader import scenario_run_path
+    from zabob.retirement.sim.reports import tax_by_year
+    from zabob.retirement.sim.types import DollarMode
 
     names = ("alice_business", "alice_business_hobby")
     for name in names:
@@ -518,7 +518,7 @@ def test_sim_compare_chart_file_draws_one_chart(test_data_dir: Path) -> None:
 
 
 def test_compare_charts_for_the_sections_asked() -> None:
-    from analysis.sim.cli import _compare_charts
+    from zabob.retirement.sim.cli import _compare_charts
 
     assert _compare_charts((), None) == ["net-worth"]
     assert _compare_charts(("runs",), "Asset_Checking") == ["account"]

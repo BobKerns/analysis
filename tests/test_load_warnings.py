@@ -9,12 +9,12 @@ from pathlib import Path
 import pytest
 from click.testing import CliRunner
 
-from analysis.cli import main
-from analysis.sim import load_warnings
-from analysis.sim.connection import RunConnection
-from analysis.sim.loader import LoadResult
-from analysis.sim.notebook_ui import pickers
-from analysis.sim.notebook_ui.ensemble_widgets import batch_load_warnings, load_warnings_message
+from zabob.retirement.cli import main
+from zabob.retirement.sim import load_warnings
+from zabob.retirement.sim.connection import RunConnection
+from zabob.retirement.sim.loader import LoadResult
+from zabob.retirement.sim.notebook_ui import pickers
+from zabob.retirement.sim.notebook_ui.ensemble_widgets import batch_load_warnings, load_warnings_message
 
 DEDUCTION_WARNING = "state tax uses the federal standard deduction"
 

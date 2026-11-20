@@ -18,14 +18,14 @@ from ipywidgets import widgets
 
 matplotlib.use("Agg")
 
-from analysis.cli import main
-from analysis.sim import ensemble_plots
-from analysis.sim.connection import RunConnection
-from analysis.sim.ensemble import EnsembleError, members_balance_by_month
-from analysis.sim.notebook_ui.pickers import (
+from zabob.retirement.cli import main
+from zabob.retirement.sim import ensemble_plots
+from zabob.retirement.sim.connection import RunConnection
+from zabob.retirement.sim.ensemble import EnsembleError, members_balance_by_month
+from zabob.retirement.sim.notebook_ui.pickers import (
     ALL_LOTS, AccountDropdown, AccountPicker, LotPicker, merged_lots_by_account,
 )
-from analysis.sim.types import DollarMode
+from zabob.retirement.sim.types import DollarMode
 
 BROKERAGE = "Asset_Brokerage_Joint"
 
@@ -146,7 +146,7 @@ def test_balance_history_plots_the_picked_lots(two_lot_run: RunConnection,
                                                monkeypatch: pytest.MonkeyPatch) -> None:
     from matplotlib.figure import Figure
 
-    from analysis.sim.notebook_ui import accounts_plots
+    from zabob.retirement.sim.notebook_ui import accounts_plots
 
     shown: list[Figure] = []
     monkeypatch.setattr(accounts_plots, "show_figure", shown.append)
@@ -161,7 +161,7 @@ def test_balance_history_plots_the_picked_lots(two_lot_run: RunConnection,
 
 
 def test_events_view_narrows_to_a_lot(two_lot_run: RunConnection) -> None:
-    from analysis.sim.notebook_ui.events_widgets import events_view
+    from zabob.retirement.sim.notebook_ui.events_widgets import events_view
 
     _heading, whole = events_view(two_lot_run, accounts=(BROKERAGE,))
     heading, lot_b = events_view(two_lot_run, accounts=(BROKERAGE,), lots=("b",))
@@ -175,7 +175,7 @@ def test_events_view_narrows_to_a_lot(two_lot_run: RunConnection) -> None:
 
 
 def test_events_widget_offers_lots_for_one_account(two_lot_run: RunConnection) -> None:
-    from analysis.sim.notebook_ui.events_widgets import events_widget
+    from zabob.retirement.sim.notebook_ui.events_widgets import events_widget
 
     widget = events_widget(two_lot_run)
     selectors, _date_picker, _out = widget.children
@@ -189,7 +189,7 @@ def test_account_diffs_compare_one_lot(
     lot_variant_runs: tuple[RunConnection, dict[str, RunConnection]],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from analysis.sim.notebook_ui import compare_plots
+    from zabob.retirement.sim.notebook_ui import compare_plots
 
     baseline, variants = lot_variant_runs
     shown: list[Any] = []
@@ -237,7 +237,7 @@ def _copy_recipe(runs_dir: Path, name: str, rename_lot: str | None = None) -> No
 def test_ensemble_widgets_share_controls_and_start_on_the_default(
     two_lot_ensemble_runs_dir: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from analysis.sim.notebook_ui import ensemble_widgets
+    from zabob.retirement.sim.notebook_ui import ensemble_widgets
 
     _copy_recipe(two_lot_ensemble_runs_dir, "base_ensemble")
     titles: list[Any] = []
@@ -264,7 +264,7 @@ def test_ensemble_widgets_share_controls_and_start_on_the_default(
 
 
 def test_unknown_default_recipe_keeps_the_first(two_lot_ensemble_runs_dir: Path) -> None:
-    from analysis.sim.notebook_ui import ensemble_widgets
+    from zabob.retirement.sim.notebook_ui import ensemble_widgets
 
     fan = ensemble_widgets.ensemble_widget(runs_dir=two_lot_ensemble_runs_dir, default="nope")
     assert fan.children[0].value == "two_lot"
@@ -277,7 +277,7 @@ def test_lot_picker_offers_only_the_shown_recipes_lots(
     """The fan's Lot dropdown offers its recipe's lots, not every recipe's:
     switching recipe swaps the list, and drops a picked lot the new recipe
     lacks."""
-    from analysis.sim.notebook_ui import ensemble_widgets
+    from zabob.retirement.sim.notebook_ui import ensemble_widgets
 
     _copy_recipe(two_lot_ensemble_runs_dir, "base_ensemble", rename_lot="a")
     fan = ensemble_widgets.ensemble_widget(runs_dir=two_lot_ensemble_runs_dir,
@@ -301,8 +301,8 @@ def test_a_disabled_default_recipe_still_offers_its_lots(
 ) -> None:
     """A widget keeps a disabled recipe that is its default (#300); the
     shared controls must still know that recipe's lots (#401)."""
-    from analysis.sim.loader import set_scenario_enabled
-    from analysis.sim.notebook_ui import ensemble_widgets
+    from zabob.retirement.sim.loader import set_scenario_enabled
+    from zabob.retirement.sim.notebook_ui import ensemble_widgets
 
     _copy_recipe(two_lot_ensemble_runs_dir, "base_ensemble", rename_lot="a")
     (test_data_dir / "scenarios" / "base_ensemble").mkdir()
@@ -325,8 +325,8 @@ def test_compare_lots_are_the_baseline_and_variants_own(
 ) -> None:
     """The comparison offers the union of its baseline's and variant's lots,
     independent of the fan's, and a lot one side lacks gets a note."""
-    from analysis.sim.notebook_ui import ensemble_widgets
-    from analysis.sim.notebook_ui.styled import StyledMarkdown
+    from zabob.retirement.sim.notebook_ui import ensemble_widgets
+    from zabob.retirement.sim.notebook_ui.styled import StyledMarkdown
 
     _copy_recipe(two_lot_ensemble_runs_dir, "base_ensemble", rename_lot="a")
     shown: list[object] = []
@@ -360,7 +360,7 @@ def test_compare_lots_are_the_baseline_and_variants_own(
 def test_widgets_of_one_kind_share_a_lot_picker(two_lot_ensemble_runs_dir: Path) -> None:
     """Two single-recipe widgets on one set of controls share its Lot
     dropdown; a comparison gets the other one."""
-    from analysis.sim.notebook_ui import ensemble_widgets
+    from zabob.retirement.sim.notebook_ui import ensemble_widgets
 
     controls = ensemble_widgets.EnsembleControls(runs_dir=two_lot_ensemble_runs_dir)
     first, second = (ensemble_widgets.ensemble_widget(runs_dir=two_lot_ensemble_runs_dir,
@@ -377,8 +377,8 @@ def test_widgets_of_one_kind_share_a_lot_picker(two_lot_ensemble_runs_dir: Path)
 def test_compare_widget_log_scale_uses_symlog(
     seeded_ensemble_batch, runs_dir: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from analysis.sim.notebook_ui import ensemble_widgets
-    from analysis.sim.types import LogLinearMode
+    from zabob.retirement.sim.notebook_ui import ensemble_widgets
+    from zabob.retirement.sim.types import LogLinearMode
 
     figures: list = []
     real_figure = ensemble_widgets.ensemble_compare_figure
@@ -405,7 +405,7 @@ def test_each_widget_stacks_its_lot_picker_under_account(
 ) -> None:
     """The shared controls appear in each widget's own row, with that
     widget's Lot dropdown in a column under Account."""
-    from analysis.sim.notebook_ui import ensemble_widgets
+    from zabob.retirement.sim.notebook_ui import ensemble_widgets
 
     controls = ensemble_widgets.EnsembleControls(runs_dir=two_lot_ensemble_runs_dir)
     fan = ensemble_widgets.ensemble_widget(runs_dir=two_lot_ensemble_runs_dir, controls=controls)

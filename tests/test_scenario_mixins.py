@@ -14,13 +14,13 @@ import pandas as pd
 import pytest
 from click.testing import CliRunner
 
-from analysis.cli import main
-from analysis.sim.connection import open_scenario
-from analysis.sim.lineage import ScenarioCycleError, load_order, parse_parents
-from analysis.sim.loader import LoadError, load_scenario
-from analysis.sim.provenance import data_stamps
-from analysis.sim.readme import description_view, lineage_markdown
-from analysis.sim.staging import _affected_scenarios
+from zabob.retirement.cli import main
+from zabob.retirement.sim.connection import open_scenario
+from zabob.retirement.sim.lineage import ScenarioCycleError, load_order, parse_parents
+from zabob.retirement.sim.loader import LoadError, load_scenario
+from zabob.retirement.sim.provenance import data_stamps
+from zabob.retirement.sim.readme import description_view, lineage_markdown
+from zabob.retirement.sim.staging import _affected_scenarios
 
 # The scenario the tests derive from, and its own load order: it inherits
 # the prototype's root, `base` (#91).

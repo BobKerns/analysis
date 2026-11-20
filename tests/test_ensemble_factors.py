@@ -9,9 +9,9 @@ from pathlib import Path
 import pytest
 from click.testing import CliRunner, Result
 
-from analysis.cli import main
-from analysis.sim import factor_tree as ft
-from analysis.sim.correlation import Link
+from zabob.retirement.cli import main
+from zabob.retirement.sim import factor_tree as ft
+from zabob.retirement.sim.correlation import Link
 
 
 @pytest.fixture
@@ -156,7 +156,7 @@ def test_the_figure_is_16_9_unless_given_a_size() -> None:
 def test_the_tree_reads_factors_and_varying_rows_from_an_intent(
     template_data_dir: Path, markets: str,
 ) -> None:
-    from analysis.sim.loader import open_intent_db
+    from zabob.retirement.sim.loader import open_intent_db
 
     with open_intent_db(template_data_dir, markets) as (con, _name):
         tree = ft.factor_tree(con)
@@ -169,7 +169,7 @@ def test_the_tree_reads_factors_and_varying_rows_from_an_intent(
 def test_a_factor_hung_from_a_row_stays_in_its_tree(
     template_data_dir: Path, derive_template_scenario: Callable[..., Path],
 ) -> None:
-    from analysis.sim.registries import CALENDAR_HEADER
+    from zabob.retirement.sim.registries import CALENDAR_HEADER
 
     header = ",".join(CALENDAR_HEADER)
     row = {"kind": "latent_factor", "name": "under_cpi", "description": "follows the CPI path",

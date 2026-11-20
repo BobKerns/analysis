@@ -2,7 +2,7 @@
 # requires-python = ">=3.12"
 # dependencies = ["google-api-python-client>=2.150", "google-auth-oauthlib>=1.2", "google-auth-httplib2>=0.2"]
 # ///
-"""Talk to the YouTube Data API for `python -m analysis.videos publish` (#395).
+"""Talk to the YouTube Data API for `python -m zabob.retirement.videos publish` (#395).
 
 Runs under `uv run --script`, in its own environment, so the project doesn't
 depend on Google's client libraries.

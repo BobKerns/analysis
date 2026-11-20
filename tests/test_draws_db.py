@@ -12,13 +12,13 @@ from pathlib import Path
 import pytest
 from click.testing import CliRunner
 
-from analysis.cli import main
-from analysis.sim.correlation import probability, tail_scale
-from analysis.sim.distributions import Uniform, tail_rng
-from analysis.sim.draws_charts import pair_options
-from analysis.sim.draws_db import build_draws_db, draws_db_path, draws_frames, ks_uniform
-from analysis.sim.ensemble import build_distribution, resolve_member, write_batch_manifest
-from analysis.sim.loader import LoadResult
+from zabob.retirement.cli import main
+from zabob.retirement.sim.correlation import probability, tail_scale
+from zabob.retirement.sim.distributions import Uniform, tail_rng
+from zabob.retirement.sim.draws_charts import pair_options
+from zabob.retirement.sim.draws_db import build_draws_db, draws_db_path, draws_frames, ks_uniform
+from zabob.retirement.sim.ensemble import build_distribution, resolve_member, write_batch_manifest
+from zabob.retirement.sim.loader import LoadResult
 
 from tests.test_correlation import _factor
 from tests.test_rate_paths import _process_rate
@@ -372,8 +372,8 @@ def test_a_draws_database_from_another_schema_version_is_gathered_again(mc_batch
     one built under another SCHEMA_VERSION rather than reading it."""
     from click.testing import CliRunner
 
-    from analysis.cli import main
-    from analysis.sim.draws_db import build_draws_db, draws_db_current
+    from zabob.retirement.cli import main
+    from zabob.retirement.sim.draws_db import build_draws_db, draws_db_current
 
     path = build_draws_db(mc_batch)
     assert draws_db_current(mc_batch)

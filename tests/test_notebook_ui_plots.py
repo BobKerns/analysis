@@ -1,4 +1,4 @@
-"""Tests for analysis.sim.notebook_ui.networth_plots and .accounts_plots."""
+"""Tests for zabob.retirement.sim.notebook_ui.networth_plots and .accounts_plots."""
 
 from __future__ import annotations
 
@@ -11,13 +11,13 @@ import numpy as np
 
 matplotlib.use("Agg")
 
-from analysis.sim.accounts import accounts_dataframe
-from analysis.sim.types import DollarMode
-from analysis.sim.run_charts import balance_history_figure
-from analysis.sim.connection import RunConnection, open_run
-from analysis.sim.notebook_ui.accounts_plots import account_history_widget, show_account_setup
-from analysis.sim.notebook_ui.pickers import AccountPicker, TimeRangePicker, run_years
-from analysis.sim.notebook_ui.networth_plots import (
+from zabob.retirement.sim.accounts import accounts_dataframe
+from zabob.retirement.sim.types import DollarMode
+from zabob.retirement.sim.run_charts import balance_history_figure
+from zabob.retirement.sim.connection import RunConnection, open_run
+from zabob.retirement.sim.notebook_ui.accounts_plots import account_history_widget, show_account_setup
+from zabob.retirement.sim.notebook_ui.pickers import AccountPicker, TimeRangePicker, run_years
+from zabob.retirement.sim.notebook_ui.networth_plots import (
     economic_income_widget,
     expenses_widget,
     gains_widget,
@@ -216,7 +216,7 @@ def test_balance_history_adds_total_for_multiple_accounts() -> None:
 def test_balance_history_clips_after_taking_the_monthly_change() -> None:
     import pandas as pd
 
-    from analysis.sim.types import ValuePlotMode
+    from zabob.retirement.sim.types import ValuePlotMode
 
     index = pd.date_range("2026-01-31", periods=24, freq="ME")
     balances = pd.DataFrame({"Checking": range(0, 240, 10)}, index=index)

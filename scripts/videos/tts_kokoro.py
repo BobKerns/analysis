@@ -3,7 +3,7 @@
 # dependencies = ["kokoro-onnx==0.6.1", "soundfile>=0.13", "misaki[ja]==0.9.4"]
 # ///
 # cspell:ignore sess
-"""Synthesize one scene's narration with Kokoro (run by analysis.videos, not by hand).
+"""Synthesize one scene's narration with Kokoro (run by zabob.retirement.videos, not by hand).
 
 Runs under `uv run --script`, in its own environment: kokoro-onnx doesn't
 support the project's Python yet, and nobody who isn't making videos should

@@ -22,9 +22,9 @@ _analysis_validate_repo_dir() {
     [ -n "$1" ] || return 1
     [ -d "$1" ] || return 1
     [ -f "$1/pyproject.toml" ] || return 1
-    [ -f "$1/src/analysis/cli.py" ] || return 1
-    [ -f "$1/src/analysis/amazon/cli.py" ] || return 1
-    [ -f "$1/src/analysis/sim/cli.py" ] || return 1
+    [ -f "$1/src/zabob/retirement/cli.py" ] || return 1
+    [ -f "$1/src/zabob/retirement/amazon/cli.py" ] || return 1
+    [ -f "$1/src/zabob/retirement/sim/cli.py" ] || return 1
     return 0
 }
 
@@ -87,7 +87,7 @@ if ! _analysis_validate_repo_dir "$_ANALYSIS_REPO_CANDIDATE"; then
 fi
 
 if ! _analysis_validate_repo_dir "$_ANALYSIS_REPO_CANDIDATE"; then
-    _analysis_fail "invalid repo path: '$_ANALYSIS_REPO_CANDIDATE' (expected pyproject.toml and src/analysis/*/cli.py)"
+    _analysis_fail "invalid repo path: '$_ANALYSIS_REPO_CANDIDATE' (expected pyproject.toml and src/zabob/retirement/*/cli.py)"
 fi
 
 export ANALYSIS_REPO_DIR="$_ANALYSIS_REPO_CANDIDATE"
@@ -175,7 +175,7 @@ fi
 if [ -z "${ANALYSIS_USER-}" ]; then
     # The same prompt scripts/link-data.sh uses: pick a primary person by id
     # or display name.
-    ANALYSIS_USER="$(python -m analysis.sim.choose_user "$ANALYSIS_DATA_DIR")" || {
+    ANALYSIS_USER="$(python -m zabob.retirement.sim.choose_user "$ANALYSIS_DATA_DIR")" || {
         unset ANALYSIS_USER
         echo "activate-analysis: no ANALYSIS_USER chosen" >&2
         # Stop sourcing here: _analysis_fail's return only leaves the function.

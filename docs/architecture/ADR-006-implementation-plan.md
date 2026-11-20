@@ -1,6 +1,6 @@
 # [ADR-006](ADR-006-ensemble-scenarios.md) implementation plan: ensemble scenarios
 
-**Status: implemented.** All five phases below have shipped: `calendar.csv` variation/validation (Phase 0, `src/analysis/sim/loader.py`, `src/analysis/sim/engine.py`), draws (Phase 1, `src/analysis/sim/distributions.py`), member resolution (Phase 2, `src/analysis/sim/ensemble.py`'s `resolve_member`), `sim run <recipe> --ensemble-size N`'s ensemble-generation path plus `sim ensemble create`/`sim calendar add` (Phase 3, `src/analysis/sim/cli.py`), and aggregation/reporting via `sim ensemble summary` and `notebooks/ensemble.ipynb` (Phase 4, `src/analysis/sim/ensemble.py`, `src/analysis/sim/notebook_ui/ensemble_widgets.py`). The phase breakdown below is kept as a record of the design sequencing, not a pending TODO list.
+**Status: implemented.** All five phases below have shipped: `calendar.csv` variation/validation (Phase 0, `src/zabob/retirement/sim/loader.py`, `src/zabob/retirement/sim/engine.py`), draws (Phase 1, `src/zabob/retirement/sim/distributions.py`), member resolution (Phase 2, `src/zabob/retirement/sim/ensemble.py`'s `resolve_member`), `sim run <recipe> --ensemble-size N`'s ensemble-generation path plus `sim ensemble create`/`sim calendar add` (Phase 3, `src/zabob/retirement/sim/cli.py`), and aggregation/reporting via `sim ensemble summary` and `notebooks/ensemble.ipynb` (Phase 4, `src/zabob/retirement/sim/ensemble.py`, `src/zabob/retirement/sim/notebook_ui/ensemble_widgets.py`). The phase breakdown below is kept as a record of the design sequencing, not a pending TODO list.
 
 **Later refinement (post-ship):** Phase 0/1's separate `vary_clip_low`/`vary_clip_high` columns were merged into `vary_low`/`vary_high` (now shared with `uniform`), with any of `vary_mean`/`vary_sd`/`vary_low`/`vary_high` inferable from the other three (`distributions.resolve_truncated_normal_bounds`) -- `truncated_normal` is never actually unbounded. See [ADR-006](ADR-006-ensemble-scenarios.md) §2/§3 for the current column set; mentions of `vary_clip_low`/`vary_clip_high` below are historical.
 
@@ -18,7 +18,7 @@ Done. Exit: suite green; no behavior change for any scenario without `vary_*` co
 
 ## Phase 1 — Distributions and draws (pure functions, no I/O)
 
-1. New `src/analysis/sim/distributions.py`: `Uniform(low, high)`, `TruncatedNormal(mean, sd, clip_low=None, clip_high=None)`, each with `.draw(rng: random.Random)`. Rejection sampling for the truncated case, capped attempts (a clear error past the cap, not a silent hang).
+1. New `src/zabob/retirement/sim/distributions.py`: `Uniform(low, high)`, `TruncatedNormal(mean, sd, clip_low=None, clip_high=None)`, each with `.draw(rng: random.Random)`. Rejection sampling for the truncated case, capped attempts (a clear error past the cap, not a silent hang).
 2. `member_rng(seed: int, member_index: int, row_name: str) -> random.Random`: seed derived via `hashlib.sha256(f"{seed}:{member_index}:{row_name}".encode())`, so draws are independent per (member, row) and reproducible.
 3. Tests: draws stay within `low`/`high` (uniform) and within clip bounds (truncated normal) over many samples; the same `(seed, member_index, name)` always reproduces the same draw; changing one row's name/params doesn't change another's draws.
 
@@ -26,7 +26,7 @@ Done. Exit: pure, fully unit-testable; nothing wired to a scenario yet.
 
 ## Phase 2 — Resolving one member's intent
 
-1. New `src/analysis/sim/ensemble.py`: `resolve_member(recipe_intent_path, member_path, *, seed, member_index, member_count, recipe_tree_id) -> Path`:
+1. New `src/zabob/retirement/sim/ensemble.py`: `resolve_member(recipe_intent_path, member_path, *, seed, member_index, member_count, recipe_tree_id) -> Path`:
    - Copies `recipe_intent_path` to `member_path`.
    - Reads every `calendar_event` row with `vary_distribution IS NOT NULL`.
    - **Pass 1 (dates):** for each `vary_target='date'` row, draw on `member_rng(seed, member_index, name)`, `UPDATE ... SET date = ?, vary_distribution = NULL`.
@@ -49,7 +49,7 @@ Done. Exit: `sim run <recipe>` is the whole user-facing entry point for generati
 
 ## Phase 4 — Aggregation and reporting
 
-1. `src/analysis/sim/ensemble.py` (or a sibling): `load_ensemble(runs_dir) -> dict[str, RunConnection]`; `summary(frame, value_col, group_col="month") -> DataFrame` returning mean/median/std/min/max, built the same way `scenario_compare`'s aggregation already is.
+1. `src/zabob/retirement/sim/ensemble.py` (or a sibling): `load_ensemble(runs_dir) -> dict[str, RunConnection]`; `summary(frame, value_col, group_col="month") -> DataFrame` returning mean/median/std/min/max, built the same way `scenario_compare`'s aggregation already is.
 2. `sim ensemble summary <recipe> [--metric net_worth]`: prints the aggregate table plus the failure count/paths from Phase 3's run (read back from `ensemble_manifest` across members, or a small run-log written alongside the ensemble folder).
 3. `notebooks/ensemble.ipynb`: a scenario picker scoped to ensemble recipes, a percentile-band ("fan") chart, and the same summary table. Follows `notebooks/README.md`'s widget conventions (return the box; let `Connections.show` own the first draw).
 4. Tests: `summary` on a small fixture ensemble matches a hand-computed mean/median/SD; the CLI command's output includes every expected column and the failure count; the notebook helpers (`*_view` functions) are unit-tested without a kernel, the same way `allocation_view`/`events_view` are.

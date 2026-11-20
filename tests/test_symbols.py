@@ -9,9 +9,9 @@ from pathlib import Path
 import pytest
 from click.testing import CliRunner
 
-from analysis.cli import main
-from analysis.sim import prices, symbols
-from analysis.sim.prices import PriceError
+from zabob.retirement.cli import main
+from zabob.retirement.sim import prices, symbols
+from zabob.retirement.sim.prices import PriceError
 
 
 class _Provider:

@@ -11,8 +11,8 @@ from typing import Any
 
 import pytest
 
-from analysis.sim import loader
-from analysis.sim.loader import ORIGIN, LoadError, LoadResult
+from zabob.retirement.sim import loader
+from zabob.retirement.sim.loader import ORIGIN, LoadError, LoadResult
 
 SCENARIO = {"start": "2026-05-31", "end": "2040-12-31"}
 

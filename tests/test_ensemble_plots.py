@@ -11,8 +11,8 @@ matplotlib.use("Agg")
 
 import matplotlib.pyplot as plt
 
-from analysis.sim.ensemble import summary_with_percentiles
-from analysis.sim.ensemble_plots import (
+from zabob.retirement.sim.ensemble import summary_with_percentiles
+from zabob.retirement.sim.ensemble_plots import (
     CompareSide,
     ensemble_compare_figure,
     ensemble_compare_grid_figure,
@@ -149,7 +149,7 @@ def test_several_comparisons_fit_16_9_unless_given_a_size() -> None:
 
 
 def test_ensemble_compare_figure_clips_after_the_whole_run_deltas() -> None:
-    from analysis.sim.notebook_ui.pickers import TimeRangePicker
+    from zabob.retirement.sim.notebook_ui.pickers import TimeRangePicker
 
     months = pd.date_range("2026-01-31", periods=24, freq="ME")
     # The variant dips below the reserve once, in 2026, and the baseline never does.
@@ -201,7 +201,7 @@ def test_importing_the_charts_leaves_pyplot_unloaded() -> None:
     import subprocess
     import sys
 
-    code = ("import sys, analysis.sim.ensemble_plots; "
+    code = ("import sys, zabob.retirement.sim.ensemble_plots; "
             "print('matplotlib.pyplot' in sys.modules)")
     result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True)
     assert result.stdout.strip() == "False"

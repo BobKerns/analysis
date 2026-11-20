@@ -13,11 +13,11 @@ import pandas as pd
 import pytest
 from click.testing import CliRunner
 
-from analysis.cli import main
-from analysis.sim.correlation import standard_normal
-from analysis.sim.distributions import path_rng
-from analysis.sim.ensemble import process_path
-from analysis.sim.loader import LoadResult
+from zabob.retirement.cli import main
+from zabob.retirement.sim.correlation import standard_normal
+from zabob.retirement.sim.distributions import path_rng
+from zabob.retirement.sim.ensemble import process_path
+from zabob.retirement.sim.loader import LoadResult
 
 from tests.test_rate_paths import _generated, _issues, _member, _process_rate, _set_rate
 
@@ -227,8 +227,8 @@ def test_sensitivity_describes_the_start(
     append_calendar_row: Callable[..., None], test_data_dir: Path,
     intent_dir: Path, runs_dir: Path,
 ) -> None:
-    from analysis.sim import sensitivity
-    from analysis.sim.loader import latest_ensemble_batch
+    from zabob.retirement.sim import sensitivity
+    from zabob.retirement.sim.loader import latest_ensemble_batch
 
     _process_rate(append_calendar_row, "stock_path", **_CURRENT)
     runner = CliRunner()

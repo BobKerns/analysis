@@ -19,10 +19,10 @@ from pathlib import Path
 
 import pytest
 
-from analysis.sim.ensemble import resolve_member
-from analysis.sim.loader import LoadError, load_scenario
-from analysis.sim.strategies.spending import annuity_rate, parse_horizon
-from analysis.sim.strategy_runtime import _TableMortality
+from zabob.retirement.sim.ensemble import resolve_member
+from zabob.retirement.sim.loader import LoadError, load_scenario
+from zabob.retirement.sim.strategies.spending import annuity_rate, parse_horizon
+from zabob.retirement.sim.strategy_runtime import _TableMortality
 
 SCENARIO = "alice_spending"
 FLEX = "strategies/flex.csv"
@@ -347,8 +347,8 @@ def test_the_rmd_divisor_is_the_latest_row_for_the_age(
 
 
 def test_an_empty_portfolio_pays_nothing_once_started() -> None:
-    from analysis.sim.strategies.spending import Amortize
-    from analysis.sim.strategy_api import Context, PersonView, percent
+    from zabob.retirement.sim.strategies.spending import Amortize
+    from zabob.retirement.sim.strategy_api import Context, PersonView, percent
 
     strategy = Amortize("flex", Amortize.Params(portfolio="portfolio:invest", real_return=percent("2%")))
     memory = {"first_payment": 2_000_000, "first_since": "2026-05-31", "spend": 3_000_000,
@@ -366,8 +366,8 @@ def test_an_empty_portfolio_pays_nothing_once_started() -> None:
 def test_an_overdrawn_lot_is_left_out_of_the_blend() -> None:
     """A lot below zero (a shortfall the run carries on past) has no return
     to blend; the net portfolio still sets the payment."""
-    from analysis.sim.strategies.spending import Amortize
-    from analysis.sim.strategy_api import Context, LotRef, LotView, PersonView
+    from zabob.retirement.sim.strategies.spending import Amortize
+    from zabob.retirement.sim.strategy_api import Context, LotRef, LotView, PersonView
 
     def lot(account: str, symbol: str, balance: int) -> LotView:
         return LotView(ref=LotRef(account, "default"), kind="asset", subkind="brokerage", lot_subkind=None,

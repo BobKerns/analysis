@@ -9,10 +9,10 @@ from pathlib import Path
 import pytest
 from click.testing import CliRunner
 
-from analysis.cli import main
-from analysis.sim import rename
-from analysis.sim.lineage import read_parents
-from analysis.sim.loader import growth_rule_name, load_scenario
+from zabob.retirement.cli import main
+from zabob.retirement.sim import rename
+from zabob.retirement.sim.lineage import read_parents
+from zabob.retirement.sim.loader import growth_rule_name, load_scenario
 
 
 def _sim(data_dir: Path, *args: str, scenario: str | None = "retire_alice"):

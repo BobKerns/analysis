@@ -69,14 +69,14 @@ same change — the ADRs are load-bearing, not historical.
 
 Key modules:
 
-- `src/analysis/sim/registries.py` — the locked vocabularies (account kinds and
+- `src/zabob/retirement/sim/registries.py` — the locked vocabularies (account kinds and
   subkinds, the ten `AMOUNT_RULE_KINDS`, tax characters, `CHAIN_KINDS`,
   `DEFAULT_PRIORITIES`, CSV headers). [ADR-003](../docs/architecture/ADR-003-registries-and-csv-schemas.md) defines these; keep them paired.
-- `src/analysis/sim/schema.py` — all SQLite DDL, `SCHEMA_VERSION`. Mirrors [ADR-002](../docs/architecture/ADR-002-storage-schema.md).
-- `src/analysis/sim/loader.py` — data repo CSVs to `state/intent/<scenario>.sqlite3`.
+- `src/zabob/retirement/sim/schema.py` — all SQLite DDL, `SCHEMA_VERSION`. Mirrors [ADR-002](../docs/architecture/ADR-002-storage-schema.md).
+- `src/zabob/retirement/sim/loader.py` — data repo CSVs to `state/intent/<scenario>.sqlite3`.
   Validation belongs here: unresolvable references must fail loudly at load.
-- `src/analysis/sim/engine.py` — monthly stepping to a run file under `state/runs/`.
-- `src/analysis/sim/provenance.py` — code/data versions and `scenario_tree_id`.
+- `src/zabob/retirement/sim/engine.py` — monthly stepping to a run file under `state/runs/`.
+- `src/zabob/retirement/sim/provenance.py` — code/data versions and `scenario_tree_id`.
 
 Invariants that are easy to break:
 
@@ -157,7 +157,7 @@ Run a single test with `.venv/bin/python -m pytest tests/test_engine.py::test_na
 
 `ty check` is clean on `main` too. Fix a type error rather than silencing it.
 Where a library hides types from ty, use the existing helper: `named_rows()`
-for `DataFrame.itertuples()` (`src/analysis/frames.py`), or `_trait()` for a
+for `DataFrame.itertuples()` (`src/zabob/retirement/frames.py`), or `_trait()` for a
 traitlets class attribute (`notebook_ui/pickers.py`). A narrow
 `# ty: ignore[<rule>]` with a reason is the last resort. To read a frame's
 years or months from its `DatetimeIndex`, use `index_years()`/`index_months()`

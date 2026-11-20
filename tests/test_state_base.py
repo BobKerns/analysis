@@ -9,13 +9,13 @@ from typing import Any
 
 import pytest
 
-from analysis.sim import tax_api
-from analysis.sim.tax_api import NO_EXTRA, Extra, TaxError, calculator
-from analysis.sim.taxes import common
-from analysis.sim.taxes.state_base import (
+from zabob.retirement.sim import tax_api
+from zabob.retirement.sim.tax_api import NO_EXTRA, Extra, TaxError, calculator
+from zabob.retirement.sim.taxes import common
+from zabob.retirement.sim.taxes.state_base import (
     Adjustment, Basis, FederalStateYear, Income, StateFromFederal, StateFromIncome, StateYear,
 )
-from analysis.sim.taxes.state_tables import StateTablesYear
+from zabob.retirement.sim.taxes.state_tables import StateTablesYear
 from tests.test_tax_api import MICROS, TABLES, _item, _year
 
 SS = _item("ss_benefit", 40_000_00)
@@ -173,7 +173,7 @@ def test_a_state_reclassifies_qualified_dividends_without_changing_agi() -> None
 
 
 def test_the_federal_memo_records_what_agi_leaves_out() -> None:
-    from analysis.sim.tax_api import Account
+    from zabob.retirement.sim.tax_api import Account
     roth = Account("Asset_Roth_Alice", "asset", "retirement", "alice")
     home = Account("Asset_House", "asset", "home", "joint")
     federal = calculator("federal").prepare(_year([

@@ -15,8 +15,8 @@ import git
 import pytest
 from click.testing import CliRunner
 
-from analysis.sim import builder, roll_schedule
-from analysis.sim.cli import sim_group_command
+from zabob.retirement.sim import builder, roll_schedule
+from zabob.retirement.sim.cli import sim_group_command
 
 SCENARIO = "sim/scenarios/retire_alice/scenario.csv"
 
@@ -102,7 +102,7 @@ def test_a_derived_scenario_rolls_its_own_rows_after_its_parent(
     marked: tuple[Path, git.Repo], commit_files: Callable[..., str],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from analysis.sim.roll import PARENT_FIRST
+    from zabob.retirement.sim.roll import PARENT_FIRST
 
     data, repo = marked
     commit_files(repo, _derived("alice_more"), "a what-if")
@@ -170,7 +170,7 @@ def test_a_roll_is_due_once_a_night_in_the_window_after_the_prices(
     assert not roll_schedule.due(data, config, night)
     assert roll_schedule.due(data, config, _local(2026, 11, 14, 2, 0))
     # Prices first, so the roll values the lots at the latest close.
-    from analysis.sim import price_schedule
+    from zabob.retirement.sim import price_schedule
 
     monkeypatch.delenv(price_schedule.SWITCH_ENV)
     price_schedule._update_state(top, pending="abc")
@@ -354,7 +354,7 @@ def test_a_failed_price_fetch_still_lets_the_tick_roll(
 ) -> None:
     from click import ClickException
 
-    from analysis.sim import price_schedule
+    from zabob.retirement.sim import price_schedule
 
     monkeypatch.setattr(builder, "read_config", lambda paths: {"prices": True, "roll": True})
 

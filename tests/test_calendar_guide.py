@@ -11,9 +11,9 @@ import pandas as pd
 import pytest
 from click.testing import CliRunner, Result
 
-from analysis.cli import main
-from analysis.sim import calendar_guide
-from analysis.sim.cli import calendar_add_group_command
+from zabob.retirement.cli import main
+from zabob.retirement.sim import calendar_guide
+from zabob.retirement.sim.cli import calendar_add_group_command
 
 
 @pytest.fixture

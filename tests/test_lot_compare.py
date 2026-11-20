@@ -11,12 +11,12 @@ import pytest
 
 matplotlib.use("Agg")
 
-from analysis.sim.connection import RunConnection
-from analysis.sim.notebook_ui.lot_compare import (
+from zabob.retirement.sim.connection import RunConnection
+from zabob.retirement.sim.notebook_ui.lot_compare import (
     account_definition_differences,
     year_to_date_differences,
 )
-from analysis.sim.notebook_ui.pickers import AccountPicker
+from zabob.retirement.sim.notebook_ui.pickers import AccountPicker
 
 BROKERAGE = "Asset_Brokerage_Joint"
 SCENARIOS = ["retire_alice", "variant"]
@@ -67,7 +67,7 @@ def test_year_to_date_rows_are_compared_by_name(lot_variant_runs: Runs) -> None:
 def _account_diffs(runs: Runs, monkeypatch: pytest.MonkeyPatch, **kwargs: Any):
     """The account diffs widget, its account picker and Measure toggle, and
     the list its tables are displayed into."""
-    from analysis.sim.notebook_ui import compare_plots
+    from zabob.retirement.sim.notebook_ui import compare_plots
 
     base, variants = runs
     shown: list[Any] = []
@@ -85,7 +85,7 @@ def _account_diffs(runs: Runs, monkeypatch: pytest.MonkeyPatch, **kwargs: Any):
 def test_account_diffs_measure_sits_right_of_the_modes(
     lot_variant_runs: Runs, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from analysis.sim.notebook_ui.pickers import DollarModePicker, ValuePlotModePicker
+    from zabob.retirement.sim.notebook_ui.pickers import DollarModePicker, ValuePlotModePicker
 
     dollars, values = DollarModePicker(), ValuePlotModePicker()
     picker, measure, _shown = _account_diffs(lot_variant_runs, monkeypatch,
@@ -116,7 +116,7 @@ def test_account_diffs_show_one_lots_measure_month_by_month(
 def test_account_diffs_show_only_the_picked_years(
     lot_variant_runs: Runs, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from analysis.sim.notebook_ui.pickers import TimeRangePicker
+    from zabob.retirement.sim.notebook_ui.pickers import TimeRangePicker
 
     time_range = TimeRangePicker()
     picker, _measure, shown = _account_diffs(lot_variant_runs, monkeypatch,
@@ -145,8 +145,8 @@ def test_a_lot_the_baseline_lacks_counts_as_zero_there(
 def test_cpi_dollars_leave_quantities_alone(
     lot_variant_runs: Runs, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from analysis.sim.notebook_ui.pickers import DollarModePicker
-    from analysis.sim.types import DollarMode
+    from zabob.retirement.sim.notebook_ui.pickers import DollarModePicker
+    from zabob.retirement.sim.types import DollarMode
 
     dollars = DollarModePicker(DollarMode.NOMINAL)
     picker, measure_picker, shown = _account_diffs(lot_variant_runs, monkeypatch,
@@ -167,7 +167,7 @@ def test_measure_appears_only_for_a_picked_lot(
 ) -> None:
     """Summed over an account's lots, basis and quantity would mislead, so
     Measure shows only once one lot is picked, and All lots is a balance."""
-    from analysis.sim.notebook_ui import compare_plots
+    from zabob.retirement.sim.notebook_ui import compare_plots
 
     picker, measure_picker, shown = _account_diffs(lot_variant_runs, monkeypatch)
     assert measure_picker.layout.display == "none"

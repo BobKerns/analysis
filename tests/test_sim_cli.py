@@ -14,10 +14,10 @@ import pandas as pd
 import pytest
 from click.testing import CliRunner, Result
 
-from analysis.cli import main
-from analysis.sim import registries
-from analysis.sim.loader import load_scenario
-from analysis.sim.scenario import SERIES_README
+from zabob.retirement.cli import main
+from zabob.retirement.sim import registries
+from zabob.retirement.sim.loader import load_scenario
+from zabob.retirement.sim.scenario import SERIES_README
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PROTOTYPE = REPO_ROOT / "prototype_data"
@@ -1440,7 +1440,7 @@ def test_sim_run_ensemble_reports_member_failures_without_stopping(
     load_result = _sim_load(test_data_dir, intent_dir, runner)
     assert load_result.exit_code == 0, load_result.output
 
-    import analysis.sim.cli as sim_cli
+    import zabob.retirement.sim.cli as sim_cli
 
     real_resolve_member = sim_cli.resolve_member
 
@@ -1470,7 +1470,7 @@ def test_sim_run_ensemble_reports_member_failures_without_stopping(
 
     # member 1 never got a run file at all -- only the batch manifest
     # records that it was expected and why it failed.
-    from analysis.sim.ensemble import member_run_statuses, read_batch_manifest
+    from zabob.retirement.sim.ensemble import member_run_statuses, read_batch_manifest
     manifest = read_batch_manifest(runs_batch)
     assert manifest is not None
     assert manifest["member_count"] == 2
@@ -1556,7 +1556,7 @@ def test_sim_run_ensemble_batch_reservation_is_exclusive(
     load_result = _sim_load(test_data_dir, intent_dir, runner)
     assert load_result.exit_code == 0, load_result.output
 
-    import analysis.sim.cli as sim_cli
+    import zabob.retirement.sim.cli as sim_cli
     from datetime import UTC
     from datetime import datetime as real_datetime
 
@@ -2080,7 +2080,7 @@ def test_sim_run_sensitivity_generates_oat_batch(
     test_data_dir: Path, append_calendar_row: Callable[..., None],
     intent_dir: Path, runs_dir: Path,
 ) -> None:
-    from analysis.sim.ensemble import read_batch_manifest
+    from zabob.retirement.sim.ensemble import read_batch_manifest
 
     _append_two_varying_rows(append_calendar_row)
     runner = CliRunner()
@@ -2205,7 +2205,7 @@ def test_sim_run_sensitivity_reports_member_failures_without_stopping(
     runner = CliRunner()
     assert _sim_load(test_data_dir, intent_dir, runner).exit_code == 0
 
-    import analysis.sim.cli as sim_cli
+    import zabob.retirement.sim.cli as sim_cli
 
     real_resolve_member = sim_cli.resolve_member
 
@@ -2322,12 +2322,12 @@ def test_sensitivity_manifest_is_written_before_members_run(
 ) -> None:
     """An interrupted OAT batch must still read as a sensitivity batch (PR #25
     review): the manifest exists before any member runs."""
-    from analysis.sim.loader import batch_mode
+    from zabob.retirement.sim.loader import batch_mode
 
     _append_two_varying_rows(append_calendar_row)
     runner = CliRunner()
     assert _sim_load(test_data_dir, intent_dir, runner).exit_code == 0
-    import analysis.sim.cli as sim_cli
+    import zabob.retirement.sim.cli as sim_cli
 
     seen: list[str] = []
     real = sim_cli._run_one_member
@@ -2342,7 +2342,7 @@ def test_sensitivity_manifest_is_written_before_members_run(
 
 
 def test_batch_mode_falls_back_to_member_manifests(oat_batch: Path) -> None:
-    from analysis.sim.loader import batch_mode
+    from zabob.retirement.sim.loader import batch_mode
 
     (oat_batch / "batch_manifest.json").unlink()
     assert batch_mode(oat_batch) == "sensitivity"
@@ -2441,7 +2441,7 @@ def test_sim_run_jobs_defaults_to_available_cpus(
 ) -> None:
     """#42: with no --jobs, members run one per CPU available to the process
     (1 if that can't be determined)."""
-    import analysis.sim.cli as sim_cli
+    import zabob.retirement.sim.cli as sim_cli
 
     jobs_param = next(p for p in sim_cli.run.params if p.name == "jobs")
     default = jobs_param.default
@@ -2457,7 +2457,7 @@ def test_sim_run_jobs_defaults_to_available_cpus(
 def test_sim_prints_a_warning_as_one_plain_line() -> None:
     """#368: a run's RuntimeWarning (a negative balance) reads as the planner
     sees it, without Python's file, line number and source line."""
-    from analysis.sim.cli import _format_warning
+    from zabob.retirement.sim.cli import _format_warning
 
     text = _format_warning(RuntimeWarning("2033-10-31: account 'X' went negative"),
                            RuntimeWarning, "/x/engine.py", 1152, "_warn_if_negative(...)")
@@ -2475,7 +2475,7 @@ def test_a_terminals_size_shapes_a_chart_only_when_reasonable(
 ) -> None:
     """#369: the compare chart takes the terminal's shape when it can use it,
     else its own 16:9."""
-    from analysis.sim.cli import _reasonable_chart_size
+    from zabob.retirement.sim.cli import _reasonable_chart_size
 
     assert _reasonable_chart_size(size) == expected
 
@@ -2488,7 +2488,7 @@ def test_a_sensitivity_report_with_no_sensitivity_batch_makes_one(
     ensemble_recipe: str, test_data_dir: Path, runs_dir: Path,
     commit_test_data: Callable[[], Path],
 ) -> None:
-    from analysis.sim.loader import ensemble_batches
+    from zabob.retirement.sim.loader import ensemble_batches
 
     commit_test_data()
     recipe_dir = runs_dir / ensemble_recipe
@@ -2510,7 +2510,7 @@ def test_a_report_offers_ensembles_that_have_no_runs_yet(
     one without a batch is then built (or waited for)."""
     import click
 
-    import analysis.sim.cli as sim_cli
+    import zabob.retirement.sim.cli as sim_cli
 
     result = CliRunner().invoke(click.Command("ask", callback=lambda: click.echo(
         sim_cli._ask_ensemble_run(runs_dir, "sensitivity", data_dir=test_data_dir, current=False))),
@@ -2529,7 +2529,7 @@ def test_a_pool_is_offered_only_where_its_batch_can_be_made(
 ) -> None:
     import click
 
-    import analysis.sim.cli as sim_cli
+    import zabob.retirement.sim.cli as sim_cli
 
     result = CliRunner().invoke(click.Command("ask", callback=lambda: click.echo(
         sim_cli._ask_ensemble_run(runs_dir, mode, data_dir=test_data_dir, current=False,

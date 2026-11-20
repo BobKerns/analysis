@@ -6,9 +6,9 @@ public employer paid."""
 
 from dataclasses import dataclass
 
-from analysis.sim.tax_api import Dollars, Percent, Tag, percent, register
-from analysis.sim.taxes.state_base import Adjustment
-from analysis.sim.taxes.state_tables import StateTables, StateTablesYear
+from zabob.retirement.sim.tax_api import Dollars, Percent, Tag, percent, register
+from zabob.retirement.sim.taxes.state_base import Adjustment
+from zabob.retirement.sim.taxes.state_tables import StateTables, StateTablesYear
 
 API_VERSION = 1
 

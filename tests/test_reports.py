@@ -10,12 +10,12 @@ import pandas as pd
 import pytest
 from click.testing import CliRunner
 
-from analysis.cli import main
-from analysis.sim import reports
-from analysis.sim.connection import RunConnection, open_run, open_scenario, year_end_values
-from analysis.sim.engine import run_scenario
-from analysis.sim.loader import LoadResult
-from analysis.sim.types import DollarMode
+from zabob.retirement.cli import main
+from zabob.retirement.sim import reports
+from zabob.retirement.sim.connection import RunConnection, open_run, open_scenario, year_end_values
+from zabob.retirement.sim.engine import run_scenario
+from zabob.retirement.sim.loader import LoadResult
+from zabob.retirement.sim.types import DollarMode
 
 BROKERAGE = "Asset_Brokerage_Joint"
 

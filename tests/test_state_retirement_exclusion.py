@@ -13,16 +13,16 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from analysis.sim.engine import run_scenario
-from analysis.sim.loader import LoadError, load_scenario
-from analysis.sim.registries import (
+from zabob.retirement.sim.engine import run_scenario
+from zabob.retirement.sim.loader import LoadError, load_scenario
+from zabob.retirement.sim.registries import (
     GROWTH_COUNTERPARTY_ACCOUNTS,
     HSA_PAYOUT_ACCOUNTS,
     SCHEDULED_CSV_HEADER,
     STATE_EXCLUSION_INCOME,
 )
-from analysis.sim.tax_api import TaxYear
-from analysis.sim.taxes.common import (
+from zabob.retirement.sim.tax_api import TaxYear
+from zabob.retirement.sim.taxes.common import (
     ExclusionGrant,
     RetirementExclusion,
     person_income,
@@ -271,8 +271,8 @@ def test_a_move_takes_the_new_states_exclusions(
 def test_tax_report_shows_the_exclusion(state_ira: Path, tmp_path: Path) -> None:
     """``sim report tax`` adds a state_exclusion column before state_agi,
     only when some year has one."""
-    from analysis.sim.reports import tax_by_year
-    from analysis.sim.connection import RunConnection
+    from zabob.retirement.sim.reports import tax_by_year
+    from zabob.retirement.sim.connection import RunConnection
 
     con, _ = _run(state_ira, tmp_path / "without")
     con.close()
