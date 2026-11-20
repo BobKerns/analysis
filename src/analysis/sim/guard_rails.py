@@ -15,8 +15,8 @@ fails ``sim check`` and the edit commands.
 The two measures:
 
 - ``spending``: the income report's spending (#249), every expense but
-  income tax, business expenses and depreciation, optionally only those
-  whose tags ``select`` picks (a rule's tag in a role over its account's).
+  income tax, business expenses, gifts and bequests (#274), and
+  depreciation, optionally only those whose tags ``select`` picks (a rule's tag in a role over its account's).
 - ``withdrawals``: what the portfolio pays out, net. Money leaving a
   portfolio account for anything outside the portfolio, less money
   arriving from outside other than the portfolio's own returns (interest,
@@ -522,7 +522,9 @@ def _inputs(pieces: RunPieces) -> _RunInputs:
     })
     to_subkind = flows["to_name"].map(subkind)
     category = to_subkind.map(EXPENSE_SUBKIND_TO_CATEGORY)
-    spent = ((transfers["to_kind"] == "expense") & ~category.isin(["taxes", "business"])
+    # Gifts and bequests leave the household but aren't its spending (#274),
+    # as in the income report.
+    spent = ((transfers["to_kind"] == "expense") & ~category.isin(["taxes", "business", "gifts"])
              & ~transfers["to_name"].isin(NON_CASH_EXPENSE_ACCOUNTS))
     empty: frozenset[str] = frozenset()
     account_tags = dict(zip(accounts.index, accounts["tag_set"], strict=True))

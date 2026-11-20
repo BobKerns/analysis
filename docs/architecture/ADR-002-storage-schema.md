@@ -114,7 +114,7 @@ state/
 | `load_warning` | ✓ | ✓ (snapshot) |
 | `intent_manifest` (one row) | ✓ | — |
 | `simulation_run` (one row) | — | ✓ |
-| `simulation_step`, `lot_state`, `transfer_event`, `capital_loss`, `hsa_gain`, `basis_step_up`, `mortgage_balance`, `applied_calendar_event`, `tax_year_summary`, `inflation_index_state`, `strategy_decision`, `breach_event`, `spending_baseline` | — | ✓ |
+| `simulation_step`, `lot_state`, `transfer_event`, `capital_loss`, `hsa_gain`, `basis_step_up`, `inheritance`, `mortgage_balance`, `applied_calendar_event`, `tax_year_summary`, `inflation_index_state`, `strategy_decision`, `breach_event`, `spending_baseline` | — | ✓ |
 | `schema_overview` (planned; not yet created) | ✓ | ✓ |
 | Views (`account_state`, `net_worth`, etc.) | — (intent-only views permitted, none defined in v1) | ✓ |
 
@@ -122,7 +122,7 @@ The snapshot in a run file is byte-comparable to the corresponding intent file's
 
 ### Intent layer DDL
 
-The DDL in this section and the next four is copied from `src/analysis/sim/schema.py` (`SCHEMA_VERSION` 69) and must be kept identical to it; the code is authoritative. These tables exist in both intent files and (as snapshot) run files. Not in the DDL: `tag`, `account_tag`, `scheduled_transaction_tag` and `calendar_event_tag` are a generic labelling facility (role/name pairs) that no loader writes yet.
+The DDL in this section and the next four is copied from `src/analysis/sim/schema.py` (`SCHEMA_VERSION` 70) and must be kept identical to it; the code is authoritative. These tables exist in both intent files and (as snapshot) run files. Not in the DDL: `tag`, `account_tag`, `scheduled_transaction_tag` and `calendar_event_tag` are a generic labelling facility (role/name pairs) that no loader writes yet.
 
 ```sql
 CREATE TABLE person (
@@ -131,7 +131,10 @@ CREATE TABLE person (
     birthdate   TEXT NOT NULL,
     sex         TEXT,  -- 'f' or 'm', or NULL; a life_table lifespan needs it
     role        TEXT,
-    meta_json   TEXT NOT NULL DEFAULT '{}'
+    meta_json   TEXT NOT NULL DEFAULT '{}',
+    -- #274: set on someone with no role, outside the household (an heir, a
+    -- trust, a charity), who gets an account of their own; NULL in it.
+    kind        TEXT CHECK (kind IN ('person','trust','charity'))
 );
 
 -- Names for the symbols lots hold (data repo securities.csv); shared reference
@@ -291,6 +294,10 @@ CREATE TABLE account (
     opened          TEXT,
     closed          TEXT,
     meta_json       TEXT NOT NULL DEFAULT '{}',
+    -- #274: the household member (or joint) who takes the account over at
+    -- its owner's death, no money moving: accounts.csv beneficiary naming a
+    -- person. A beneficiary chain is per lot (account_lot).
+    beneficiary_owner TEXT REFERENCES person(id),
     CHECK (
         (kind = 'asset' AND subkind IN ('cash','brokerage_taxable',
             'retirement','hsa','real_estate','vehicle','other_asset','business'))
@@ -398,6 +405,9 @@ CREATE TABLE account_lot (
     refill_amount_cents     INTEGER,
     maximum_balance_cents   INTEGER,
     overflow_chain_id       INTEGER REFERENCES chain(id),
+    -- #274: where the lot goes at its owner's death (accounts.csv
+    -- beneficiary, matched to this lot); NULL when the account names none.
+    beneficiary_chain_id    INTEGER REFERENCES chain(id),
     UNIQUE (account_id, lot)
 );
 
@@ -818,7 +828,7 @@ CREATE TABLE transfer_event (
     tax_character   TEXT NOT NULL,
     reason_kind     TEXT NOT NULL CHECK (reason_kind IN
                         ('rule','initial','ytd','ytd_rule','refill','overflow','strategy',
-                         'tax')),
+                         'tax','inheritance')),
     reason_id       INTEGER,
     -- The event this leg derives from: a multi-leg rule's primary leg, a
     -- withdrawal's basis leg for its gain leg, or, for a reason_kind='refill'
@@ -950,6 +960,27 @@ CREATE TABLE basis_step_up (
     rule            TEXT NOT NULL
 );
 
+-- #274: what each death did with an account: a lot swept into its
+-- beneficiary chain (lot_id and beneficiary_chain_id set; its legs are
+-- transfer_events with reason_kind 'inheritance' and this row's id), or the
+-- account passing to a household member with no money moving (owner set),
+-- which holds from the month after `date`. rule: 'designated' (the
+-- account's beneficiary), 'estate' (scenario meta_json estate) or 'spouse'.
+CREATE TABLE inheritance (
+    id                   INTEGER PRIMARY KEY,
+    step_id              INTEGER NOT NULL REFERENCES simulation_step(id),
+    date                 TEXT NOT NULL,
+    decedent             TEXT NOT NULL,
+    account_id           INTEGER NOT NULL REFERENCES account(id),
+    lot_id               INTEGER REFERENCES account_lot(id),
+    beneficiary_chain_id INTEGER REFERENCES chain(id),
+    owner                TEXT,
+    balance              INTEGER NOT NULL,
+    placed               INTEGER NOT NULL DEFAULT 0,
+    rule                 TEXT NOT NULL CHECK (rule IN ('designated','estate','spouse')),
+    CHECK ((owner IS NULL) = (lot_id IS NOT NULL))
+);
+
 -- #542: the balance each month's interest of a mortgage_payment rule was
 -- figured on, for the mortgage debt limit: one row per rule and month the
 -- interest covers. A ytd_amount catch-up posts several months' interest
@@ -1036,6 +1067,7 @@ Seeded rows (the loader inserts the subset relevant to that file kind; tables no
 | `capital_loss` | Basis a sale through a chain's basis step could not recover: a capital loss with no money moving, which the tax scan nets, limits and carries forward. |
 | `hsa_gain` | An HSA withdrawal's gain over the lot's basis, a loss negative ([#497](https://github.com/BobKerns/analysis/issues/497)): what a state that doesn't recognize HSAs taxes, with no money of its own, so the federal return never sees it. |
 | `mortgage_balance` | The balance a home mortgage's interest was figured on, by rule and month ([#542](https://github.com/BobKerns/analysis/issues/542)): the base of the itemized deduction's mortgage debt limit. A `ytd_amount` catch-up, posted at once, has a row for each month it replays. No money of its own. |
+| `inheritance` | What a death did with an account ([ADR-003](ADR-003-registries-and-csv-schemas.md) §4.9): a lot swept into its beneficiary chain (with what it placed; its legs are `transfer_event`s with `reason_kind` `inheritance`, and those reaching someone outside the household have the `bequest` character), or the account passing to another household member, no money moving, its new `owner` holding from the month after. `rule` is `designated`, `estate` or `spouse`. |
 | `basis_step_up` | A lot's cost basis reset at a death to its balance, whole or half ([ADR-003](ADR-003-registries-and-csv-schemas.md) §4.9): whose death, the balance, the basis before and after, and the `rule` that decided it (`owner`, `inherited`, `joint_half`, `community_property`, `last_survivor`). No money moves. |
 | `applied_calendar_event` | Junction table: which calendar events fired in which step. |
 | `tax_year_summary` | Cache and audit trail for the retrospective tax scan, by (year, bucket). |
@@ -1114,8 +1146,13 @@ SELECT month, kind, subkind,
 FROM balance_by_account
 GROUP BY month, kind, subkind;
 
+-- An account's owner is its accounts.csv owner until a death passes it to
+-- another household member (#274, `inheritance`), from the month after.
 CREATE VIEW balance_by_owner AS
-SELECT s.month, a.owner,
+SELECT s.month,
+       COALESCE((SELECT i.owner FROM inheritance i
+                 WHERE i.account_id = a.id AND i.owner IS NOT NULL AND i.date < s.month
+                 ORDER BY i.date DESC, i.id DESC LIMIT 1), a.owner) AS owner,
        SUM(CASE WHEN a.kind = 'asset' THEN st.balance
                 WHEN a.kind = 'liability' THEN -st.balance
                 ELSE 0 END) AS balance
@@ -1123,7 +1160,7 @@ FROM simulation_step s
 JOIN account_state st ON st.step_id = s.id
 JOIN account a        ON a.id = st.account_id
 WHERE a.kind IN ('asset','liability')
-GROUP BY s.month, a.owner;
+GROUP BY 1, 2;
 
 CREATE VIEW flow_by_account AS
 SELECT CAST(substr(date, 1, 4) AS INTEGER) AS year,
@@ -1252,3 +1289,4 @@ Each entry changed this ADR's design. The sections it names were rewritten in pl
 - [#542](https://github.com/BobKerns/analysis/issues/542): run table `mortgage_balance` (the balance each month's mortgage interest was figured on, for the debt limit) (Placement summary, Ledger DDL, glossary; schema 67).
 - [#586](https://github.com/BobKerns/analysis/issues/586): expense subkind `taxes_local` (Intent layer DDL; schema 68).
 - [#640](https://github.com/BobKerns/analysis/issues/640): `security.no_fetch`, and a blank `security.name` (Intent layer DDL; schema 69).
+- [#274](https://github.com/BobKerns/analysis/issues/274): `person.kind`, `account.beneficiary_owner`, `account_lot.beneficiary_chain_id`, run table `inheritance`, `transfer_event.reason_kind` `inheritance`, and `balance_by_owner` following owner changes (Intent and ledger DDL, views, glossary; schema 70).

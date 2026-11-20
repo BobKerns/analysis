@@ -42,6 +42,7 @@ if TYPE_CHECKING:
     from analysis.sim.lifespan_curves import PersonLifespan
     from analysis.sim.load_warnings import LoadWarnings
     from analysis.sim.shortfalls import NegativeBalance
+    from analysis.sim.inheritances import Inheritance
     from analysis.sim.step_ups import BasisStepUp
 
 # Category-bucketing defaults for RunConnection's derived-data methods below.
@@ -1111,6 +1112,22 @@ class RunConnection(Connection):
         return self._cached("basis_step_ups",
                             lambda: step_ups.run_basis_step_ups(self.run_path))
 
+    def inheritances(self) -> list[Inheritance]:
+        """What each death did with the household's accounts (#274), as
+        ``sim explain`` lists them: see ``inheritances.inheritances``."""
+        from analysis.sim import inheritances
+
+        return self._cached("inheritances",
+                            lambda: inheritances.run_inheritances(self.run_path))
+
+    def owner_changes(self) -> list[tuple[str, str, str]]:
+        """Each account a death passed to a new owner (#274): ``(account,
+        final month, owner)``; see ``inheritances.owner_changes``."""
+        from analysis.sim import inheritances
+
+        return self._cached("owner_changes",
+                            lambda: inheritances.run_owner_changes(self.run_path))
+
     def deaths(self) -> list[Death]:
         """Each person's death in this run (#255), from ``lifespan.csv``: the
         display name and the final month, earliest first. A chart marks them."""
@@ -1228,11 +1245,16 @@ class RunConnection(Connection):
 
     def expense_events(self) -> pd.DataFrame:
         """Transfers into expense accounts, and a tax refund out of one
-        (#568) as a negative transfer into it, so a tax expense nets to what
-        the year cost."""
+        (#568) or money out of a gift account (#274) as a negative transfer
+        into it, so a tax expense nets to what the year cost, and gifts to
+        what stayed given."""
         into = self.items("transfer_event", to_kind="expense")
-        back = self.items("transfer_event", from_kind="expense", reason_kind="tax")
-        back = back[back["to_kind"] != "expense"]
+        back = self.items("transfer_event", from_kind="expense")
+        # A tax refund (#568), or money coming back out of a gift account
+        # (#274: a loan repaid, an outside party's bequest to the household,
+        # or on to another outside party, whose own gift then nets to nothing).
+        back = back[((back["reason_kind"] == "tax") & (back["to_kind"] != "expense"))
+                    | (back["from_subkind"] == registries.OUTSIDE_ACCOUNT_SUBKIND)]
         if back.empty:
             return into
         back = back.copy()

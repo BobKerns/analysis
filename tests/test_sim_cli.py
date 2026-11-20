@@ -813,7 +813,7 @@ def test_editing_an_inherited_account_writes_a_whole_row_override(
     assert result.exit_code == 0, result.output
     assert "wrote an override of account 'Asset_Checking' (inherited from 'retire_alice')" in result.output
     assert _accounts(test_child_scenario) == {
-        "Asset_Checking": {**parent["Asset_Checking"], "owner": "alice"},
+        "Asset_Checking": {**parent["Asset_Checking"], "owner": "alice", "beneficiary": ""},
     }
     assert _accounts(parent_dir) == parent
 
