@@ -525,7 +525,7 @@ The description is put together from it and `youtube.toml`: the summary,
 the list, the chapters, the language's footer, a link to the video in each
 other language, and the previous and next videos (linked once they're
 up). The title is the language's `title` pattern, such as
-`Retirement Simulator: {number}—{title}`, where `{number}` is the folder's
+`Zabob Retirement: {number}—{title}`, where `{number}` is the folder's
 prefix.
 
 **A title must show whole.** YouTube cuts long titles off in lists, on

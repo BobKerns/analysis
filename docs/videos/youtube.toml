@@ -38,7 +38,7 @@ tags = ["retirement planning", "retirement simulator", "financial planning", "Mo
 # up. version_label introduces the link to this language's version from the
 # other languages' descriptions.
 [en]
-title = "Retirement Simulator: {number}—{title}"
+title = "Zabob Retirement: {number}—{title}"
 playlist = "Retirement Simulator Guide"
 version_label = "English version"
 in_this_video = "In this video:"
@@ -50,7 +50,7 @@ next = "Next: {episode}, {title}"
 
 [ja]
 # The English prefix stays, so both languages sort together on the channel.
-title = "Retirement Simulator: {number}—{title}"
+title = "Zabob Retirement: {number}—{title}"
 playlist = "Retirement Simulator (日本語)"
 version_label = "日本語版"
 in_this_video = "この回の内容:"
