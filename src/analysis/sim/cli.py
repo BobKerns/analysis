@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import csv as _csv
+import dataclasses
 import contextvars
 import functools
 import inspect
@@ -18,6 +19,7 @@ from collections.abc import Callable, Collection, Generator, Iterable, Mapping, 
 from contextlib import ExitStack, contextmanager, redirect_stdout
 import itertools
 import os
+import re
 import sqlite3
 import subprocess
 import tempfile
@@ -187,7 +189,7 @@ from analysis.sim.overlay import (
     tax_rows as _tax_rows,
 )
 from analysis.frames import clip_years, index_years, named_rows, row_years
-from analysis.sim.types import INVESTMENT_ASSET_SUBKINDS, Death, DollarMode, ItemType
+from analysis.sim.types import INVESTMENT_ASSET_SUBKINDS, Death, DollarMode, InvestmentAssetSubkind, ItemType
 from analysis.sim.retention import RETENTION_FILENAME, RetentionError, prune_state
 from analysis.sim.schema import connect_sim_file
 
@@ -235,13 +237,20 @@ _commit_option = click.option(
 )
 
 
-def _shown(path: Path) -> str:
+def _shown(path: Path, *, resolve: bool = True) -> str:
     """``path`` as the user would type it (#374): relative to the working
     directory when it's inside it, else ``~/...`` under the home folder,
     else absolute. A full temp or home path makes output wrap and hides
-    the part that matters."""
-    full = Path(path).expanduser().resolve()
-    for base, prefix in ((Path.cwd().resolve(), ""), (Path.home().resolve(), "~/")):
+    the part that matters.
+
+    Without ``resolve`` it is shown through a link and not as what the link
+    leads to: data/shared is how a checkout names its data repo, wherever
+    that is."""
+    full = Path(path).expanduser()
+    bases = ((Path.cwd(), ""), (Path.home(), "~/"))
+    if resolve:
+        full, bases = full.resolve(), tuple((base.resolve(), prefix) for base, prefix in bases)
+    for base, prefix in bases:
         try:
             rel = full.relative_to(base)
         except ValueError:
@@ -4255,6 +4264,7 @@ def explain(
         _echo_recorded_load_warnings(con)
         _echo_negative_balance_warnings(con)
         _echo_basis_step_ups(con)
+        _echo_inheritances(con)
         _echo_strategies(con)
     finally:
         con.close()
@@ -4392,6 +4402,24 @@ def _echo_basis_step_ups(con: sqlite3.Connection) -> None:
                 f"  basis {_compact_cents(s.basis_before_cents)} -> {_compact_cents(s.basis_after_cents)}"
                 f"  ({s.rule_label})")
         click.echo(line)
+
+
+def _echo_inheritances(con: sqlite3.Connection) -> None:
+    """What each death did with the household's accounts (#274): the month,
+    the decedent, the account, where it went and how; nothing for a run
+    with none."""
+    from analysis.sim.inheritances import inheritances
+
+    found = inheritances(con)
+    if not found:
+        return
+    click.echo(f"accounts passed on at a death ({len(found)}):")
+    width = max(len(i.account) for i in found)
+    who = max(len(i.decedent) for i in found)
+    for i in found:
+        gone = f", {_compact_cents(i.bequest_cents)} left the household" if i.bequest_cents else ""
+        click.echo(f"  {i.month[:7]}  {i.decedent:<{who}}  {i.account:<{width}}  -> {i.to}"
+                   f"  {_compact_cents(i.amount_cents)}{gone}  ({i.rule_label})")
 
 
 def _echo_recorded_load_warnings(con: sqlite3.Connection) -> None:
@@ -5165,34 +5193,70 @@ def init_command(
     directory: Path | None, person_id: str | None, display: str | None, birthdate: str | None,
     sex: str | None, filing_status: str | None, no_commit: bool, no_builder: bool,
 ) -> None:
-    """Start a new data repo in DIR (#289), asking for what the options
-    leave out: DIR, you (the operator, its first primary person) and the
-    household's filing status.
+    """Start a new data repo (#289), asking for what the options leave
+    out: you (the operator, its first primary person) and the household's
+    filing status.
 
-    DIR gets sim/ with persons.csv, the other shared CSVs, activate-analysis,
-    .retention.yaml and scenarios/base, made current, from the code
-    repository's templates/. The template scenarios (t_*) and tax-law aux
-    tables aren't copied: they're read from templates/ itself, so they stay
-    current as the code changes. DIR is made a git repository with a first
-    commit, so runs record which data they read from the start.
+    With no DIR, the usual step, the data repo is made at data/shared of the
+    code checkout you are in (or, outside any, the one this sim belongs
+    to). With DIR it is made there, and data/shared is linked to it: a
+    checkout's data repo is always found at its data/shared (#654).
+
+    Run with another checkout's sim (a venv left active from another
+    worktree), it runs the sim init of the checkout you are in instead,
+    making that checkout's .venv first if it has none, so the data repo is
+    paired with the code beside it.
+
+    The data repo gets sim/ with persons.csv, the other shared CSVs,
+    activate-analysis, .retention.yaml and scenarios/base, made current,
+    from the code repository's templates/. The template scenarios (t_*) and
+    tax-law aux tables aren't copied: they're read from templates/ itself,
+    so they stay current as the code changes. It is made a git repository
+    with a first commit, so runs record which data they read from the start.
 
     Then it turns on background builds (ADR-004 §12), as `sim builder
-    install` does: it links this code repository's data/shared to DIR, if
-    data/shared isn't there yet, and installs DIR's git hooks. --no-builder
-    leaves both alone, for scripts and tests, where a background build is
-    no use; so does --no-commit, since the builder needs a git repository.
-    So does ANALYSIS_NO_BUILDER set in the environment, as for setup.sh.
+    install` does, installing the data repo's git hooks. --no-builder
+    installs no hooks and links no DIR to data/shared, for scripts and
+    tests; so does ANALYSIS_NO_BUILDER set in the environment, as for
+    setup.sh. With no DIR the data repo is still made at data/shared,
+    which is where one was asked for.
+    --no-commit skips the builder, which needs a git repository.
 
-    Refuses a DIR that already holds a data repo.
+    Refuses a DIR that already holds a data repo, and with no DIR a
+    data/shared that is already there.
     """
+    from analysis.checkout import checkout_of
     from analysis.sim import data_repo
 
     # The variable setup.sh honors too: a recording (the setup video, #374)
-    # shows `sim init` as typed, so it can't pass --no-builder, and must not
-    # link or hook anything in the checkout it records from.
+    # shows `sim init DIR` as typed, so it can't pass --no-builder, and must
+    # not link or hook anything in the checkout it records from. (With no
+    # DIR the data repo is the checkout's data/shared whatever this says:
+    # code and data are one to one, and that is where it was asked for.)
     no_builder = no_builder or bool(os.environ.get("ANALYSIS_NO_BUILDER"))
+    # The checkout this is run in is the one the data repo is for (#654):
+    # activate-analysis activates the code its data repo was made by, so a
+    # `sim` from another worktree's venv would pair it with the wrong code.
+    here = checkout_of(Path.cwd())
+    if here is not None and here.resolve() != data_repo.CODE_REPO_DIR.resolve() \
+            and not os.environ.get(_INIT_AGAIN):
+        _init_in_checkout(here, [
+            *([str(directory)] if directory is not None else []),
+            *(arg for option, value in (
+                ("--id", person_id), ("--display", display), ("--birthdate", birthdate), ("--sex", sex),
+                ("--filing-status", filing_status)) if value is not None for arg in (option, value)),
+            *(["--no-commit"] if no_commit else []), *(["--no-builder"] if no_builder else [])])
+    code = data_repo.CODE_REPO_DIR
+    shared = code / "data" / "shared"
     if directory is None:
-        directory = Path(click.prompt("directory for the new data repo", default="."))
+        # The usual step: the data repo is the checkout's own data/shared.
+        if os.path.lexists(shared):
+            raise click.ClickException(
+                f"{_shown(shared, resolve=False)} is already there"
+                + (f", leading to {_shown(shared.resolve())}" if shared.is_symlink() else "")
+                + f". To use it: source {_shown(shared / 'sim' / 'activate-analysis', resolve=False)}. For a new data "
+                "repo elsewhere, give its DIR; to start over here, remove it first.")
+        directory = shared
     root = directory.expanduser().resolve()
     if data_repo.is_data_repo(root):
         raise click.ClickException(f"{root} already holds a data repo")
@@ -5221,10 +5285,69 @@ def init_command(
         click.echo("  committed the new files")
     click.echo(f"checking {data_repo.START_SCENARIO}: ", nl=False)
     _check_scenario(sim, data_repo.START_SCENARIO, unused=False)
+    # The data repo is always found at the checkout's data/shared, so one
+    # made elsewhere is linked there. Not for a script or a recording
+    # (--no-builder), which must leave the checkout it runs from alone.
+    linked = os.path.lexists(shared) and shared.resolve() == root
+    if not no_builder and not linked:
+        if not os.path.lexists(shared):
+            shared.parent.mkdir(exist_ok=True)
+            shared.symlink_to(root)
+            linked = True
+            click.echo(f"linked {_shown(shared, resolve=False)} to {_shown(root)}")
+        else:
+            # The script links the checkout it is in and works from there,
+            # so it is named through the checkout and DIR in full.
+            click.echo(
+                f"  warning: {_shown(shared, resolve=False)} is already there and was left alone, so this "
+                "checkout still uses "
+                f"{_shown(shared.resolve())}. To use the new data repo, remove it and run: "
+                f"{_shown(code / 'scripts' / 'link-data.sh')} {root}", err=True)
     if not no_builder and not no_commit and not failed:
         _init_builder(sim)
-    click.echo(f"Next: source {_shown(sim / 'activate-analysis')}, then add the rest of the household "
-               "with `sim person add` and accounts to the base scenario with `sim account add`.")
+    activate = _shown(shared / "sim" / "activate-analysis", resolve=False) if linked \
+        else _shown(sim / "activate-analysis")
+    # Set apart and in bold: without it no later command finds the data
+    # repo, and after the lines above it was easy to miss.
+    click.echo()
+    click.secho("Next, activate the data repo in this shell (the sim commands find it that way):", bold=True)
+    click.echo()
+    click.secho(f"    source {activate}", bold=True)
+    click.echo()
+    click.echo("Then add the rest of the household with `sim person add` and accounts to the base "
+               "scenario with `sim account add`.")
+
+
+# Set for the `sim init` that one run from another checkout's venv starts,
+# so that a checkout whose `sim` is somehow another's can't start a third.
+_INIT_AGAIN = "ANALYSIS_INIT_AGAIN"
+
+
+def _init_in_checkout(checkout: Path, args: list[str]) -> NoReturn:
+    """Run `sim init` with ``args`` again as ``checkout``'s own ``sim``,
+    making its venv first if it has none, and end with its result."""
+    from analysis.sim import data_repo
+
+    click.echo(f"this sim is {_shown(data_repo.CODE_REPO_DIR)}'s, and you are in {_shown(checkout)}: "
+               "running that checkout's sim init, so the data repo is paired with it")
+    # Another venv's VIRTUAL_ENV would have uv sync into that one.
+    env = {name: value for name, value in os.environ.items() if name != "VIRTUAL_ENV"} | {_INIT_AGAIN: "1"}
+    its_sim = checkout / ".venv" / "bin" / "sim"
+    if not its_sim.exists():
+        if shutil.which("uv") is None:
+            raise click.ClickException(
+                f"{_shown(checkout)} has no .venv, and uv isn't installed to make one: run scripts/setup.sh there")
+        click.echo(f"making {_shown(checkout / '.venv')} (uv sync)")
+        if subprocess.run(["uv", "sync", "--group", "dev"], cwd=checkout, env=env, check=False).returncode:
+            raise click.ClickException(f"uv sync failed in {_shown(checkout)}")
+    if not its_sim.exists():
+        raise click.ClickException(
+            f"{_shown(checkout)} has no .venv/bin/sim, even after uv sync: run scripts/setup.sh there")
+    try:
+        raise SystemExit(subprocess.run([str(its_sim), "init", *args], env=env, check=False).returncode)
+    except OSError as exc:
+        raise click.ClickException(
+            f"{_shown(its_sim)} can't be run ({exc}): run scripts/setup.sh in {_shown(checkout)}") from None
 
 
 def _init_builder(sim: Path) -> None:
@@ -5234,10 +5357,6 @@ def _init_builder(sim: Path) -> None:
     from analysis.sim import builder, data_repo
 
     shared = data_repo.CODE_REPO_DIR / "data" / "shared"
-    if not shared.exists() and not shared.is_symlink():
-        shared.parent.mkdir(exist_ok=True)
-        shared.symlink_to(sim.parent)
-        click.echo(f"linked {shared} to {sim.parent}")
     try:
         done = builder.install(sim)
     except (ValueError, OSError, subprocess.CalledProcessError) as exc:
@@ -5278,14 +5397,28 @@ def switch_command(scenario: str | None, data_dir: Path | None) -> None:
 
 
 @sim_group_command.command("items")
-@click.option("--account", type=completion.ACCOUNT, default=None,
-              help="Account name in the selected run (asked for when left out).")
-@click.option("--lot", type=completion.LotName("account"), default=None,
-              help="Only events touching this lot of the account (default: every lot).")
-@click.option("--start", required=True, help="First month (YYYY-MM or YYYY-MM-DD).")
-@click.option("--end", default=None, help="Last month (YYYY-MM or YYYY-MM-DD); overrides --months.")
-@click.option("--months", default=1, show_default=True, type=click.IntRange(min=1),
-              help="Number of months to include when --end is omitted.")
+@click.option("--account", "accounts", type=completion.ACCOUNT, multiple=True,
+              help="Only events with this account at either end (repeatable; default: the whole ledger).")
+@click.option("--lot", type=completion.LotName("accounts"), default=None,
+              help="With one --account: only events touching this lot of it (default: every lot).")
+@click.option("--start", default=None, help="First month (YYYY-MM or YYYY-MM-DD; default: the run's first).")
+@click.option("--end", default=None,
+              help="Last month (YYYY-MM or YYYY-MM-DD; default: the run's last, or --months after --start).")
+@click.option("--months", default=None, type=click.IntRange(min=1),
+              help="With --start and no --end: how many months to show (default 1).")
+@click.option("--reason", "reasons", type=click.Choice(registries.REASON_KINDS), multiple=True,
+              help="Only events posted for this reason (repeatable): a rule, an opening balance, "
+                   "year-to-date catch-up, a refill or overflow, a strategy's or a tax payment.")
+@click.option("--rule", "rules", type=completion.RULE_FILTER, multiple=True,
+              help="Only events this scheduled rule (or tax jurisdiction) posted (repeatable).")
+@click.option("--tax-character", "tax_characters", type=click.Choice(sorted(registries.TAX_CHARACTERS)),
+              multiple=True, help="Only events of this tax character (repeatable).")
+@click.option("--tag", "tags", type=completion.TAG_FILTER, multiple=True,
+              help="Only events carrying this tag ('role:name', or 'role:*'), on their rule or, "
+                   "when the rule has none in that role, on its income or expense account, as "
+                   "`sim report --by tag:ROLE` groups them (repeatable: all must match).")
+@click.option("--limit", default=500, show_default=True, type=click.IntRange(min=0),
+              help="Show at most this many events (0: all of them); the title still counts every one.")
 @click.option("--runfile", type=click.Path(exists=True, dir_okay=False, path_type=Path),
               default=None, help="Run file (default: selected scenario's latest run).")
 @click.option("--scenario", type=completion.SCENARIO, default=None,
@@ -5295,25 +5428,54 @@ def switch_command(scenario: str | None, data_dir: Path | None) -> None:
 @click.option("--runs-dir", type=click.Path(file_okay=False, path_type=Path), default=None,
               help="Directory to search for the latest run.")
 def items(
-    account: str | None,
+    accounts: tuple[str, ...],
     lot: str | None,
-    start: str,
+    start: str | None,
     end: str | None,
-    months: int,
+    months: int | None,
+    reasons: tuple[str, ...],
+    rules: tuple[str, ...],
+    tax_characters: tuple[str, ...],
+    tags: tuple[str, ...],
+    limit: int,
     runfile: Path | None,
     scenario: str | None,
     data_dir: Path | None,
     runs_dir: Path | None,
 ) -> None:
-    """Show ledger events for one account with their originating rules."""
-    start = month_end_iso(_validate_month_date(start))
+    """Show a run's ledger events, filtered, with the rules that posted them.
+
+    With no options, every event of the run, up to --limit. Filters narrow it: by account
+    (either end), dates, reason, rule, tax character and tag; the same as
+    events.ipynb's. Each row shows its event number, and Caused by gives the
+    event a leg derives from, such as the debit whose look-ahead drew a
+    refill. With one --account (and no --lot), rows are in posting order
+    with the account's running balance after each.
+    """
+    if lot is not None and len(accounts) != 1:
+        raise click.UsageError("--lot narrows one --account")
+    if months is not None and (start is None or end is not None):
+        raise click.UsageError("--months counts from --start, in place of --end")
+    from analysis.sim import events as events_
+
+    for tag in tags:
+        try:
+            events_.check_tag(tag)
+        except ValueError as exc:
+            raise click.UsageError(str(exc)) from None
+    first = last = None
+    if start is not None:
+        start = month_end_iso(_validate_month_date(start))
+        first = date.fromisoformat(start).replace(day=1)
     if end is not None:
         end = month_end_iso(_validate_month_date(end))
-        if end < start:
+        if start is not None and end < start:
             raise click.ClickException("--end must be on or after --start")
-    else:
+    elif start is not None:
         # start is a month end, so MonthEnd(n) lands n month ends later.
-        end = str((pd.Timestamp(start) + pd.offsets.MonthEnd(months - 1)).date())
+        end = str((pd.Timestamp(start) + pd.offsets.MonthEnd((months or 1) - 1)).date())
+    if end is not None:
+        last = date.fromisoformat(end)
 
     if runfile is None:
         data_dir_p = _resolve_data_dir(data_dir)
@@ -5327,90 +5489,84 @@ def items(
                 f"no runs for {scenario_ref.name!r} in {resolved_runs_dir}; run `sim run` first"
             )
 
-    con = connect_sim_file(f"file:{runfile}?mode=ro", uri=True)
-    try:
-        if account is None:
-            account = _ask_name("account", (r[0] for r in con.execute("SELECT name FROM account ORDER BY name")))
-        account_row = con.execute("SELECT id FROM account WHERE name = ?", (account,)).fetchone()
-        if account_row is None:
-            raise click.ClickException(f"unknown account in run: {account!r}")
-        account_id = account_row[0]
-        lot_id = None
+    with RunConnection(runfile) as rc:
+        known = rc.items("account").set_index("name")
+        for account in accounts:
+            if account not in known.index:
+                raise click.ClickException(f"unknown account in run: {account!r}")
         if lot is not None:
-            lot_row = con.execute(
-                "SELECT id FROM account_lot WHERE account_id = ? AND lot = ?",
-                (account_id, lot),
-            ).fetchone()
-            if lot_row is None:
-                raise click.ClickException(f"unknown lot {lot!r} of account {account!r}")
-            lot_id = lot_row[0]
-        rows = con.execute(
-            "SELECT te.date, fa.name, fa.subkind, fm.lot, te.from_account, te.from_lot_id, "
-            "ta.name, ta.subkind, tm.lot, te.to_account, te.to_lot_id, "
-            "te.amount, te.requested_cents, te.remainder_cents, te.tax_character, "
-            "te.reason_kind, COALESCE(s.name, tj.name), "
-            "COALESCE(s.amount_rule_kind, tj.kind) "
-            "FROM transfer_event te "
-            "JOIN account fa ON fa.id = te.from_account "
-            "JOIN account ta ON ta.id = te.to_account "
-            "JOIN account_lot fm ON fm.id = te.from_lot_id "
-            "JOIN account_lot tm ON tm.id = te.to_lot_id "
-            "LEFT JOIN scheduled_transaction s "
-            "  ON s.id = te.reason_id AND te.reason_kind IN ('rule', 'ytd_rule') "
-            "LEFT JOIN tax_jurisdiction tj ON tj.id = te.reason_id AND te.reason_kind = 'tax' "
-            "WHERE ((? IS NULL AND ? IN (te.from_account, te.to_account)) "
-            "       OR ? IN (te.from_lot_id, te.to_lot_id)) "
-            "  AND te.date BETWEEN ? AND ? "
-            "ORDER BY te.date, te.id",
-            (lot_id, account_id, lot_id, start, end),
-        ).fetchall()
-    finally:
-        con.close()
+            # Any account's lots, an income or expense account's one included.
+            lots = rc.items("account_lot")
+            if not ((lots["account"] == accounts[0]) & (lots["lot"] == lot)).any():
+                raise click.ClickException(f"unknown lot {lot!r} of account {accounts[0]!r}")
+        _heading, table = events_.events_view(
+            rc, accounts=accounts, reason_kinds=reasons, tax_characters=tax_characters,
+            start=first, end=last, lots=(lot,) if lot else (), rules=rules, tags=tags,
+        )
+    subkinds = known["subkind"].to_dict()
 
     click.echo(f"run: {runfile}")
-    click.echo(
-        f"account: {account}{f' (lot {lot})' if lot else ''}  window: {start} through {end}"
-    )
-    if not rows:
+    window = f"{first or 'start'} through {end or 'end'}"
+    if len(accounts) == 1:
+        click.echo(f"account: {accounts[0]}{f' (lot {lot})' if lot else ''}  window: {window}")
+    else:
+        click.echo(f"accounts: {', '.join(accounts) or 'all'}  window: {window}")
+    if table.empty:
         click.echo("(no matching ledger events)")
         return
 
-    from rich.console import Console
     from rich.table import Table
 
-    table = Table(title=f"ledger events ({account})")
-    table.add_column("Date")
-    table.add_column("Lot")
-    table.add_column("Direction")
-    table.add_column("Amount", justify="right")
-    table.add_column("Requested", justify="right")
-    table.add_column("Remainder", justify="right")
-    table.add_column("Tax")
-    table.add_column("Origin")
-    for (date_, from_name, from_subkind, from_lot, from_account_id, from_lot_id,
-         to_name, to_subkind, to_lot, _to_account_id, _to_lot_id,
-         amount, requested, remainder, tax_character,
-         reason_kind, rule_name, rule_kind) in rows:
-        own_is_from = (from_lot_id == lot_id) if lot_id is not None else (
-            from_account_id == account_id
-        )
-        if own_is_from:
-            direction = "to " + _account_with_lot(to_name, to_subkind, to_lot)
-            own = from_lot
+    one = accounts[0] if len(accounts) == 1 else None
+    title = f"ledger events ({one})" if one else "ledger events"
+    table_ = Table(title=f"{title}: {len(table):,}, {_compact_cents(round(table['amount'].sum() * 100))} total")
+    table_.add_column("#", justify="right")
+    table_.add_column("Date")
+    if one:
+        table_.add_column("Lot")
+        table_.add_column("Direction")
+    else:
+        table_.add_column("From")
+        table_.add_column("To")
+    table_.add_column("Amount", justify="right")
+    table_.add_column("Requested", justify="right")
+    table_.add_column("Remainder", justify="right")
+    table_.add_column("Tax")
+    table_.add_column("Origin")
+    table_.add_column("Caused by", justify="right")
+    has_balance = "balance" in table.columns
+    if has_balance:
+        table_.add_column("Balance", justify="right")
+
+    def cents(value: Any) -> int | None:
+        return None if pd.isna(value) else round(value * 100)
+
+    shown = table if not limit else table.head(limit)
+    for event, row in shown.iterrows():
+        source = _account_with_lot(row["from"], subkinds.get(row["from"]), row["from_lot"])
+        target = _account_with_lot(row["to"], subkinds.get(row["to"]), row["to_lot"])
+        if one:
+            # Which end is the account's own: a lot's, when --lot picked one.
+            own_is_from = row["from"] == one and (lot is None or row["from_lot"] == lot)
+            cells = [row["from_lot"], "to " + target] if own_is_from else [row["to_lot"], "from " + source]
         else:
-            direction = "from " + _account_with_lot(from_name, from_subkind, from_lot)
-            own = to_lot
-        origin = (
-            f"{reason_kind}: {rule_name} ({rule_kind})"
-            if rule_name is not None
-            else reason_kind
-        )
-        table.add_row(
-            date_, own, direction, _compact_cents(amount),
-            _compact_cents(requested), _compact_cents(remainder),
-            tax_character, origin,
-        )
-    Console(width=200).print(table)
+            cells = [source, target]
+        rule = row["rule"]
+        origin = (f"{row['reason']}: {rule} ({row['rule_kind']})" if pd.notna(rule) else row["reason"])
+        caused_by = row["caused_by"]
+        line = [
+            str(event), row["date"], *cells, _compact_cents(cents(row["amount"])),
+            _compact_cents(cents(row["requested"])) if pd.notna(row["requested"]) else "",
+            _compact_cents(cents(row["remainder"])) if pd.notna(row["remainder"]) else "",
+            row["tax_character"], origin, "" if pd.isna(caused_by) else str(caused_by),
+        ]
+        if has_balance:
+            line.append("-" if pd.isna(row["balance"]) else _compact_cents(cents(row["balance"])))
+        table_.add_row(*line)
+    _print_unclipped(table_)
+    if len(shown) < len(table):
+        click.echo(f"showing the first {len(shown):,} of {len(table):,} events: narrow them with the "
+                   "filters, or pass --limit 0 for all")
 
 
 def _fmt_quantity(micros: int | None) -> str:
@@ -5686,7 +5842,8 @@ _BACKFILLABLE_CALENDAR_COLUMNS = frozenset({
 
 
 # lifespan.csv's life_table (#315) is optional too.
-_BACKFILLABLE_COLUMNS = _BACKFILLABLE_CALENDAR_COLUMNS | {"life_table"}
+# #274 added accounts.csv beneficiary; an older file gains it, blank.
+_BACKFILLABLE_COLUMNS = _BACKFILLABLE_CALENDAR_COLUMNS | {"life_table", "beneficiary"}
 
 
 def _append_csv_row(path: Path, header: tuple[str, ...],
@@ -8739,7 +8896,7 @@ def _map_choices(
             case "use":
                 names_ = ["budget", "actual"]
             case "action":
-                names_ = ["map", "skip"]
+                names_ = ["map", "skip", "split"]
             case _:
                 names_ = []
         found[column] = [*names_, *kind.words.get(column, ())]
@@ -8956,6 +9113,7 @@ def _ask_holding_target(
     label: str, cents: int, source: str, lots: Sequence[Mapping[str, str]], why: str,
     *, held: Collection[str], by_symbol: bool = False, hint: str = "",
     add: Callable[[str, bool], bool] | None = None, taken: Collection[str] = (),
+    add_lot: Callable[[str, str], bool] | None = None,
 ) -> import_mapping.AccountTarget:
     """Where one outside account goes, asked for: one of the scenario's
     accounts that holds a balance (``held``), or ``skip``; and which lot, if
@@ -8968,11 +9126,22 @@ def _ask_holding_target(
     is what the file calls the account's type, shown to help say its kind.
     ``taken`` is every account and chain name of the scenario: one of those
     that isn't in ``held`` can't take this balance, and can't be added.
+
+    With ``add_lot``, the lot is asked for even where the account has one
+    (Enter takes it), and a new name is a new lot of the account, which
+    ``add_lot(account, lot)`` makes the account's (asking what it needs to)
+    or says why it didn't: several outside accounts (a bank's checking and
+    savings) are often one account of the plan with a lot each. ``split``
+    there says the number is several lots' together: the target's action is
+    ``split``, and the caller asks how it divides.
     """
     click.echo(f"{source} account {label} ({format_dollars(cents)}) {why}.")
     if add is not None:
         click.echo("  a new name adds the account to the scenario"
                    + (f" (the file calls this one {hint!r})" if hint else ""))
+
+    # An account added here has the one lot it was added with: no question.
+    added: list[str] = []
 
     def new(name: str) -> bool:
         if name in taken:
@@ -8984,7 +9153,9 @@ def _ask_holding_target(
         if add is None or not click.confirm(f"Add account {name}?", default=False):
             return False
         try:
-            return add(name, by_symbol)
+            if add(name, by_symbol):
+                added.append(name)
+            return bool(added)
         except click.ClickException as e:
             # Stopping here would lose every answer so far: they are saved
             # with the balances, at the end.
@@ -8996,10 +9167,183 @@ def _ask_holding_target(
         return import_mapping.AccountTarget("skip")
     its_lots = [row.get("lot", "") for row in lots if row.get("account_name") == answer]
     lot = ""
-    if len(its_lots) > 1 and not by_symbol:
-        lot = _ask_name("lot", [each or registries.DEFAULT_LOT for each in its_lots],
-                        prompt=f"lot of {answer}")
+    shown = [each or registries.DEFAULT_LOT for each in its_lots]
+    if by_symbol or not shown:
+        pass
+    elif added:
+        # Named as it was added. Left as `default` it is a blank cell, and
+        # the row names none: ``add_lot`` names it there when the account
+        # gets a second.
+        lot = its_lots[0] if len(its_lots) == 1 else ""
+    elif add_lot is None:
+        if len(shown) > 1:
+            lot = _ask_name("lot", shown, prompt=f"lot of {answer}")
+    else:
+        # A lot may be named `split`: the word is then the lot's.
+        words = [] if "split" in shown else ["split"]
+        click.echo(f"lots: {', '.join(shown)}; a new name adds a lot to {answer}"
+                   + ("; 'split' divides this number among lots" if words else ""))
+        only = shown[0] if len(shown) == 1 else None
+        while True:
+            said = _prompt_with_completion(f"lot of {answer}", choices=[*shown, *words], default=only).strip()
+            if said == only:
+                # The one lot, as before there was a question: the row
+                # names no lot, so a file that lists the account's holdings
+                # still sends each to its own. ``add_lot`` names it in the
+                # row when the account gets a second.
+                break
+            if said in words:
+                return import_mapping.AccountTarget("split", answer)
+            if said in shown or (said and add_lot(answer, said)):
+                lot = said
+                break
+            click.echo(f"  one of: {', '.join([*shown, *words])}")
     return import_mapping.AccountTarget("map", answer, lot)
+
+
+_TICKER_LIKE = re.compile(r"[A-Z]{1,5}([.-][A-Z]{1,2})?")
+"""What an exchange's symbol looks like. Anything else may still be a lot's
+symbol (a CUSIP, a name made up for a plan's own fund), once it is meant."""
+
+
+def _not_traded(symbol: str, known: Collection[str]) -> bool:
+    """Whether ``symbol`` is new to the plan and clearly no exchange's: no
+    price can be fetched for it, so it is confirmed and marked ``no_fetch``."""
+    return bool(symbol) and symbol not in known and _TICKER_LIKE.fullmatch(symbol) is None
+
+
+def _is_part(cents: int, total: int, left: int) -> bool:
+    """Whether ``cents`` can be a lot's part of ``total`` with ``left`` of
+    it to give out: of the total's sign, and no more than is left. A part
+    of the other sign would leave more to give out than there is."""
+    return cents * total >= 0 and abs(cents) <= abs(left)
+
+
+def _ask_lot_split(
+    label: str, total: int, account: str, its_lots: Sequence[str], before: Sequence[import_mapping.LotPart],
+    *, basis: bool, investment: bool, new_ok: bool, known: Collection[str] = (),
+) -> tuple[list[import_mapping.LotPart], list[tuple[str, str, str]]]:
+    """How one outside number (``label``, ``total`` cents) divides among
+    lots of ``account``, asked for a lot at a time until nothing is left or
+    a lot takes the rest, then shown and agreed to; and the lots to add for
+    it, each with its symbol and the day it was acquired.
+
+    ``before`` is the split the last import saved: its lots and amounts are
+    the defaults. ``basis`` asks each part's cost basis (a taxable brokerage
+    account's lots keep one); ``investment`` asks a new lot's symbol and
+    day; ``new_ok`` is whether a new name can be a new lot. ``known`` are
+    the symbols the plan has: another that doesn't look like a ticker is
+    asked about, since it may be a slip, and taken on a yes (the caller then
+    marks it ``no_fetch``: see ``_not_traded``).
+    """
+    before = list(before)
+    while True:
+        click.echo(f"Dividing {label}, {format_dollars(total)}, among lots of {account}.")
+        click.echo(f"  lots: {', '.join(its_lots) or 'none yet'}" + ("; a new name adds a lot" if new_ok else ""))
+        click.echo("  Each lot's amount, until nothing is left. 'rest' gives a lot whatever the others "
+                   "leave, in later imports too: the split then still fits when the number changes.")
+        was = {part.lot: part for part in before}
+        parts: list[import_mapping.LotPart] = []
+        new: list[tuple[str, str, str]] = []
+        left = total
+        while left or not parts:
+            used = {part.lot for part in parts}
+            again = before[len(parts)].lot if len(parts) < len(before) else None
+            name = _prompt_with_completion(
+                f"lot ({format_dollars(left)} left)", choices=[each for each in its_lots if each not in used],
+                default=None if again in used else again).strip()
+            try:
+                name = _check_lot_label(name)
+            except click.ClickException as error:
+                click.echo(f"  {error.format_message()}")
+                continue
+            if not name or name in used:
+                click.echo(f"  {name} has its part already" if name else "  a lot's name")
+                continue
+            if name not in its_lots:
+                if not new_ok:
+                    click.echo(f"  one of: {', '.join(its_lots)}")
+                    continue
+                # No by default: a slip in a lot's name is likelier than a new one.
+                if not click.confirm(f"Add lot {name} to {account}?", default=False):
+                    continue
+                symbol = acquired = ""
+                while investment:
+                    # Any name without a space: a ticker, a CUSIP, or one made up
+                    # for a fund that isn't traded.
+                    symbol = _prompt_with_completion(
+                        f"symbol of {name} (a ticker, a CUSIP or a name of your own; blank for none)",
+                        choices=list(known), default="").strip().upper()
+                    try:
+                        # As every command that writes a symbol takes one: it
+                        # names a prices file, and ACCOUNT:LOT is no symbol.
+                        if symbol and (symbols.is_lot_key(symbol) or symbols.normalize_symbol(symbol) != symbol):
+                            raise ValueError(f"symbol {symbol!r} must be one word, with no ':'")
+                    except ValueError as error:
+                        click.echo(f"  {error}")
+                        continue
+                    if not _not_traded(symbol, known) or click.confirm(
+                            f"  {symbol} doesn't look like a ticker, and isn't a symbol the plan knows. Fine for a "
+                            "fund that isn't traded (a CUSIP, or a name of your own): it is then marked "
+                            "no_fetch, so nothing looks for its prices. Use it?", default=True):
+                        break
+                while investment:
+                    acquired = _prompt_with_completion(
+                        f"day {name} was acquired, YYYY-MM-DD (blank for none)", default="").strip()
+                    try:
+                        if acquired:
+                            _check_day(acquired)
+                        break
+                    except click.ClickException as error:
+                        click.echo(f"  {error.format_message()}")
+                new.append((name, symbol, acquired))
+            saved = was.get(name)
+            # The default: what the lot had last time, where that still
+            # fits; else all that is left.
+            if saved is not None and saved.cents is None:
+                offered = "rest"
+            elif saved is not None and saved.cents is not None and _is_part(saved.cents, total, left):
+                offered = format_dollars(saved.cents)
+            else:
+                offered = format_dollars(left)
+            cents: int | None
+            while True:
+                text = _prompt_with_completion(f"amount for {name}, or rest", choices=["rest"], default=offered).strip()
+                if text == "rest":
+                    cents = None
+                    break
+                try:
+                    cents = units.dollars_to_cents(text)
+                except ValueError as error:
+                    click.echo(f"  {error}")
+                    continue
+                if _is_part(cents, total, left):
+                    break
+                click.echo(f"  that is more than the {format_dollars(left)} left" if cents * total > 0 else
+                           f"  a part of {format_dollars(total)} is between 0.00 and the {format_dollars(left)} left")
+            basis_cents: int | None = None
+            while basis:
+                kept = saved.basis_cents if saved is not None else None
+                text = _prompt_with_completion(
+                    f"cost basis of {name}'s part (blank if not known)",
+                    default="" if kept is None else format_dollars(kept)).strip()
+                try:
+                    basis_cents = units.dollars_to_cents(text) if text else None
+                    break
+                except ValueError as error:
+                    click.echo(f"  {error}")
+            parts.append(import_mapping.LotPart(name, cents, basis_cents))
+            if cents is None:
+                break
+            left -= cents
+        shares = import_mapping.divide(parts, total) or []
+        _echo_table(
+            ["lot", "amount", ""],
+            ((part.lot, format_dollars(cents), "the rest" if part.cents is None else "") for part, cents in shares),
+            left=1)
+        if click.confirm("Divide it this way?", default=True):
+            return parts, new
+        before = parts
 
 
 def _outside_label(holdings: Sequence[import_forms.Holding], *, whole: bool) -> str:
@@ -9019,17 +9363,20 @@ def _ask_outside_account(
 ) -> str:
     """Which outside account ``path`` is, asked for: nothing in the file or
     its name says. One the source's mapping has, or a new name for it."""
-    assert source.profile is not None and source.profile.holdings is not None
-    held = [h.asset for h in source.profile.holdings.read(path, "?").holdings if h.asset]
+    assert source.holdings is not None and source.holdings.read_named is not None
+    read = source.holdings.read_named(path, "?").holdings
+    held = list(dict.fromkeys(h.asset for h in read if h.asset))
+    # What the file calls itself (the name a report was saved under), offered.
+    called = next((h.hints["report"] for h in read if h.hints.get("report")), None)
     known = list(dict.fromkeys(outside for outside, _ in saved.entries))
     click.echo(f"{path.name} doesn't say which {source.name} account it is"
                + (f"; it holds {_some(held)}." if held else "."))
     click.echo("  " + (f"One you have imported ({', '.join(known)}), or a new name for it: "
                        if known else "Give it a name: ")
-               + "whatever you call the account. It is asked for again each time, unless "
-               "the file's name has the account's number.")
+               + "whatever you call the account. It is asked for again each time"
+               + (", unless the file's name has the account's number." if source.profile is not None else "."))
     while True:
-        if answer := _prompt_with_completion(f"{source.name} account", choices=known).strip():
+        if answer := _prompt_with_completion(f"{source.name} account", choices=known, default=called).strip():
             return answer
 
 
@@ -9508,9 +9855,22 @@ def import_transactions(
             each = category_maps[source] = import_transactions_.CategoryMaps()
             if not import_transactions_.uncategorized(flows.transactions, source) \
                     and not category_map_path.exists():
-                raise click.ClickException(
-                    f"category map not found: {category_map_path} "
-                    f"(columns {', '.join(import_mapping.CATEGORIES_HEADER)})")
+                if not summary:
+                    raise click.ClickException(
+                        f"category map not found: {category_map_path} "
+                        f"(columns {', '.join(import_mapping.CATEGORIES_HEADER)}). It gathers {source}'s "
+                        "categories into the few the plan wants, a row for each; --summary shows the "
+                        "file's categories and what each comes to, with no map")
+                # A look needs no map: each of the source's categories is
+                # shown as itself, which is what a map is written from.
+                rows = flows.transactions
+                own = rows.loc[rows[import_forms.ORIGIN].eq(source), "category"] \
+                    if import_forms.ORIGIN in rows.columns else rows["category"]
+                each.merges = {name: name for name in dict.fromkeys(map(str, own)) if name}
+                click.echo(
+                    f"note: no category map yet ({category_map_path}), so each {source} category is shown "
+                    f"as itself. Write the map (columns {', '.join(import_mapping.CATEGORIES_HEADER)}) to "
+                    "gather them into the few the plan wants before importing")
             # A source read by payee (a profile's, or a coded one that says
             # so) is read that way wherever a row has no category, which may
             # be one file of two (a card's short download beside its
@@ -9747,7 +10107,7 @@ def _cards_charged(
     unclaimed = scenario_cards - {
         target.account
         for path in imports.glob(f"*/{import_mapping.ACCOUNTS}")
-        for target in import_mapping.load_account_map(path).entries.values() if target.action == "map"}
+        for target in import_mapping.load_account_map(path).entries.values() if target.action != "skip"}
     maps: dict[str, import_mapping.AccountMap] = {}
     changed: dict[str, import_mapping.AccountMap] = {}
     found: dict[tuple[str, str], Payer] = {}
@@ -10667,6 +11027,8 @@ def account_group_command() -> None:
 @click.option("--lot-subkind", default=None,
               type=click.Choice(sorted(registries.RETIREMENT_LOT_SUBKINDS)),
               help="A retirement account's first lot: Roth or traditional, IRA or 401k.")
+@click.option("--lot", "first_lot", default=None,
+              help="The name of the lot that holds the opening balance (default: default).")
 @click.option("--scenario", type=completion.SCENARIO, default=None,
               help="Scenario folder name (for opening-balance lookup).")
 @click.option("--data-dir",
@@ -10674,6 +11036,9 @@ def account_group_command() -> None:
               default=None)
 @click.option("--tags", default="",
               help="Space-separated '<role>:<name>' tokens.")
+@click.option("--beneficiary", type=completion.BENEFICIARY, default="",
+              help="Where it goes at its owner's death (#274): an account, a chain, a person "
+                   "or joint; blank: a surviving spouse, else the scenario's estate.")
 def add_account(
     name: str | None,
     kind: str | None,
@@ -10686,15 +11051,23 @@ def add_account(
     closed: str,
     opening_balance: str | None,
     lot_subkind: str | None,
+    first_lot: str | None,
     scenario: str | None,
     data_dir: Path | None,
     tags: str,
+    beneficiary: str,
 ) -> None:
     """Append an account to accounts.csv (and opening balance to the model).
 
-    A retirement account always gets its first lot, ``default``, whose
-    --lot-subkind (asked if not given) says whether it is Roth or traditional.
+    A retirement account always gets its first lot, whose --lot-subkind
+    (asked if not given) says whether it is Roth or traditional. The lot
+    that holds an opening balance is named ``default`` unless --lot names
+    it: an account kept as several lots (a bank's checking and savings) is
+    better started with the name its first one will keep.
     """
+    first_lot = _check_lot_label(first_lot or "")
+    if first_lot == registries.DEFAULT_LOT:
+        first_lot = ""
     try:
         registries.parse_tags(tags)
     except ValueError as e:
@@ -10767,7 +11140,8 @@ def add_account(
 
     row = _account_row(
         name, kind, subkind, owner=owner, tax_treatment=tax_treatment, series=series,
-        tax_character=tax_character, opened=opened, closed=closed, tags=tags)
+        tax_character=tax_character, opened=opened, closed=closed, tags=tags,
+        beneficiary=beneficiary.strip())
     if opening_balance is None and kind in {"asset", "liability"}:
         if click.confirm("set opening balance now?", default=True):
             opening_balance = _prompt_with_completion(
@@ -10776,6 +11150,8 @@ def add_account(
     cents = _parse_amount_cents(opening_balance) if opening_balance else None
     if cents is None and retirement:
         cents = 0  # its lot row is what carries the lot subkind
+    if first_lot and cents is None:
+        raise click.ClickException("--lot names the lot of an opening balance: give --opening-balance too")
 
     # Both rows go in as one edit, after every prompt: the account and its
     # opening balance are validated together and land together or not at all.
@@ -10789,7 +11165,8 @@ def add_account(
                 registries.ACCOUNT_LOTS_CSV_HEADER,
                 {
                     "account_name": name,
-                    "lot": registries.DEFAULT_LOT if subkind in INVESTMENT_ASSET_SUBKINDS else "",
+                    "lot": first_lot or (
+                        registries.DEFAULT_LOT if subkind in INVESTMENT_ASSET_SUBKINDS else ""),
                     "subkind": lot_subkind or "",
                     "opening_balance": f"{cents // 100}.{cents % 100:02d}",
                     "opening_cost_basis": "",
@@ -11024,6 +11401,9 @@ def delete_account(name: str | None, scenario: str | None, data_dir: Path | None
 @click.option("--closed", default=None, help="Close date (YYYY-MM or YYYY-MM-DD).")
 @click.option("--meta-json", default=None, help="JSON payload for the account metadata.")
 @click.option("--tags", default=None, help="Space-separated '<role>:<name>' tokens.")
+@click.option("--beneficiary", type=completion.BENEFICIARY, default=None,
+              help="Where it goes at its owner's death (#274): an account, a chain, a person "
+                   "or joint; blank: a surviving spouse, else the scenario's estate.")
 @click.option("--scenario", type=completion.SCENARIO, default=None,
               help="Scenario folder name (default: the current scenario).")
 @click.option("--data-dir",
@@ -11040,6 +11420,7 @@ def edit_account(
     closed: str | None,
     meta_json: str | None,
     tags: str | None,
+    beneficiary: str | None,
     scenario: str | None,
     data_dir: Path | None,
 ) -> None:
@@ -11079,7 +11460,7 @@ def edit_account(
 
     direct_values = (
         new_name, kind, subkind, owner, tax_treatment,
-        opened, closed, meta_json, tags,
+        opened, closed, meta_json, tags, beneficiary,
     )
     if any(v is not None for v in direct_values):
         new_name = new_name or current.get("name", "")
@@ -11091,6 +11472,7 @@ def edit_account(
         closed = closed if closed is not None else current.get("closed", "")
         meta_json = meta_json if meta_json is not None else current.get("meta_json", "{}")
         tags = tags if tags is not None else current.get("tags", "")
+        beneficiary = beneficiary if beneficiary is not None else current.get("beneficiary", "")
     else:
         new_name = click.prompt("name", default=current.get("name", ""), show_default=True)
         kind = click.prompt(
@@ -11136,6 +11518,12 @@ def edit_account(
         tags = click.prompt("tags", default=current.get("tags", ""), show_default=True)
         if tags:
             registries.parse_tags(tags)
+        beneficiary = _prompt_with_completion(
+            "beneficiary (an account, chain, person or joint; blank: a surviving spouse, "
+            "else the estate)",
+            [*names.chain_names(data_dir_p, scenario_name, accounts=True), *persons, "joint"],
+            default=current.get("beneficiary", ""),
+        )
 
     if kind not in registries.ACCOUNT_SUBKINDS:
         raise click.ClickException(f"unknown kind: {kind!r}; allowed: {sorted(registries.ACCOUNT_SUBKINDS)}")
@@ -11175,7 +11563,7 @@ def edit_account(
     fields = {
         "name": new_name, "kind": kind, "subkind": subkind, "owner": owner,
         "tax_treatment": tax_treatment, "opened": opened, "closed": closed,
-        "meta_json": meta_json, "tags": tags,
+        "meta_json": meta_json, "tags": tags, "beneficiary": beneficiary.strip(),
     }
     if new_name != name and new_name in existing:
         raise click.ClickException(f"account already exists: {new_name!r}")
@@ -12672,8 +13060,11 @@ def _check_quantity(text: str) -> Decimal:
 
 
 def _check_lot_label(text: str) -> str:
-    if ":" in text:
-        raise click.ClickException(f"a lot label may not contain ':': {text!r}")
+    # ':' joins an account to its lot; a comma would need quoting in every
+    # CSV the name is written to, and a hand edit that forgets breaks the row.
+    for mark in ":,":
+        if mark in text:
+            raise click.ClickException(f"a lot label may not contain {mark!r}: {text!r}")
     return text.strip()
 
 
@@ -13360,7 +13751,10 @@ def import_holdings(
     either mapped to an account (and a lot, when the account has several) or
     marked ``skip`` -- this catches new or renamed outside accounts instead
     of silently ignoring them. At a terminal the missing ones are asked for
-    and saved.
+    and saved. A new lot name there adds the lot, or renames the account's
+    one lot when that is still ``default``. ``split`` there divides the
+    file's one number among lots, by amounts that are asked for and saved
+    in imports/<source>/lot_splits.csv.
 
     A brokerage's file lists what each account holds, by symbol. Its outside
     account is mapped to an account only, and each holding goes to the
@@ -13426,10 +13820,10 @@ def import_holdings(
             lot_context.append(_lot_guide_context(data_dir_p, scen_name, lots))
         return lot_context[0]
 
-    def add_lot(account: str, name: str, symbol: str) -> None:
+    def add_lot(account: str, name: str, symbol: str, acquired: str = "") -> None:
         """A lot of ``account`` for ``symbol``, with nothing in it yet: the
-        plan fills it from the file."""
-        params: dict[str, object] = {"account": account, "lot": name, "symbol": symbol}
+        plan fills it from the file. ``acquired`` is a tax lot's day."""
+        params: dict[str, object] = {"account": account, "lot": name, "symbol": symbol, "acquired": acquired}
         if accounts[account][1] == registries.RETIREMENT_SUBKIND:
             agreed = {row.get("subkind", "") for row in rows if row.get("account_name") == account}
             if len(agreed) == 1 and "" not in agreed:
@@ -13450,6 +13844,117 @@ def import_holdings(
         rows.append(row)
         fresh.add(len(rows) - 1)
 
+    def rename_default(account: str, at: int, name: str) -> bool:
+        """Rename ``account``'s one lot, ``default`` (``lots[at]``), to
+        ``name``, as `sim account lot rename` does, and take the renamed lot
+        in; False, with why, when that command refuses. Written at once, as
+        an account added here is: the rules and mappings that name the lot
+        follow, which is that command's work. A dry run only says so."""
+        was = registries.DEFAULT_LOT
+        if dry_run:
+            click.echo(f"(dry run) lot {was} of {account} would be renamed {name}")
+            lots[at] = lots[at]._replace(row={**lots[at].row, "lot": name})
+        else:
+            try:
+                click.get_current_context().invoke(
+                    lot_rename, account=account, lot=was, new_lot=name, scenario=scen_name, data_dir=data_dir_p)
+            except click.ClickException as e:
+                click.echo(f"  not renamed: {e.format_message()}")
+                return False
+            lots[at] = next(
+                lot for lot in _import_target_lots(scenario_dir, scen_name, {account: accounts[account]})
+                if (lot.account, lot.lot) == (account, name))
+        rows[at] = lots[at].row
+        lot_context.clear()
+        # What this run holds of the mappings, as that command left the
+        # saved ones: a row is followed only where no scenario still has
+        # the old name, and saving this run's answers must not undo it.
+        on_file = account_map if dry_run else import_mapping.load_account_map(map_path)
+        for each in (account_map, saved_map):
+            for key, target in list(each.entries.items()):
+                now = on_file.entries.get(key)
+                if (target.action, target.account, target.lot) == ("map", account, was) and now is not None \
+                        and (dry_run or now.lot == name):
+                    each.set(*key, dataclasses.replace(target, lot=name))
+        # The saved splits likewise: this run's copy is written whole when
+        # a split is asked for, and must not put the old name back.
+        if dry_run:
+            for key, parts in lot_splits.parts.items():
+                found = account_map.lookup(*key)
+                if found is not None and (found.action, found.account) == ("split", account):
+                    lot_splits.parts[key] = [
+                        dataclasses.replace(part, lot=name) if part.lot == was else part for part in parts]
+        else:
+            lot_splits.parts = import_mapping.load_lot_splits(splits_path).parts | {
+                key: lot_splits.parts[key] for key in split_asked}
+        return True
+
+    def add_balance_lot(account: str, name: str) -> bool:
+        """A lot ``name`` of ``account`` with no symbol, for an outside
+        account's one balance: a new lot, or the account's one lot,
+        ``default``, renamed, as the user says; False, with why, when it
+        can't be one or the user went back."""
+        nonlocal to_save
+        try:
+            name = _check_lot_label(name)
+        except click.ClickException as e:
+            click.echo(f"  {e.format_message()}")
+            return False
+        # A deleted lot is a zeroed row still, and no lot of the account's.
+        its = [i for i, lot in enumerate(lots) if lot.account == account and not lot.deleted]
+        only = lots[its[0]] if len(its) == 1 and its[0] not in fresh else None
+        # Another of this file's numbers goes into the lot, whole or as a
+        # part of one that is divided: it isn't this one's.
+        claimed = any(
+            found.account == account and (found.action == "split" or (
+                found.action == "map" and found.lot in ("", registries.DEFAULT_LOT)))
+            for holding in snapshot.holdings
+            if (found := account_map.lookup(holding.account, holding.asset)) is not None)
+        if only is not None and only.lot == registries.DEFAULT_LOT and not claimed and not (
+                only.implicit or only.row.get("symbol", "").strip()):
+            # A lot called `default` is whatever the account held before it
+            # had lots worth naming: the same money as this, as likely as not.
+            try:
+                held = units.dollars_to_cents(only.row.get("opening_balance", "") or "0")
+            except ValueError:
+                held = 0
+            click.echo(f"{account} has one lot, {registries.DEFAULT_LOT!r}, "
+                       + (f"with a balance of {format_dollars(held)}." if held else "which is empty."))
+            click.echo(
+                f"  If {name!r} is that same lot under a name of its own, rename it: the rules and mappings "
+                f"that name it follow. If {name!r} is other money beside it (a file may list only part of "
+                "an account), add a lot.")
+            choice = _ask_name("choice", ["rename", "add", "back"], prompt="rename, add, or back", plural="choices")
+            if choice == "back":
+                return False
+            if choice == "rename":
+                return rename_default(account, its[0], name)
+        elif not click.confirm(f"Add lot {name} to {account}?", default=False):
+            # No by default: a slip in a lot's name is likelier than a new one.
+            return False
+        bare = [row.get("lot", "") or registries.DEFAULT_LOT for row in rows
+                if row.get("account_name") == account and not row.get("symbol")]
+        try:
+            add_lot(account, name, "")
+        except click.ClickException as e:
+            click.echo(f"  not added: {e.format_message()}")
+            return False
+        if len(bare) == 1:
+            # A row that sends a whole outside account here and names no lot
+            # meant the one there was. With two it would mean neither, and
+            # its balance would be skipped from now on: it names that lot.
+            # Saved only for the outside accounts this file has, whose
+            # balances this import puts there: the saved map is every
+            # scenario's, and another's one lot may have another name.
+            here = {holding.account for holding in snapshot.holdings}
+            for each in (account_map, saved_map):
+                for key, target in list(each.entries.items()):
+                    if not key[1] and (target.action, target.account, target.lot) == ("map", account, "") \
+                            and (each is account_map or key[0] in here):
+                        each.set(*key, import_mapping.AccountTarget("map", account, bare[0], target.note))
+                        to_save = to_save or each is saved_map
+        return True
+
     def add_account_now(name: str, listed: bool) -> bool:
         """Add account ``name`` to the scenario as `sim account add` does,
         asking what it is, and take it and its lot in; False when the user
@@ -13465,8 +13970,22 @@ def import_holdings(
         subkind = _ask_account_subkind(kind)
         owner = _ask_account_owner(persons)
         lot_subkind = _ask_first_lot_subkind() if subkind == registries.RETIREMENT_SUBKIND else None
+        # Its one lot takes the balance. Named here, it needn't be renamed
+        # when the account gets a second (a bank's savings beside its
+        # checking), and a lot called `default` isn't a surprise later.
+        def lot_label(text: str) -> str:
+            # Asked again here: the account is written before its lot is judged.
+            try:
+                return _check_lot_label(text) or registries.DEFAULT_LOT
+            except click.ClickException as e:
+                raise click.UsageError(e.format_message()) from None
+
+        first_lot = None if listed else click.prompt(
+            f"name of {name}'s lot (a name of your own, such as checking)", default=registries.DEFAULT_LOT,
+            value_proc=lot_label)
         click.get_current_context().invoke(
             add_account, name=name, kind=kind, subkind=subkind, owner=owner, lot_subkind=lot_subkind,
+            first_lot=first_lot,
             scenario=scen_name, data_dir=data_dir_p,
             # The file says what it holds: no balance is asked for. A file
             # with one number for the account needs a lot to put it in.
@@ -13496,14 +14015,24 @@ def import_holdings(
                     import_mapping.source_dir(data_dir_p, source.name) / import_mapping.ACCOUNTS))
             asked_account = True
         snapshot = import_sources_.read_holdings(files, source, imports, account=outside_account)
+        # A report over a period: the numbers of the day the plan's are as of.
+        snapshot = import_holdings_.nearest(
+            snapshot, date(scenario_start.year - 1, 12, 31) if year_end else scenario_start.replace(day=1))
         for note in snapshot.notes:
             click.echo(f"note: {note}")
+        # The first day whose transactions come after the balances wanted:
+        # the scenario's first day, or for last year's end, January 1.
+        read_as_of = snapshot.as_of
+        snapshot, worked_back, back_notes = import_holdings_.at(
+            snapshot, date(scenario_start.year, 1, 1) if year_end else scenario_start.replace(day=1))
         if not snapshot.holdings:
             raise click.ClickException(
                 "no account balances in " + ", ".join(map(str, files))
                 + f": is it a {snapshot.source} holdings report?")
         map_path = import_mapping.source_dir(data_dir_p, snapshot.source) / import_mapping.ACCOUNTS
         saved_map = import_mapping.load_account_map(map_path)
+        splits_path = map_path.with_name(import_mapping.LOT_SPLITS)
+        lot_splits = import_mapping.load_lot_splits(splits_path)
         # What this run uses: the saved map, and any answer given for this
         # run only.
         account_map = import_mapping.AccountMap(map_path, dict(saved_map.entries))
@@ -13521,7 +14050,7 @@ def import_holdings(
             return import_holdings_.plan(
                 snapshot, account_map, accounts, rows, year_end=year_end, split=split, fresh=fresh,
                 prune=prune, prices={symbol: price for symbol, (_, price) in latest.items()},
-                recount=recount, keep_count=keep_count)
+                recount=recount, keep_count=keep_count, splits=lot_splits.parts)
 
         def decided(holding: import_forms.Holding) -> tuple[str, str]:
             """The mapping row that says where ``holding`` goes: its own, or
@@ -13534,6 +14063,12 @@ def import_holdings(
 
         result = replan()
         to_save = False
+        # The outside numbers whose division among lots was asked for in this run.
+        split_asked: set[tuple[str, str]] = set()
+        # Symbols taken for funds that aren't traded: marked no_fetch with the lots.
+        never_fetch: set[str] = set()
+        # Whether each (account, symbol) the file has by tax lot gets a lot for each.
+        tax_lots: dict[tuple[str, str], bool] = {}
         while not result.complete:
             progress = False
             if _interactive():
@@ -13545,13 +14080,16 @@ def import_holdings(
                         held=holding_lots if (listed := all(h.asset for h in covered)) else with_lots,
                         # A file of holdings gives each holding's type, not the account's.
                         by_symbol=listed, hint="" if listed else covered[0].hints.get("type", ""),
-                        add=add_account_or_not, taken=taken)
+                        add=add_account_or_not, taken=taken, add_lot=add_balance_lot)
                     account_map.set(*key, target)
                     saved_map.set(*key, target)
                     to_save = progress = True
-                stale = {decided(h): old for h, old in (*result.unknown, *result.no_lot)}
+                # A part of a divided number that has no lot is its split's to
+                # put right, below, and not its mapping's.
+                astray = [(h, old) for h, old in (*result.unknown, *result.no_lot) if not h.lot]
+                stale = {decided(h): old for h, old in astray}
                 for key, old in stale.items():
-                    covered = of_row(key, (h for h, _ in (*result.unknown, *result.no_lot)))
+                    covered = of_row(key, (h for h, _ in astray))
                     target = _ask_holding_target(
                         _outside_label(covered, whole=not key[1]), sum(h.value_cents for h in covered),
                         snapshot.source, rows,
@@ -13559,7 +14097,7 @@ def import_holdings(
                         held=holding_lots if (listed := all(h.asset for h in covered)) else with_lots,
                         # A file of holdings gives each holding's type, not the account's.
                         by_symbol=listed, hint="" if listed else covered[0].hints.get("type", ""),
-                        add=add_account_or_not, taken=taken)
+                        add=add_account_or_not, taken=taken, add_lot=add_balance_lot)
                     account_map.set(*key, target)
                     progress = True
                     # The saved mapping may be right for another scenario, which
@@ -13574,6 +14112,66 @@ def import_holdings(
                 # ask about; ask those once every account is settled.
                 result = replan()
                 continue
+            # A number its mapping divides among lots, which the plan could
+            # not divide: no split is saved, the saved one doesn't come to
+            # the file's number, or it names a lot that isn't there.
+            lost = [h for h, _ in result.no_lot if h.lot]
+            for at in dict.fromkeys((h.account, h.asset) for h in (*(h for h, _ in result.to_split), *lost)):
+                covered = [h for h in snapshot.holdings if (h.account, h.asset) == at]
+                account = next(t.account for h, t in (*result.to_split, *result.no_lot)
+                               if (h.account, h.asset) == at)
+                total = sum(h.value_cents for h in covered)
+                label = _outside_label(covered, whole=not at[1])
+                before = lot_splits.parts.get(at, [])
+                its_lots = [_lot.lot for _lot in lots if _lot.account == account and not _lot.deleted]
+                if not before:
+                    why = f"{_shown(splits_path)} has no split of {label} yet"
+                elif missing := sorted({h.lot for h in lost if (h.account, h.asset) == at}):
+                    why = f"the saved split of {label} names lot(s) {', '.join(missing)}, which {account} doesn't have"
+                else:
+                    fixed = sum(part.cents for part in before if part.cents is not None)
+                    why = (f"the saved split of {label} gives out {format_dollars(fixed)}, and the file has "
+                           f"{format_dollars(total)}")
+                if not _interactive():
+                    raise click.ClickException(
+                        f"{why}; run at a terminal to be asked, or change its rows in {splits_path} "
+                        f"(columns {', '.join(import_mapping.LOT_SPLITS_HEADER)}; one lot's amount may "
+                        "be blank, to take the rest)")
+                if before:
+                    click.echo(f"{why}.")
+                progress = True
+                if year_end and not its_lots:
+                    # Last year's file can't say what a new lot holds now,
+                    # so there is no lot to name: left out of this run only.
+                    click.echo(f"{account} has no lot for a part of {label}, and --year-end adds none: "
+                               "it is left out of this import.")
+                    account_map.set(*at, import_mapping.AccountTarget("skip"))
+                    continue
+                subkind = accounts[account][1]
+                known_symbols = {*context().securities, *context().growing, *registries.SYMBOL_ASSET_CLASS}
+                while True:
+                    parts, added = _ask_lot_split(
+                        label, total, account, its_lots, before,
+                        basis=subkind == InvestmentAssetSubkind.BROKERAGE_TAXABLE,
+                        investment=subkind in INVESTMENT_ASSET_SUBKINDS, known=known_symbols,
+                        new_ok=not year_end)
+                    try:
+                        for name, symbol, acquired in added:
+                            if name not in its_lots:
+                                add_lot(account, name, symbol, acquired)
+                                its_lots.append(name)
+                                if _not_traded(symbol, known_symbols):
+                                    never_fetch.add(symbol)
+                        break
+                    except click.ClickException as e:
+                        click.echo(f"  not added: {e.format_message()}")
+                        before = parts
+                # The plan divides the number by it from here.
+                lot_splits.parts[at] = parts
+                split_asked.add(at)
+            if progress:
+                result = replan()
+                continue
             if year_end:
                 break  # last year's file can't say what a new lot holds now
             # One lot with no symbol, and a file that lists what is in it.
@@ -13582,10 +14180,11 @@ def import_holdings(
                 only = next(_lot.lot for _lot in lots if _lot.account == account)
                 together = False
                 if _interactive() and not new_lots:
+                    # A holding listed by tax lot is named once.
+                    listed = list(dict.fromkeys(h.asset for h, _ in covered))
                     click.echo(
                         f"{account} has one lot, {only!r}, and the {snapshot.source} file lists "
-                        f"{len(covered)} holding(s) in it: "
-                        + ", ".join(h.asset for h, _ in covered) + ".")
+                        f"{len(listed)} holding(s) in it: " + ", ".join(listed) + ".")
                     click.echo(
                         "  A lot for each lets the plan grow each as its own fund does, and "
                         f"empties {only!r}, whose total they then hold; one lot keeps the "
@@ -13608,21 +14207,60 @@ def import_holdings(
                 # symbol such lots have, so the plan knows what it holds.
                 unlisted = holding.asset in import_forms.UNLISTED
                 symbol = registries.CASH_SYMBOL if unlisted else holding.asset
+                # --new-lots can't name a lot for 'Pending activity'.
+                nameable = unlisted or _clean_symbol(holding.asset)
+                # A tax lot: one of the symbol's holdings, by the day it was acquired.
+                acquired = holding.acquired.isoformat() if holding.acquired is not None and nameable else ""
+                if account_map.lookup(holding.account, holding.asset) != target:
+                    # Its symbol's tax lots were gathered into one lot just now.
+                    continue
                 if any(row.get("account_name") == target.account
-                       and row.get("symbol", "").upper() == symbol.upper() for row in rows):
+                       and row.get("symbol", "").upper() == symbol.upper()
+                       and row.get("acquired", "").strip() == acquired for row in rows):
                     # An earlier holding of the symbol (another row of the
                     # file, or another outside account) got the lot just now.
                     continue
-                # --new-lots can't name a lot for 'Pending activity'.
-                nameable = unlisted or _clean_symbol(holding.asset)
-                if _interactive() and not (new_lots and nameable):
-                    answer = _ask_holding_lot(holding, target, its_lots)
-                elif new_lots and nameable:
+
+                def free(base: str, its_lots: Sequence[str] = its_lots) -> str:
                     # A lot of another symbol may have the name already.
-                    base = holding.asset.strip("()").lower()
-                    answer = next(
+                    return next(
                         name for name in itertools.chain([base], (f"{base}-{n}" for n in itertools.count(2)))
                         if name not in its_lots)
+
+                base = holding.asset.strip("()").lower()
+                each_day = False
+                if acquired and _interactive() and not new_lots:
+                    key = (target.account, symbol.upper())
+                    if key not in tax_lots:
+                        days = sorted({h.acquired for h, t in result.new
+                                       if h.acquired is not None and h.asset == holding.asset and t == target})
+                        click.echo(
+                            f"The {snapshot.source} file lists {holding.asset} in {target.account} by tax lot: "
+                            f"{len(days)} with no lot here yet, acquired {days[0]}"
+                            + (f" to {days[-1]}" if len(days) > 1 else "") + ".")
+                        click.echo(
+                            "  A lot for each keeps its own cost basis and holding period (short or long "
+                            f"term), named {base}-DATE; otherwise they are added together into one lot.")
+                        tax_lots[key] = click.confirm(f"A lot for each tax lot of {holding.asset}?", default=True)
+                    each_day = tax_lots[key]
+                if each_day or (acquired and new_lots):
+                    answer = free(f"{base}-{acquired}")
+                elif _interactive() and not (new_lots and nameable):
+                    asked = holding
+                    if acquired:
+                        # The one lot would hold all of the symbol's tax lots.
+                        asked = import_forms.Holding(
+                            holding.account, asset=holding.asset, hints=holding.hints,
+                            value_cents=sum(h.value_cents for h, t in result.new
+                                            if h.asset == holding.asset and t == target))
+                    answer = _ask_holding_lot(asked, target, its_lots)
+                    if acquired and answer != "skip" and answer not in its_lots:
+                        # One lot for all of the symbol's tax lots: made
+                        # with no date, and named in the row so each finds it.
+                        add_lot(target.account, answer, symbol)
+                        its_lots = [*its_lots, answer]
+                elif new_lots and nameable:
+                    answer = free(base)
                 else:
                     continue
                 if answer == "skip" or answer in its_lots:
@@ -13632,7 +14270,7 @@ def import_holdings(
                     saved_map.set(holding.account, holding.asset, chosen)
                     to_save = True
                 else:
-                    add_lot(target.account, answer, symbol)
+                    add_lot(target.account, answer, symbol, acquired)
                 progress = True
             if not progress:
                 break
@@ -13692,8 +14330,11 @@ def import_holdings(
         for name in dict.fromkeys(h.account for h in snapshot.holdings):
             click.echo(f"{snapshot.source} account {name!r}, from the file's name "
                        "(--outside-account names another)")
+    if read_as_of is not None:
+        click.echo(f"{snapshot.source} snapshot as of {read_as_of}")
+        for note in back_notes:
+            click.echo(f"note: {note}")
     if snapshot.as_of is not None:
-        click.echo(f"{snapshot.source} snapshot as of {snapshot.as_of}")
         # The numbers are written as of a fixed day whatever the file's date.
         # scenario.start is pinned to its month's last day, and the opening
         # balances are those before that first month: as of its first day.
@@ -13701,7 +14342,9 @@ def import_holdings(
         if abs((snapshot.as_of - wanted).days) > _IMPORT_DATE_SLACK_DAYS:
             what = "the December 31 before it starts" if year_end else f"the start of {scen_name}"
             click.echo(
-                f"warning: the file is as of {snapshot.as_of}, and its balances are being set as "
+                f"warning: the file is as of {snapshot.as_of}, and its balances "
+                + (f"(but those of {', '.join(sorted(worked_back))}) " if worked_back else "")
+                + "are being set as "
                 f"of {wanted}, {what}. " + (
                     "Export the year-end report as of that day." if year_end else
                     "Export it as of that day, or bring the plan to the file's date first "
@@ -13735,7 +14378,9 @@ def import_holdings(
             click.echo(
                 f"note: the plan doesn't know {', '.join(strangers)} yet, so each lot grows "
                 "as its account does; 'sim symbol add SYMBOL' gives one its name, its "
-                "asset classes and its prices")
+                "asset classes and its prices (with --never-fetch for one that isn't traded, such "
+                "as a plan's own fund under a made-up symbol or a CUSIP: nothing then looks "
+                "for its prices)")
     counts = (f"{len(result.skipped)} skipped, {len(result.ineligible)} ineligible, "
               f"{result.lots_unchanged} unchanged")
     if result.pruned:
@@ -13744,8 +14389,10 @@ def import_holdings(
         counts = f"{len(fresh)} new, {counts}"
     if dry_run:
         click.echo(f"(dry run) {result.lots_changed} lot(s) would change, {counts}")
-        if to_save:
+        if to_save or split_asked:
             click.echo("(dry run) the mappings you gave were not saved")
+        for symbol in sorted(never_fetch):
+            click.echo(f"(dry run) {symbol} would be marked no_fetch in securities.csv")
         return
 
     overrides = 0
@@ -13788,6 +14435,16 @@ def import_holdings(
     if to_save:
         saved_map.save()
         click.echo(f"saved mappings to {_shown(map_path)}")
+    if split_asked:
+        lot_splits.save()
+        click.echo(f"saved the split to {_shown(splits_path)}")
+    for symbol in sorted(never_fetch):
+        try:
+            symbols.edit_symbol(data_dir_p, symbol, no_fetch=True)
+            click.echo(f"{symbol}: marked no_fetch in securities.csv")
+        except (ValueError, OSError) as e:
+            click.echo(f"warning: {symbol} was not marked no_fetch: {e}\n"
+                       f"  'sim symbol edit {symbol} --never-fetch' marks it", err=True)
     for account, character in characters.items():
         _echo_growth_character(account, character)
     inherited = f"; {overrides} as override(s) of inherited lots" if overrides else ""
@@ -15246,10 +15903,19 @@ def _ask_symbol() -> tuple[str, str | None, tuple[str, ...], str | None]:
     """``symbol add``'s arguments, asked a question at a time."""
     symbol = click.prompt("symbol (ticker)").strip()
     name = click.prompt("name (optional)", default="", show_default=False).strip() or None
+    specs = _ask_weights("weights (optional)",
+                         "e.g. stock_us=60% bond=40%; blank to add the weights later (an AI can look them up)")
+    as_of = _ask_month("as of YYYY-MM (optional; blank for every date)") if specs else None
+    return symbol, name, specs, as_of
+
+
+def _ask_weights(question: str, hint: str) -> tuple[str, ...]:
+    """A set of ``CLASS=PERCENT`` weights, asked again until they parse and
+    add up to 100%; blank for none."""
     click.echo(f"  asset classes: {registries.asset_class_list()}")
-    click.echo("  e.g. stock_us=60% bond=40%; blank to add the weights later (an AI can look them up)")
+    click.echo(f"  {hint}")
     while True:
-        text = click.prompt("weights (optional)", default="", show_default=False).strip()
+        text = click.prompt(question, default="", show_default=False).strip()
         try:
             weights = symbols.parse_weights(text.split()) if text else {}
         except ValueError as exc:
@@ -15259,12 +15925,21 @@ def _ask_symbol() -> tuple[str, str | None, tuple[str, ...], str | None]:
         if weights and total != 1_000_000:
             click.echo(f"  these add up to {units.micros_to_percent(total)}, not 100%")
             continue
-        break
-    as_of = None
-    if weights:
-        as_of = click.prompt("as of YYYY-MM (optional; blank for every date)",
-                             default="", show_default=False).strip() or None
-    return symbol, name, tuple(text.split()), as_of
+        return tuple(text.split())
+
+
+def _ask_month(question: str) -> str | None:
+    """A YYYY-MM month, asked again until it parses; blank for None."""
+    while True:
+        text = click.prompt(question, default="", show_default=False).strip()
+        if not text:
+            return None
+        try:
+            month_end_iso(text)
+        except ValueError:
+            click.echo(f"  {text!r} is not a YYYY-MM month")
+            continue
+        return text
 
 
 @symbol_group_command.command("edit")
@@ -15273,47 +15948,133 @@ def _ask_symbol() -> tuple[str, str | None, tuple[str, ...], str | None]:
 @click.option("--never-fetch/--may-fetch", "no_fetch", default=None,
               help="Mark it no_fetch in securities.csv, or clear the mark: a marked symbol's "
                    "prices are fetched, and it is researched, only when it is named.")
+@click.option("--weight", "weight_specs", multiple=True, metavar="CLASS=PERCENT",
+              help="Its share in one asset class (repeatable); together they make a whole new "
+                   "set, adding up to 100%. Without --as-of, they correct its latest set.")
+@click.option("--as-of", "as_of", default=None, metavar="YYYY-MM",
+              help="The month the --weight set describes: replaces that month's set, or adds a "
+                   "new dated set beside the others.")
 @click.option("--data-dir", type=click.Path(exists=True, file_okay=False, path_type=Path),
               default=None, help="Data repo (default: $ANALYSIS_DATA_DIR)")
 def symbol_edit_command(
-    symbol: str | None, name: str | None, no_fetch: bool | None, data_dir: Path | None,
+    symbol: str | None, name: str | None, no_fetch: bool | None,
+    weight_specs: tuple[str, ...], as_of: str | None, data_dir: Path | None,
 ) -> None:
-    """Change a symbol's securities.csv row: its name, or its no_fetch mark.
+    """Change a symbol: its name, its no_fetch mark, or its asset-class weights.
 
-    With no options, shows the row and asks for each field. A symbol with no
-    row gets one, unnamed unless a name is given. A symbol marked no_fetch
-    (one nothing can price, or an obsolete one) is skipped by `sim prices
-    fetch` with no symbol named and by the background builder's price fetch
-    and research; naming it runs it anyway, with a warning (#640). Weights
-    are changed in allocations.csv, or with `sim symbol research`.
+    With no options, shows what it has and asks for each. A symbol with no
+    securities.csv row gets one, unnamed unless a name is given. A symbol
+    marked no_fetch (one nothing can price, or an obsolete one) is skipped by
+    `sim prices fetch` with no symbol named and by the background builder's
+    price fetch and research; naming it runs it anyway, with a warning (#640).
+
+    --weight writes a whole set of weights to allocations.csv (#191). With
+    --as-of it replaces that month's set, or adds a new dated one (a fund's
+    glide path); without it, it corrects the latest set, keeping its date.
+    A symbol with no weights yet gets a set for every date. `sim symbol
+    research` can look the weights up. Both files change, or neither.
     """
     data = _resolve_data_dir(data_dir)
     if symbol is None:
         symbol = _ask_name("symbol", names.symbols(data), other=lambda _new: True)
     try:
         symbol = symbols.normalize_symbol(symbol)
+        weights = symbols.parse_weights(list(weight_specs))
     except ValueError as exc:
         raise click.UsageError(str(exc)) from None
-    current = symbols.security_name(data, symbol)
-    marked = symbol in prices.no_fetch_symbols(data)
-    if name is None and no_fetch is None:
-        click.echo(f"{symbol}: name {current or '(none)'}; "
-                   f"{'marked no_fetch' if marked else 'fetched and researched'}")
+    if as_of is not None and not weights:
+        raise click.UsageError("--as-of dates a set of weights; give --weight too")
+    if name is None and no_fetch is None and not weights:
+        current = symbols.security_name(data, symbol)
+        marked = symbol in prices.no_fetch_symbols(data)
+        latest = symbols.latest_set(data, symbol)
+        shown = symbols.weights_text(*latest) if latest else "(none)"
+        click.echo(f"{symbol}: name {current or '(none)'}; {symbols.fetch_text(marked)}; weights {shown}")
         name = click.prompt("name (blank: none)", default=current or "",
                             show_default=bool(current)).strip()
         no_fetch = click.confirm("mark it no_fetch (no price fetch or research unless named)?",
                                  default=marked)
+        weights = symbols.parse_weights(list(_ask_weights(
+            "new weights (blank: keep)", "e.g. stock_us=60% bond=40%; together a whole set, adding up to 100%")))
+        if weights:
+            kept = latest[0] if latest else ""
+            where = f"the latest set, as of {kept}" if kept else (
+                "the latest set" if latest else "a set for every date")
+            as_of = _ask_month(f"as of YYYY-MM (blank: {where})")
     try:
-        changed = symbols.edit_security(data, symbol, name=name, no_fetch=no_fetch)
+        edited = symbols.edit_symbol(data, symbol, name=name, no_fetch=no_fetch,
+                                     weights=weights or None, as_of=as_of)
     except ValueError as exc:
         raise click.ClickException(str(exc)) from None
-    if not changed:
+    if edited.named:
+        mark = symbol in prices.no_fetch_symbols(data)
+        click.echo(f"{symbol}: name {symbols.security_name(data, symbol) or '(none)'}; "
+                   f"{symbols.fetch_text(mark)} (securities.csv)")
+    if edited.as_of is not None:
+        dated = f"as of {edited.as_of}" if edited.as_of else "for every date"
+        click.echo(f"{symbol}: {', '.join(f'{c} {w}' for c, w in weights.items())} {dated} "
+                   f"({'replaced' if edited.replaced else 'added to'} allocations.csv)")
+    elif not edited.named:
         click.echo(f"{symbol}: unchanged")
-        return
-    shown = symbols.security_name(data, symbol)
-    mark = symbol in prices.no_fetch_symbols(data)
-    click.echo(f"{symbol}: name {shown or '(none)'}; "
-               f"{'marked no_fetch' if mark else 'fetched and researched'} (securities.csv)")
+
+
+@symbol_group_command.command("delete")
+@click.argument("symbol", type=completion.SYMBOL, required=False)
+@click.option("--prices/--keep-prices", "delete_prices", default=None,
+              help="Also delete its price files, the shared one and any scenario's own "
+                   "(default: asked; with --yes, kept).")
+@click.option("--yes", is_flag=True, help="Delete without asking anything.")
+@click.option("--data-dir", type=click.Path(exists=True, file_okay=False, path_type=Path),
+              default=None, help="Data repo (default: $ANALYSIS_DATA_DIR)")
+def symbol_delete_command(
+    symbol: str | None, delete_prices: bool | None, yes: bool, data_dir: Path | None,
+) -> None:
+    """Remove a symbol added by mistake: its securities.csv and allocations.csv rows.
+
+    Refuses while a lot in any scenario holds it, and lists them; for an
+    <account>:<lot> key, while that lot exists. Its price files
+    (prices/security_price__SYMBOL.csv, and any scenario's own) go too with
+    --prices, or after asking; --yes asks nothing and keeps them unless
+    --prices is given. Its research/ folder and any rate series named for it
+    are left in place and named. Every file changes, or none.
+    """
+    data = _resolve_data_dir(data_dir)
+    if symbol is None:
+        symbol = _ask_name("symbol", names.symbols(data))
+    try:
+        plan = symbols.plan_delete(data, symbol)
+    except ValueError as exc:
+        raise click.UsageError(str(exc)) from None
+    symbol = plan.symbol
+    if plan.held:  # before any question: nothing can be deleted
+        try:
+            symbols.delete_symbol(data, plan)
+        except ValueError as exc:
+            raise click.ClickException(str(exc)) from None
+    if not plan.named and not plan.weight_sets and not plan.prices:
+        raise click.ClickException(f"{symbol} is not in securities.csv, allocations.csv or any prices/ folder")
+    rows = [what for what, there in (("its securities.csv row", plan.named),
+                                     (f"{plan.weight_sets} set(s) of weights in allocations.csv",
+                                      plan.weight_sets)) if there]
+    if delete_prices is None:
+        delete_prices = bool(plan.prices) and not yes and click.confirm(
+            f"delete {symbol}'s price files?\n  "
+            + "\n  ".join(str(p.relative_to(data)) for p in plan.prices) + "\n", default=False)
+    going = [*rows, *([f"{len(plan.prices)} price file(s)"] if delete_prices and plan.prices else [])]
+    if going and not yes and not click.confirm(f"delete {' and '.join(going)}?", default=False):
+        raise click.Abort
+    try:
+        removed = symbols.delete_symbol(data, plan, prices=bool(delete_prices))
+    except (ValueError, OSError) as exc:
+        raise click.ClickException(str(exc)) from None
+    if plan.named:
+        click.echo(f"{symbol}: removed from securities.csv")
+    if plan.weight_sets:
+        click.echo(f"{symbol}: removed {plan.weight_sets} set(s) of weights from allocations.csv")
+    for path in plan.prices:
+        click.echo(f"{symbol}: {'deleted' if path in removed else 'kept'} {path.relative_to(data)}")
+    for path in plan.left:
+        click.echo(f"{symbol}: left in place: {path.relative_to(data)}")
 
 
 @symbol_group_command.command("research")
@@ -18453,6 +19214,8 @@ def person_show(
 # Conventional roles (ADR-003 §4.1), offered at the role prompt along with
 # any other role persons.csv already uses; the column itself is open.
 _CONVENTIONAL_ROLES = ("primary", "secondary")
+# What the role question takes for no role.
+_NO_ROLE = "none"
 
 _SHARED_PERSONS_NOTE = "persons.csv is shared: this changes every scenario"
 
@@ -18466,6 +19229,9 @@ def _read_persons(path: Path) -> pd.DataFrame:
     if "sex" not in df.columns and "birthdate" in df.columns:
         # #222 added sex; a persons.csv from before then gains it, blank.
         df.insert(list(df.columns).index("birthdate") + 1, "sex", "")
+    if "kind" not in df.columns:
+        # #274 added kind (person, trust, charity); an older file gains it, blank.
+        df["kind"] = ""
     missing = [c for c in registries.PERSONS_CSV_HEADER if c not in df.columns]
     if missing:
         raise click.ClickException(
@@ -18503,38 +19269,75 @@ def _check_sex(text: str) -> str:
     return sex
 
 
+def _check_person_kind(text: str) -> str:
+    """Blank (someone in the household), or one of PERSON_KINDS (outside it)."""
+    kind = text.strip().lower()
+    if kind and kind not in registries.PERSON_KINDS:
+        raise click.ClickException(
+            f"kind must be one of {list(registries.PERSON_KINDS)} or blank: {text!r}")
+    return kind
+
+
 def _person_fields(
     current: dict[str, str], roles: list[str], *, guided: bool,
     display: str | None, birthdate: str | None, role: str | None, meta_json: str | None,
-    sex: str | None = None,
+    sex: str | None = None, default_role: str = "", kind: str | None = None,
 ) -> dict[str, str]:
-    """A person's display, birthdate, sex, role and meta_json: each one
-    given, or when ``guided``, asked for with ``current``'s value as the
-    default; or else ``current``'s. A blank role is no role; a blank sex is
-    none (only a life_table lifespan needs one)."""
+    """A person's display, birthdate, sex, role, kind and meta_json: each
+    one given, or when ``guided``, asked for with ``current``'s value as the
+    default; or else ``current``'s. A blank role is no role (asked for as
+    ``none``; ``default_role`` is what a new person's question offers):
+    someone outside the household (#274), who may have no birthdate and
+    whose kind (person, trust or charity; blank is person) is asked for. A
+    blank sex is none (only a life_table lifespan needs one)."""
     if guided:
         if display is None:
             display = click.prompt("display", default=current.get("display") or None)
         if birthdate is None:
-            birthdate = click.prompt("birthdate (YYYY-MM-DD)",
-                                     default=current.get("birthdate") or None)
+            if role or current.get("role"):  # a household member's age matters: required
+                birthdate = click.prompt("birthdate (YYYY-MM-DD)",
+                                         default=current.get("birthdate") or None)
+            else:
+                birthdate = click.prompt(
+                    "birthdate (YYYY-MM-DD; blank for none outside the household)",
+                    default=current.get("birthdate") or "", show_default=False)
         if sex is None:
             sex = _prompt_with_completion(
                 "sex (f or m; blank for none, needed only for a life-table lifespan)",
                 list(registries.PERSON_SEXES), default=current.get("sex") or "",
             )
         if role is None:
+            click.echo(
+                "roles: primary (you or your spouse: the two the taxes and survivor rules are about), "
+                "secondary (another real person, such as a dependent), or none (someone outside the "
+                "household, such as an heir, a trust or a charity, or a stand-in that owns accounts, "
+                "such as joint)"
+                + (f"; also in use: {', '.join(others)}" if (others := [
+                    each for each in roles if each not in _CONVENTIONAL_ROLES]) else ""))
+            # A default can't be answered with nothing, so no role is a word.
             role = _prompt_with_completion(
-                "role (blank for none)", roles, default=current.get("role") or "",
+                "role", [*roles, _NO_ROLE], default=current.get("role") or default_role or _NO_ROLE,
+            )
+        if kind is None and role.strip() in ("", _NO_ROLE):
+            kind = _prompt_with_completion(
+                "kind (person, trust or charity: outside the household, an heir; "
+                "blank for a stand-in such as joint)", list(registries.PERSON_KINDS),
+                default=current.get("kind") or "",
             )
         if meta_json is None:
             meta_json = click.prompt("meta_json", default=current.get("meta_json") or "{}")
+    if role is not None and role.strip() == _NO_ROLE:
+        # However it was given, so that no person's role is the word itself.
+        role = ""
+    role = (role if role is not None else current.get("role", "")).strip()
+    birthdate = (birthdate if birthdate is not None else current.get("birthdate", "")).strip()
     fields = {
         "display": (display if display is not None else current.get("display", "")).strip(),
-        "birthdate": _check_birthdate(
-            birthdate if birthdate is not None else current.get("birthdate", "")),
+        # Someone outside the household needs no birthdate: nothing reads their age.
+        "birthdate": _check_birthdate(birthdate) if birthdate or role else "",
         "sex": _check_sex(sex if sex is not None else current.get("sex", "")),
-        "role": (role if role is not None else current.get("role", "")).strip(),
+        "role": role,
+        "kind": _check_person_kind(kind if kind is not None else current.get("kind", "")),
         # An edit leaves a meta_json it wasn't given exactly as it is, blank included.
         "meta_json": _check_meta_json(meta_json) if meta_json is not None
         else current.get("meta_json", "{}"),
@@ -18556,6 +19359,9 @@ _PERSON_OPTIONS = (
                  help="f or m ('' for none); a life_table lifespan needs it."),
     click.option("--role", default=None,
                  help="primary, secondary, or another role; '' for none."),
+    click.option("--kind", default=None,
+                 help="person, trust or charity: someone outside the household (an heir), "
+                      "with no role; '' for someone in it."),
     click.option("--meta-json", default=None, help="JSON metadata (default {})."),
     click.option("--scenario", type=completion.SCENARIO, default=None,
                  help="Scenario checked first (default: the current one); "
@@ -18600,10 +19406,13 @@ def _write_persons(
 @_person_options
 def person_add(
     person_id: str | None, display: str | None, birthdate: str | None, sex: str | None,
-    role: str | None, meta_json: str | None, scenario: str | None, data_dir: Path | None,
+    role: str | None, kind: str | None, meta_json: str | None, scenario: str | None,
+    data_dir: Path | None,
 ) -> None:
     """Add a person to persons.csv, asking for a display name and birthdate
-    not given (and then the sex, role and meta_json).
+    not given (and then the sex, role, kind and meta_json). Someone with no
+    role is outside the household (an heir, a trust, a charity) and gets an
+    account of their own, outside net worth, where gifts and bequests land.
 
     persons.csv is shared by every scenario, at the data repo's top level.
 
@@ -18622,7 +19431,9 @@ def person_add(
         raise click.ClickException(f"person already exists: {person_id!r} (sim person edit)")
     fields = _person_fields(
         {}, _role_choices(df), guided=display is None or birthdate is None,
-        display=display, birthdate=birthdate, role=role, meta_json=meta_json, sex=sex,
+        display=display, birthdate=birthdate, role=role, meta_json=meta_json, sex=sex, kind=kind,
+        # The usual answer, until the household has its two spouses.
+        default_role="primary" if (df["role"] == "primary").sum() < 2 else "",
     )
     row = pd.DataFrame([{"id": person_id, **fields}])
     _write_persons(data, scenario, pd.concat([df, row], ignore_index=True).fillna(""), before)
@@ -18634,7 +19445,8 @@ def person_add(
 @_person_options
 def person_edit(
     person_id: str | None, display: str | None, birthdate: str | None, sex: str | None,
-    role: str | None, meta_json: str | None, scenario: str | None, data_dir: Path | None,
+    role: str | None, kind: str | None, meta_json: str | None, scenario: str | None,
+    data_dir: Path | None,
 ) -> None:
     """Change a person in persons.csv. With no options, asks for each field
     with its current value as the default; options change just those fields.
@@ -18656,10 +19468,10 @@ def person_edit(
             f"unknown person {person_id!r}; persons: {sorted(df['id'])}")
     idx = matches[0]
     current = {c: str(df.at[idx, c]) for c in df.columns}
-    guided = all(v is None for v in (display, birthdate, sex, role, meta_json))
+    guided = all(v is None for v in (display, birthdate, sex, role, kind, meta_json))
     fields = _person_fields(
         current, _role_choices(df), guided=guided,
-        display=display, birthdate=birthdate, role=role, meta_json=meta_json, sex=sex,
+        display=display, birthdate=birthdate, role=role, meta_json=meta_json, sex=sex, kind=kind,
     )
     if all(fields[k] == current.get(k, "") for k in fields):
         click.echo(f"person '{current['id']}' unchanged")

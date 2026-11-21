@@ -50,19 +50,44 @@ def test_person_add_with_options_writes_the_row(
     assert "every scenario" in result.output
     assert _persons(test_data_dir)["carol"] == {
         "id": "carol", "display": "Carol (fake)", "birthdate": "1995-02-03", "sex": "",
-        "role": "secondary", "meta_json": "{}",
+        "role": "secondary", "meta_json": "{}", "kind": "",
     }
 
 
 def test_person_add_asks_for_what_is_missing(
     sim: Callable[..., Result], test_data_dir: Path,
 ) -> None:
-    result = sim("person", "add", "carol", input="Carol (fake)\n1995-02-03\nf\n\n\n")
+    result = sim("person", "add", "carol", input="Carol (fake)\n1995-02-03\nf\n\n\n\n")
 
     assert result.exit_code == 0, result.output
     carol = _persons(test_data_dir)["carol"]
     assert (carol["display"], carol["birthdate"], carol["sex"], carol["role"]) == (
         "Carol (fake)", "1995-02-03", "f", "")
+    # The question says what a role is, and no role is an answer of its own.
+    assert "roles: primary (you or your spouse" in result.output and "role [none]:" in result.output
+
+    # Until the household has its two spouses, the usual answer is offered.
+    edited = sim("person", "edit", "bill", "--role", "secondary")
+    assert edited.exit_code == 0, edited.output
+    result = sim("person", "add", "dave", input="Dave (fake)\n1966-02-03\nm\n\n\n")
+    assert result.exit_code == 0, result.output
+    assert "role [primary]:" in result.output and _persons(test_data_dir)["dave"]["role"] == "primary"
+    result = sim("person", "edit", "dave", input="\n\n\nnone\n\n\n")
+    assert result.exit_code == 0, result.output
+    assert "role [primary]:" in result.output and _persons(test_data_dir)["dave"]["role"] == ""
+
+
+def test_person_role_none_as_an_option_is_no_role_too(
+    sim: Callable[..., Result], test_data_dir: Path,
+) -> None:
+    added = sim("person", "add", "carol", "--display", "Carol (fake)", "--birthdate", "1995-02-03",
+                "--sex", "f", "--role", "none")
+    assert added.exit_code == 0, added.output
+    assert _persons(test_data_dir)["carol"]["role"] == ""
+    assert sim("person", "edit", "carol", "--role", "secondary").exit_code == 0
+    edited = sim("person", "edit", "carol", "--role", "none")
+    assert edited.exit_code == 0, edited.output
+    assert _persons(test_data_dir)["carol"]["role"] == ""
 
 
 @pytest.mark.parametrize(("args", "message"), [
@@ -93,7 +118,20 @@ def test_person_edit_option_changes_only_that_field(
     result = sim("person", "edit", "bill", "--role", "secondary")
 
     assert result.exit_code == 0, result.output
-    assert _persons(test_data_dir)["bill"] == {**before, "role": "secondary"}
+    assert _persons(test_data_dir)["bill"] == {**before, "kind": "", "role": "secondary"}
+
+
+def test_person_add_someone_outside_the_household(
+    sim: Callable[..., Result], test_data_dir: Path,
+) -> None:
+    # No role and no birthdate: an heir, here a charity (#274).
+    result = sim("person", "add", "good_cause", "--display", "Good Cause",
+                 "--birthdate", "", "--role", "", "--kind", "charity")
+
+    assert result.exit_code == 0, result.output
+    cause = _persons(test_data_dir)["good_cause"]
+    assert (cause["birthdate"], cause["role"], cause["kind"]) == ("", "", "charity")
+    assert "kind must be one of" in sim("person", "edit", "good_cause", "--kind", "cousin").output
 
 
 def test_person_edit_option_keeps_a_blank_meta_json(
@@ -118,7 +156,7 @@ def test_person_edit_asks_with_current_values_as_defaults(
 
     assert result.exit_code == 0, result.output
     assert _persons(test_data_dir)["bill"] == {
-        **before, "birthdate": "1967-09-01", "meta_json": '{"note": 1}'}
+        **before, "kind": "", "birthdate": "1967-09-01", "meta_json": '{"note": 1}'}
 
 
 def test_person_edit_refuses_when_persons_csv_changes_meanwhile(

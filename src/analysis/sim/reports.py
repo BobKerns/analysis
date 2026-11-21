@@ -227,6 +227,10 @@ and ``Δdeferred_tax`` after tax, ``tax_paid`` before it, ``inflation`` in
 CPI-constant dollars."""
 
 
+GIFTS_AND_BEQUESTS = "gifts_and_bequests"
+"""The income report's line for money given away (#274): not spending."""
+
+
 def net_worth_change_by_year(
     rc: RunConnection, economic_income: pd.Series, *,
     mode: DollarMode = DollarMode.NOMINAL, after_tax: bool = True,
@@ -235,7 +239,7 @@ def net_worth_change_by_year(
     ``mode`` dollars) becomes the change in net worth (#249)::
 
         economic_income - tax - Δdeferred_tax = after_tax_income
-        after_tax_income - spending - inflation = Δnet_worth
+        after_tax_income - spending - gifts_and_bequests - inflation = Δnet_worth
 
     This is Haig-Simons accounting: income is what the year added before
     spending, gains counted as they accrue and tax as it is owed. After tax
@@ -251,7 +255,10 @@ def net_worth_change_by_year(
     ``spending`` is every expense but income tax, depreciation and business
     expenses: a vehicle's lost value is a loss in economic income, like a
     market drop, and a business's costs come off its income there.
-    ``inflation``, in
+    ``gifts_and_bequests`` is what went into a ``gift`` expense account,
+    which includes everyone outside the household's own account (#274): a
+    gift, or a bequest at a death. It leaves net worth, but it isn't the
+    household's own spending. ``inflation``, in
     CPI-constant dollars only, is what inflation took from the real value of
     what was held: each month's flows are deflated as they happen, while net
     worth loses value just by sitting still.
@@ -270,12 +277,13 @@ def net_worth_change_by_year(
     category = expenses["to_subkind"].map(EXPENSE_SUBKIND_TO_CATEGORY)
     expenses["line"] = "spending"
     expenses.loc[category == "taxes", "line"] = "tax_paid"
+    expenses.loc[category == "gifts", "line"] = GIFTS_AND_BEQUESTS
     # Both are already in economic income, as losses (see _flow_events).
     expenses.loc[category == "business", "line"] = "economic_income"
     expenses.loc[is_depreciation, "line"] = "economic_income"
     monthly = (expenses.groupby(["month", "line"])["amount"].sum()
                .unstack("line", fill_value=0)
-               .reindex(columns=["tax_paid", "spending"], fill_value=0) / 100)
+               .reindex(columns=["tax_paid", "spending", GIFTS_AND_BEQUESTS], fill_value=0) / 100)
     worth = rc.after_tax_net_worth_frame() if after_tax else rc.net_worth_frame()
     nw = worth["nominal"].astype(float)
     if nw.empty:
@@ -333,8 +341,11 @@ def net_worth_change_by_year(
         columns["tax_paid"] = frame["tax_paid"]
         kept = income - frame["tax_paid"]
     columns["spending"] = frame["spending"]
+    if frame[GIFTS_AND_BEQUESTS].ne(0).any():
+        # A line most households never have, so only when there is one.
+        columns[GIFTS_AND_BEQUESTS] = frame[GIFTS_AND_BEQUESTS]
     if mode == DollarMode.CPI_CONSTANT:
-        columns["inflation"] = kept - frame["spending"] - change
+        columns["inflation"] = kept - frame["spending"] - frame[GIFTS_AND_BEQUESTS] - change
     columns[NET_WORTH_CHANGE] = change
     return pd.DataFrame(columns, index=years).astype(float)
 

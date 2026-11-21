@@ -90,7 +90,8 @@ imports/
   budget_choices.csv       category -> budget or actual, where you have both
   <source>/
     profile.yaml           a source of your own (see below)
-    accounts.csv           outside account -> account and lot, or skip
+    accounts.csv           outside account -> account and lot, or skip, or split
+    lot_splits.csv         one outside number divided among an account's lots
     categories.csv         outside category -> category
     splits.csv             a category divided by the outside account that paid
     excluded_payees.csv    payees whose expenses the scenario models itself
@@ -116,13 +117,33 @@ accounts hold. Export the snapshot as of the scenario's first day.
   one lot for each outside account. The account list stays
   short, every report shows the bank's total, and each lot still has its own
   balance, rate and refill rules. Map each outside account to its lot.
-- An account with several lots needs the lot named: the question asks for
-  it. One outside number can't fill two lots, so an outside account that
-  the scenario keeps as several lots is best answered `skip`, and its lots
-  filled from a [brokerage file](#brokerage-files) or typed.
+- The question asks for the lot too. Press Enter for an account's one lot,
+  name one of its lots, or give a new name: after a yes, the lot is added
+  to the account and takes the balance. So a bank's second account can be
+  given its own lot as it is first imported.
+- When the account's one lot is still called `default`, a new name may be
+  that same lot's, so the question says what `default` holds and asks:
+  `rename` gives the lot your name, and the rules that pay into or out of it
+  follow; `add` keeps `default` and adds your lot beside it, for a file that
+  lists only part of the account; `back` asks for the lot again.
+- One outside number can fill several lots when you know how it divides:
+  answer `split` for the lot. It then asks for a lot and its amount, one at a
+  time, until nothing is left. A new name adds a lot; `rest` for an amount
+  gives that lot whatever the others leave. In a brokerage account it also
+  asks a new lot's symbol and the day it was bought, and each part's cost
+  basis in a taxable one. A fund that isn't traded, such as a retirement
+  plan's own, can take its CUSIP or a name you make up as its symbol: one
+  that doesn't look like a ticker is confirmed first, in case it is a slip,
+  and then marked `no_fetch`, so that nothing looks for its prices. The split is saved in
+  `imports/<source>/lot_splits.csv`. The next import uses it as it is when
+  one lot takes the rest, or when the number hasn't changed. Otherwise it
+  asks again, with the last amounts as the defaults.
 - An outside account the scenario has no account for can be added from
   the question: answer with a new name, and it asks what `sim account add`
-  asks (kind, subkind, owner) and adds the account before going on. It
+  asks (kind, subkind, owner) and adds the account before going on. For an
+  outside account that is one balance it also asks what to call the
+  account's lot: Enter for `default`, or a name of your own such as
+  `checking`, which saves renaming it when the account gets a second. It
   asks first whether to add it, and takes Enter as no, since a new name
   may be a slip; `back` at the account's kind returns to the question. A dry
   run adds nothing, so it offers only the accounts there are. A name the
@@ -175,7 +196,8 @@ Things to know:
   custodian's Form 5498s add up to it.
 - **A new symbol is only a label** until the plan knows it. `sim symbol add`
   gives it a name, its asset classes and its prices; until then its lot
-  grows as its account does.
+  grows as its account does. For a made-up symbol or a CUSIP, add
+  `--never-fetch`, so that nothing looks for its prices.
 - **A lot the file doesn't mention is kept**, with a warning: it may have
   been sold. `--prune` empties every such lot (balance, shares and basis to
   zero), and `sim account lot delete` removes one for good. When two
@@ -194,7 +216,9 @@ Things to know:
   balances from the real files.
 - **The file's date should be the scenario's first day**, give or take a
   week. The balances are written as the opening ones whatever the date, so
-  an import of a file dated further away warns, naming both dates.
+  an import of a file dated further away warns, naming both dates. A bank's
+  or a card's [OFX download](#ofx-and-qfx-files) is the exception: its
+  balance is worked back to the first day from its own transactions.
 
 | Source | What to download | The account |
 | --- | --- | --- |
@@ -316,8 +340,10 @@ covered, each category's total and what it comes to a month (over the
 months that had any spending, as the rules are worked out), what was left
 out and why (money in, moves between your own accounts, what the scenario
 models itself), and the outside categories that fell to `Other`. It needs
-no `--from` and no expense accounts yet, so it is a good first
-command with a new file. It asks nothing: a payee with no category yet is
+no `--from`, no expense accounts and no `categories.csv` yet, so it is a
+good first command with a new file: with no map, each of the outside
+program's categories is shown as itself, which is what the map is written
+from. It asks nothing: a payee with no category yet is
 counted in `Other`, with a note of the most paid, and a file that doesn't
 name its account is taken as its own name's.
 
@@ -579,8 +605,25 @@ whichever bank reports it. A card paid from the bank is `transfer` there,
 as for any other bank file.
 
 The balance is what a bank's CSV download never has, so an OFX file is the
-easy way to set a checking or savings account's opening balance: download
-it as of the scenario's first day.
+easy way to set a checking or savings account's opening balance. The balance
+in the file is always the one on the day you download it: the range of dates
+a bank asks for only chooses which transactions the file has. So download
+with a range from the scenario's first day (or earlier) through today. The
+file then has everything posted since the scenario started, and the import
+works the balance back to that first day, saying what it did:
+
+```text
+note: First Example Bank checking ...4321: its balance of 4321.09 as of 2026-06-15 is worked back to 2026-05-01: what was posted from that day comes to -1200.00, so it opened the day with 5521.09
+```
+
+A download that doesn't reach back to the scenario's first day sets the
+balance as the file has it, with a warning that the dates differ and a note
+of the days the file covers. So does a card whose file writes what is owed
+as a positive amount, and a file with a bank's correction of a transaction.
+A brokerage's positions are never worked back, since the file can't say
+what the shares and prices were on an earlier day. With `--year-end` the
+balance is worked back to the end of the year before, from a download that
+starts on January 1 or earlier.
 
 The outside account's name is made from what the file says and nothing
 else. A file that doesn't name its institution (many banks' don't) gives
@@ -803,7 +846,13 @@ Save two reports under *My Reports*, and export each as CSV:
 | --- | --- | --- |
 | Net worth (every account, with its balance) | `sim import holdings` | the scenario's first day; or December 31 for `--year-end` |
 | Transactions (every account, itemized, with payee and category) | `sim import transactions` | the year to average |
+| Portfolio Value & Cost Basis, one saved report for each investment account | `sim import holdings` | a range ending on the scenario's first day |
 | A budget's export, Full | `sim import budget` | the year planned |
+
+The transactions report may be the saved one, grouped under each account,
+or the "All Transactions" report exported as it stands, with one row for
+each transaction and its account in a column. A move between your own
+accounts is taken from that report's `Transfer:` category.
 
 With no file named, `sim import transactions` reads
 `quicken/Transaction Export.csv` at the data repo's top level, along with the
@@ -811,8 +860,57 @@ Amazon categorizer's monthly summaries in `state/`, which split Amazon
 orders into real categories.
 
 Quicken's net worth report has one number for a brokerage account, so it
-can't fill an account kept as several lots: import those from the
-[brokerage's own file](#brokerage-files).
+can't fill an account kept as several lots. For those, use the built-in
+**Portfolio Value & Cost Basis** report, which is the only export Quicken
+has of what an account holds. The report names no account, and one of
+several accounts adds them together, so make one for each account:
+
+1. Under *Reports*, open the built-in **Portfolio Value & Cost Basis**
+   report.
+2. In its account list, turn off every account but the one.
+3. Set its dates so that one of them is the scenario's first day (or
+   December 31 for `--year-end`). The report has numbers for several dates;
+   the import takes those of the date nearest the one the plan wants, and
+   says which.
+4. For tax lots, open each security's line (the triangle beside its name)
+   so that the purchase dates show under it in the *Security* column. Quicken
+   exports the dates only for the lines that are open. Leave a line closed
+   to import that security as one total: a money market fund, say, whose
+   every monthly dividend is a purchase of its own.
+5. Save the report under the account's name, and export it as CSV.
+
+```sh
+sim import holdings "Joint Brokerage.csv"
+```
+
+The import asks which Quicken account the file is, offering the name the
+report was saved under and the accounts the net worth report named
+(`--outside-account NAME` answers it), then sends each security to the
+account's lot of its symbol, with its value and cost basis, and the
+account's cash to its cash lot. The report has no share
+counts: at a terminal the import offers to work one out from a stored price.
+A [brokerage's own file](#brokerage-files) has the counts, and is the better
+source where you can get one.
+
+**Tax lots.** A security whose line was open comes as one row for each
+purchase date, and the import asks once for each security whether every
+one gets a lot of its own:
+
+```text
+The quicken file lists VTSAX in Asset_Brokerage_Joint by tax lot: 3 with no lot here yet, acquired 2019-03-15 to 2026-02-10.
+  A lot for each keeps its own cost basis and holding period (short or long term), named vtsax-DATE; otherwise they are added together into one lot.
+A lot for each tax lot of VTSAX? [Y/n]:
+```
+
+A yes (and `--new-lots`, which doesn't ask) makes lots named for the
+symbol and the date, such as `vtsax-2019-03-15`, each with its `acquired`
+date, value and cost basis. A later import finds each by its date, adds a
+lot for a new purchase, and with `--prune` empties one that was sold. A lot
+of the symbol with no date, from an earlier import of its total, is emptied
+too, since the dated lots now hold what it held. A no asks for one lot's
+name instead, and adds them together into it then and in later imports.
+Purchases on the same day are one lot. Where the dates listed don't come
+to the security's total, the rest gets a lot with no date.
 
 A data repo with Quicken mappings from before the `imports/` folder moves
 them with `scripts/migrate_527.py` (it reports first; `--write` does it).

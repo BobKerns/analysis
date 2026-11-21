@@ -6,7 +6,8 @@
 
 This guide shows how to make common changes to a scenario, step by step, with
 real examples, and how to look at what a run produced. It assumes you already
-have a data repo. If you don't, start one with `sim init DIR`, which asks who you
+have a data repo. If you don't, start one with `sim init` in the code checkout
+(it is made at `data/shared`; `sim init DIR` puts it elsewhere and links it there). It asks who you
 are and builds it from the code repository's templates ([templates/README.md](../templates/README.md)).
 The one-line installer ([SETUP.md](SETUP.md)) does that for you.
 
@@ -889,6 +890,48 @@ taken from the decedent's account later in the year of the death still
 counts as theirs. `sim report tax --return federal` shows
 what ended as `capital_loss_lapsed` and `nol_lapsed`.
 
+#### Where the accounts go
+
+Every account names an `owner` in `accounts.csv`: a person, or `joint` for
+the household's. At the end of the owner's final month (for a `joint`
+account, the household's last death), the account goes where its optional
+`beneficiary` column says:
+
+- **Blank:** a surviving spouse takes it over. Its owner changes from the
+  next month and no money moves, so their RMDs, Roth rules and step-ups
+  follow. With no spouse alive, the scenario's estate takes it (below).
+- **A person in the household, or `joint`:** they take it over the same way.
+  A retirement account can pass only to a person.
+- **A person outside the household** (a child, a trust, a charity): the
+  money leaves the household. Add them to `persons.csv` with no role and a
+  `kind` (`sim person add dana --role '' --birthdate '' --kind person`, or
+  `--kind trust` or `--kind charity`); a row with neither stays a stand-in
+  in the household. Each such person gets an
+  account of their own, named by their id. What lands there, as a bequest
+  or as a gift you schedule while alive, is out of net worth but still
+  shown: the income report lists it as `gifts_and_bequests`, apart from
+  spending.
+- **A destination chain or another account:** the money goes there, as an
+  overflow sweep would place it. A chain names contingent beneficiaries in
+  order: a step whose owner has died is skipped. `Asset_Roth_Bill`, then
+  `dana`, leaves Alice's Roth IRA to Bill, or to Dana if Bill died first.
+
+`sim account edit Asset_Brokerage_Joint --beneficiary dana` sets one.
+
+It works the other way too. An older relative outside the household can
+leave you money: give them a `birthdate` and a `lifespan.csv` row (it can
+vary across an ensemble), start their account with what they have
+(`account_lots.csv`), and set that account's `beneficiary` to the account
+or chain it would come to (perhaps an empty placeholder account until
+then). At their death it arrives untaxed, with its basis stepped up. A
+step whose owner has died by then is skipped, as above.
+
+At the household's last death, the scenario's estate takes whatever is
+left: set `"estate": "<chain>"` in `scenario.csv` `meta_json`. List the
+debts (a mortgage) first in that chain, so they are paid before the heirs
+are. `sim explain` lists what each death did. Estate tax, a trust's own
+tax, and an heir's taxes on an inherited IRA are not modeled.
+
 In an ensemble the age can vary from member to member. Give
 `vary_distribution` (`uniform` or `triangular`) and the lowest and highest
 age, `vary_low` and `vary_high`; a triangular peaks at `vary_mode`, or at
@@ -1239,7 +1282,16 @@ asked for each instead. The weights must add up to 100%; `--as-of 2027-01`
 dates a set, and adding another set with a later date follows a fund whose
 mix changes over time, such as a target-date fund. Leave out `--weight` if
 you don't know the mix yet, and add it later; an AI can look it up (below).
-To change a name or a set of weights already written, edit the file.
+
+To change one later, use `sim symbol edit ABCDX`. `--name` renames it, and
+`--weight` (all of them, adding up to 100%) corrects its latest set of
+weights, keeping that set's date; with `--as-of` it replaces that month's set
+instead, or adds a new dated set. With no options it shows what the symbol
+has and asks. `sim symbol delete ABCDX` removes a symbol added by mistake:
+its name and weights, and, if you say so (or pass `--prices`), its price
+files; `--yes` asks nothing and keeps them unless `--prices` is given. It
+refuses while a lot in any scenario still holds the symbol, and lists those
+lots.
 
 If the price provider has no prices for the symbol (a 401(k)'s collective
 trust fund often has no public ticker), the name and weights are still
@@ -2295,7 +2347,7 @@ None of them need you to write any code.
 | `accounts.ipynb` | Balance history for any account over time, account setup details, the lots and holdings inside an account, which accounts hold a symbol, the portfolio by asset class, and the stored prices: lots whose balance disagrees with quantity × price, every symbol with its name, allocation and latest price, and one symbol's price history. |
 | `net_worth.ipynb` | Net worth over time, income by category, expenses by category, realized vs. unrealized gains, economic income down to the change in net worth, tax by year with its effective rate, and where the run stands against its guard rails. |
 | `scenario_compare.ipynb` | Puts two or more scenarios side by side: what differs between them, net worth over time for each, where they cross over (break-even), gross Social Security, and tax by year. |
-| `events.ipynb` | Every dollar movement in a run, filterable by reason (which rule fired, a refill/overflow, a catch-up fact), tax character, account, and date range, with a running balance for one account and each refill linked to the debit that triggered it — good for auditing "why did this happen." |
+| `events.ipynb` | Every dollar movement in a run, filterable by reason (which rule fired, a refill/overflow, a catch-up fact), tax character, account, and date range, with a running balance for one account and each refill linked to the debit that triggered it — good for auditing "why did this happen." `sim items` shows the same table, with the same filters, at the command line. |
 | `ensemble.ipynb` | For an ensemble recipe (Part 4.10): net worth's mean/median over quintile bands shaded out to the 5th–95th percentiles, plus a year-end table of mean/median/SD and the 5th, 20th, ... 95th percentiles, and the share of members past each guard rail. |
 
 Open one with `analysis jupyter` (or the **Jupyter** VS Code task, below), or

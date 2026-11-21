@@ -7,31 +7,27 @@ changed lots through a staged edit.
 
 from __future__ import annotations
 
+import dataclasses
+import datetime as dt
+
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
 
-from analysis.sim.imports.forms import UNLISTED, Holding, Snapshot
-from analysis.sim.imports.mapping import AccountMap, AccountTarget
+from analysis.sim.imports.forms import UNLISTED, Holding, Snapshot, format_dollars
+from analysis.sim.imports.mapping import AccountMap, AccountTarget, LotPart, divide
 from analysis.sim.registries import CASH_SYMBOL, DEFAULT_LOT, RETIREMENT_LOT_SUBKINDS
 from analysis.sim.types import INVESTMENT_ASSET_SUBKINDS, InvestmentAssetSubkind
 from analysis.sim.units import dollars_to_cents
 
 __all__ = [
-    "Change", "HoldingsPlan", "Offer", "format_dollars", "is_investment_asset", "plan",
+    "Change", "HoldingsPlan", "Offer", "at", "nearest", "format_dollars", "is_investment_asset", "plan",
     "roth_basis_note",
 ]
 
 def is_investment_asset(kind: str, subkind: str) -> bool:
     """Whether an account's ``prior_year_end_balance`` is meaningful to set."""
     return kind == "asset" and subkind in INVESTMENT_ASSET_SUBKINDS
-
-
-def format_dollars(cents: int) -> str:
-    """Format integer cents as the dollars-and-cents string account_lots.csv expects."""
-    sign = "-" if cents < 0 else ""
-    dollars, rem = divmod(abs(cents), 100)
-    return f"{sign}{dollars}.{rem:02d}"
 
 
 @dataclass(frozen=True)
@@ -82,6 +78,9 @@ class HoldingsPlan:
     add them together into that lot, or keep each as a lot of its own?"""
     new: list[tuple[Holding, AccountTarget]] = field(default_factory=list)
     """Holdings with a symbol none of the account's lots has."""
+    to_split: list[tuple[Holding, AccountTarget]] = field(default_factory=list)
+    """Holdings whose mapping divides them among lots, with no split that
+    fits their number."""
     skipped: list[str] = field(default_factory=list)
     pruned: list[str] = field(default_factory=list)
     """Lots emptied because their account's file no longer has them."""
@@ -96,7 +95,8 @@ class HoldingsPlan:
     @property
     def complete(self) -> bool:
         """Whether every holding found a place (or was skipped on purpose)."""
-        return not (self.unmapped or self.unknown or self.no_lot or self.undecided or self.new)
+        return not (self.unmapped or self.unknown or self.no_lot or self.undecided or self.new
+                    or self.to_split)
 
 
 @dataclass
@@ -112,6 +112,68 @@ class _Landed:
     by_symbol: bool = False
 
 
+def nearest(snapshot: Snapshot, wanted: dt.date) -> Snapshot:
+    """``snapshot`` as of the date nearest ``wanted`` among those its file
+    has holdings for (the later of two as near), with a note saying which
+    was taken. A report over a period has each of its dates' numbers, and
+    the plan wants those of one day."""
+    if not snapshot.dated:
+        return snapshot
+    day = min(snapshot.dated, key=lambda each: (abs((each - wanted).days), -each.toordinal()))
+    others = ", ".join(str(each) for each in sorted(snapshot.dated) if each != day)
+    return dataclasses.replace(
+        snapshot, holdings=snapshot.dated[day], as_of=day, dated={}, dated_notes={},
+        notes=(*snapshot.notes, *snapshot.dated_notes.get(day, ()),
+               f"the file has numbers as of several dates; those of {day} are used, "
+               f"the nearest to {wanted} (not {others})"))
+
+
+def at(snapshot: Snapshot, since: dt.date) -> tuple[Snapshot, frozenset[str], tuple[str, ...]]:
+    """``snapshot`` with each balance its file can account for worked back
+    to what it was when ``since`` opened: the file's balance less what was
+    posted from that day to the file's date. Also the accounts worked back,
+    and a note for each of them and for each that has transactions which
+    don't cover those days.
+
+    A bank's download has the balance of the day it was made whatever range
+    of transactions was asked for, and a plan's opening balances are those
+    of its first day, so without this no download could set them."""
+    if snapshot.as_of is None or snapshot.as_of < since or not (snapshot.activity or snapshot.unaccounted):
+        return snapshot, frozenset(), ()
+    holdings: list[Holding] = []
+    back: set[str] = set()
+    notes: list[str] = []
+    for holding in snapshot.holdings:
+        activity = snapshot.activity.get(holding.account)
+        if activity is None or holding.asset:
+            holdings.append(holding)
+            if not holding.asset and (why := snapshot.unaccounted.get(holding.account)):
+                notes.append(f"{holding.account}: its balance can't be worked back to {since}: {why}")
+        elif activity.start > since or activity.end < snapshot.as_of:
+            holdings.append(holding)
+            notes.append(
+                f"{holding.account}: the file's transactions are those of {activity.start} to {activity.end}, "
+                f"so its balance can't be worked back to {since}; a download of every day from {since} to "
+                "the day it is made can be")
+        else:
+            # What was posted after the balance's date is no part of it.
+            net = sum(cents for day, cents in activity.posted if since <= day <= snapshot.as_of)
+            holdings.append(dataclasses.replace(holding, value_cents=holding.value_cents - net))
+            back.add(holding.account)
+            notes.append(
+                f"{holding.account}: its balance of {format_dollars(holding.value_cents)} as of "
+                f"{snapshot.as_of} is worked back to {since}: what was posted from that day comes to "
+                f"{format_dollars(net)}, so it opened the day with {format_dollars(holding.value_cents - net)}")
+    # Worked back in full, the snapshot is one of that day.
+    whole = back and all(each.account in back for each in holdings)
+    return (dataclasses.replace(snapshot, holdings=tuple(holdings), as_of=since if whole else snapshot.as_of),
+            frozenset(back), tuple(notes))
+
+
+def _acquired(row: Mapping[str, str]) -> str:
+    return row.get("acquired", "").strip()
+
+
 def _lot_name(row: Mapping[str, str]) -> str:
     return row.get("lot", "") or DEFAULT_LOT
 
@@ -122,6 +184,7 @@ def plan(
     split: Collection[str] = (), fresh: Collection[int] = (), prune: bool = False,
     prices: Mapping[str, Decimal] | None = None, recount: Collection[int] = (),
     keep_count: Collection[int] = (),
+    splits: Mapping[tuple[str, str], Sequence[LotPart]] | None = None,
 ) -> HoldingsPlan:
     """What importing ``snapshot`` would change.
 
@@ -150,6 +213,13 @@ def plan(
     with no symbol, and never into a fund's: with neither it is ``new``,
     or passed over when it is nothing. The one lot of a ``split`` account
     is not such a lot: it is being emptied into the new ones.
+
+    **Tax lots.** A holding with an acquisition date (``Holding.acquired``)
+    is one tax lot of its symbol: it goes to the account's lot of that
+    symbol acquired that day, and with none it is ``new``. A lot of the
+    symbol with no date, which the file then has nothing for, is emptied
+    as a ``split`` account's one lot is: the dated lots hold its total. A
+    mapping that names a lot still takes them all in together.
 
     **What is set.** A lot kept in shares (a quantity and a symbol, and no
     balance) has its ``quantity`` set; any other lot its balance, and its
@@ -196,6 +266,16 @@ def plan(
     A holding with no symbol, where the mapping names no lot, goes to the
     account's lot with no symbol when it has one, and not into a fund's.
 
+    **A number divided among lots.** A mapping whose action is ``split``
+    says the file's one number is several lots' together, and ``splits``
+    (``lot_splits.csv``) how: by outside account and asset, each lot's part.
+    The holdings of one outside account and asset are divided as their
+    total. Where the split fits it (``mapping.divide``), each part is a
+    holding of its own, with no share count or acquisition date, that goes
+    to its lot as if its mapping named that lot; a part for a lot the
+    account doesn't have is ``no_lot``. With no split, or one that doesn't
+    fit, the holdings are ``to_split``.
+
     A liability is stored as a non-negative debt, so its total is negated.
     """
     result = HoldingsPlan(rows=[dict(row) for row in lots])
@@ -204,6 +284,8 @@ def plan(
     in_file: set[int] = set()
     # The accounts the source says it lists in full.
     full: set[str] = set()
+    # Each (account, symbol) the file has tax lots of, by acquisition date.
+    by_date: set[tuple[str, str]] = set()
     # Roth lots: those filled while they have no basis, and those emptied.
     no_basis: list[int] = []
     emptied: list[int] = []
@@ -211,7 +293,14 @@ def plan(
     untracked: dict[str, list[str]] = {}
     # The accounts the file has a basis for, of something that isn't cash.
     based: set[str] = set()
-    for holding in snapshot.holdings:
+    # Each (account, symbol) the file lists by tax lot: what it has of the
+    # symbol with no date is then no tax lot's, whatever order they come in.
+    holdings = _divided(snapshot.holdings, account_map, splits or {})
+    tax_lotted = {
+        (target.account, holding.asset.upper()) for holding in holdings
+        if holding.acquired is not None and holding.asset
+        and (target := account_map.lookup(holding.account, holding.asset)) is not None and not target.lot}
+    for holding in holdings:
         target = account_map.lookup(holding.account, holding.asset)
         if target is None:
             result.unmapped.append(holding)
@@ -226,15 +315,28 @@ def plan(
         if year_end and not is_investment_asset(*info):
             result.ineligible.append(target.account)
             continue
+        if target.action == "split":
+            if not holding.lot:
+                result.to_split.append((holding, target))
+                continue
+            # One part of the file's number, which names its lot.
+            target = AccountTarget("map", target.account, holding.lot, target.note)
         of_account = [i for i, row in enumerate(result.rows) if row.get("account_name") == target.account]
         if holding.account in snapshot.complete:
             full.add(target.account)
         if holding.cost_basis_cents is not None and holding.asset not in UNLISTED:
             based.add(target.account)
+        # A tax lot's holding: it is the account's lot of its symbol and
+        # that acquisition date, unless the mapping gathers them into one.
+        when = holding.acquired.isoformat() if holding.acquired is not None and not target.lot else ""
         if holding.asset and holding.asset not in UNLISTED:
-            # The file has the symbol's lot, wherever the mapping sends the holding.
+            # The file has the symbol's lot, wherever the mapping sends the
+            # holding; a tax lot's is the one of its own date.
             in_file.update(i for i in of_account
-                           if result.rows[i].get("symbol", "").strip().upper() == holding.asset.upper())
+                           if result.rows[i].get("symbol", "").strip().upper() == holding.asset.upper()
+                           and (not when or _acquired(result.rows[i]) == when))
+            if when:
+                by_date.add((target.account, holding.asset.upper()))
         by_symbol = False
         if target.lot:
             # The default lot is a blank cell, whichever way the map spells it.
@@ -259,6 +361,13 @@ def plan(
         elif holding.asset:
             indexes = [i for i in of_account
                        if result.rows[i].get("symbol", "").strip().upper() == holding.asset.upper()]
+            if when:
+                indexes = [i for i in indexes if _acquired(result.rows[i]) == when]
+            elif (target.account, holding.asset.upper()) in tax_lotted:
+                # Beside the symbol's tax lots, what has no date goes to its
+                # lot with none, and is new without one: added into a tax
+                # lot it would swell that lot's balance and mix its basis.
+                indexes = [i for i in indexes if not _acquired(result.rows[i])]
             by_symbol = True
             if not indexes:
                 alone = len(of_account) == 1 and not result.rows[of_account[0]].get("symbol", "").strip()
@@ -292,6 +401,14 @@ def plan(
         into.basis_cents = None if into.basis_cents is None or holding.cost_basis_cents is None \
             else into.basis_cents + holding.cost_basis_cents
 
+    # A symbol's lot with no date, where the file now has the symbol's tax
+    # lots and nothing of it without a date: the dated lots hold its total.
+    superseded = {
+        i for i, row in enumerate(result.rows)
+        if i not in landed and not _acquired(row)
+        and (row.get("account_name", ""), row.get("symbol", "").strip().upper()) in by_date}
+    replaced = {(result.rows[i]["account_name"], result.rows[i].get("symbol", "").strip().upper())
+                for i in superseded}
     for index, into in landed.items():
         row = result.rows[index]
         name, lot = row["account_name"], row.get("lot", "")
@@ -382,7 +499,8 @@ def plan(
             # The lot an account was split out of keeps the account's whole
             # prior-year balance, so its new lots start theirs at nothing:
             # seeded too, the account's would be counted twice (an RMD's base).
-            kept = index in fresh and name in split and bool(others)
+            kept = index in fresh and bool(others) and (
+                name in split or (name, row.get("symbol", "").strip().upper()) in replaced)
             put("prior_year_end_balance", "0.00" if kept else dollars, same=False,
                 note="the lot split from keeps the account's" if kept else "seeded from opening")
         if cells:
@@ -395,19 +513,20 @@ def plan(
     listed |= {target.account for _, target in result.new} | full
     # An account that another outside account fills too, one this file
     # doesn't have: the file then doesn't say all that the account holds.
-    present = {holding.account for holding in snapshot.holdings}
+    present = {holding.account for holding in holdings}
     shared: dict[str, set[str]] = {}
     for (outside, _), target in account_map.entries.items():
-        if target.action == "map" and outside not in present:
+        if target.action != "skip" and outside not in present:
             shared.setdefault(target.account, set()).add(outside)
     unsaid: set[str] = set()
     for index, row in enumerate(result.rows):
-        if year_end or row.get("account_name") not in listed or index in landed or index in in_file \
+        if year_end or row.get("account_name") not in listed or index in landed \
+                or (index in in_file and index not in superseded) \
                 or not (_cents(row.get("opening_balance", "")) or _number(row.get("quantity", ""))):
             continue
         # A lot the holdings were split out of is emptied whatever was asked:
         # its total is in the new lots now, and would be counted twice.
-        split_out = row["account_name"] in split and not row.get("symbol", "").strip()
+        split_out = (row["account_name"] in split and not row.get("symbol", "").strip()) or index in superseded
         if not split_out and row["account_name"] in shared:
             unsaid.add(row["account_name"])
             continue
@@ -500,6 +619,34 @@ def plan(
             "aren't in the file were left as they are; import the accounts together to empty them"
             for account in sorted(unsaid))
     return result
+
+
+def _divided(
+    holdings: Sequence[Holding], account_map: AccountMap,
+    splits: Mapping[tuple[str, str], Sequence[LotPart]],
+) -> list[Holding]:
+    """``holdings``, with those a ``split`` mapping covers replaced by their
+    parts where the saved split fits their total, in the first one's place."""
+    groups: dict[tuple[str, str], list[Holding]] = {}
+    for holding in holdings:
+        target = account_map.lookup(holding.account, holding.asset)
+        if target is not None and target.action == "split" and not holding.lot:
+            groups.setdefault((holding.account, holding.asset), []).append(holding)
+    found: list[Holding] = []
+    for holding in holdings:
+        key = (holding.account, holding.asset)
+        covered = groups.get(key)
+        if covered is None or holding.lot:
+            found.append(holding)
+        elif holding is covered[0]:
+            shares = divide(splits.get(key, ()), sum(each.value_cents for each in covered))
+            # A part is money and, at most, its basis: the file's share
+            # count and dates are the whole's, and no one part's.
+            found.extend(covered if shares is None else (
+                dataclasses.replace(holding, value_cents=cents, quantity=None, acquired=None,
+                                    cost_basis_cents=part.basis_cents, lot=part.lot)
+                for part, cents in shares))
+    return found
 
 
 def roth_basis_note(account: str, lot: str) -> str:

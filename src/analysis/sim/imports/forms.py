@@ -12,6 +12,7 @@ from pathlib import Path
 import pandas as pd
 
 __all__ = [
+    "Activity",
     "CORRECTS", "FLOW_COLUMNS", "ORIGIN", "REFERENCE", "REMOVES", "Budget", "BudgetLine", "Flows", "Holding",
     "Snapshot", "read_rows",
 ]
@@ -45,11 +46,28 @@ class Holding:
     hints: Mapping[str, str] = field(default_factory=dict)
     """Whatever else the file says about the account (type, owner, tax
     treatment), for pre-filling a new account."""
+    lot: str = ""
+    """The lot this is for, where it is one part of a number the file gives
+    whole and its mapping divides among lots (``lot_splits.csv``); no file
+    says this."""
 
     @property
     def label(self) -> str:
         """``account``, or ``account / asset``: how a message names it."""
         return f"{self.account} / {self.asset}" if self.asset else self.account
+
+
+@dataclass(frozen=True)
+class Activity:
+    """What a file says was posted to an account, beside its balance: enough
+    to work the balance back to an earlier day (``holdings.at``)."""
+
+    start: dt.date
+    """The first day the file lists the account's transactions of."""
+    end: dt.date
+    """The last such day."""
+    posted: tuple[tuple[dt.date, int], ...]
+    """Each transaction's day and signed cents, money out negative."""
 
 
 @dataclass(frozen=True)
@@ -68,6 +86,22 @@ class Snapshot:
     it lists every one of, where it says so apart from the holdings: an
     account listed in full that holds only cash, or nothing, has sold
     what an earlier file had."""
+    activity: Mapping[str, Activity] = field(default_factory=dict)
+    """By account (as ``Holding.account``), what was posted to it up to the
+    file's date, where the file has that and the account's one holding is
+    its balance. A bank's download is as of the day it was made and never
+    of an earlier one; with this its balance on an earlier day is known."""
+    dated: Mapping[dt.date, tuple[Holding, ...]] = field(default_factory=dict)
+    """The holdings as of each date the file has them for, ``as_of`` among
+    them, where it has more than one: a report over a period, with a set
+    of columns for each of its dates (``holdings.nearest`` picks one)."""
+    dated_notes: Mapping[dt.date, tuple[str, ...]] = field(default_factory=dict)
+    """With ``dated``, what is to be said of one date's holdings only: the
+    notes of the date picked join ``notes``."""
+    unaccounted: Mapping[str, str] = field(default_factory=dict)
+    """By account, why a file that could have such activity has none for
+    it, as the end of a sentence: said where the balance was wanted as of
+    an earlier day, so that it is never silently set as of the file's."""
 
 
 FLOW_COLUMNS = (
@@ -151,6 +185,13 @@ class Budget:
     months: tuple[dt.date, ...] = ()
     """The first day of each month of the period, in order; empty when the
     file doesn't say which months it covers."""
+
+
+def format_dollars(cents: int) -> str:
+    """Format integer cents as the dollars-and-cents string account_lots.csv expects."""
+    sign = "-" if cents < 0 else ""
+    dollars, rem = divmod(abs(cents), 100)
+    return f"{sign}{dollars}.{rem:02d}"
 
 
 def read_rows(path: Path, limit: int | None = None) -> list[list[str]]:
