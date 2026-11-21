@@ -12,11 +12,11 @@ from typing import Any
 
 import pytest
 
-from analysis.videos import build as builds
-from analysis.videos import render
-from analysis.videos import script as scripts
-from analysis.videos import theme as themes
-from analysis.videos.build import (
+from zabob.retirement.videos import build as builds
+from zabob.retirement.videos import render
+from zabob.retirement.videos import script as scripts
+from zabob.retirement.videos import theme as themes
+from zabob.retirement.videos.build import (
     SceneBuild, SceneError, Workers, _Builder, _Visual, build, build_languages, default_jobs,
 )
 
@@ -433,7 +433,7 @@ def test_the_memory_limit_comes_from_this_process_cgroup_and_those_above(tmp_pat
 
 
 def test_a_notebook_recording_stops_between_steps_when_the_build_stops() -> None:
-    from analysis.videos import notebook
+    from zabob.retirement.videos import notebook
 
     render.stop_running()
     with pytest.raises(RuntimeError, match="notebook line 1: stopped"):

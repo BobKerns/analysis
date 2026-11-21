@@ -14,10 +14,10 @@ import pandas as pd
 import pytest
 from click.testing import CliRunner, Result
 
-from analysis.cli import main
-from analysis.sim import states
-from analysis.sim.lineage import TEMPLATE_AUX_DIR
-from analysis.sim.loader import LoadResult
+from zabob.retirement.cli import main
+from zabob.retirement.sim import states
+from zabob.retirement.sim.lineage import TEMPLATE_AUX_DIR
+from zabob.retirement.sim.loader import LoadResult
 
 _README = Path(__file__).resolve().parents[1] / "README.md"
 

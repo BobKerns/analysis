@@ -8,9 +8,9 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from analysis.sim import guard_rails as gr
-from analysis.sim.connection import RunConnection
-from analysis.sim.guard_rail_charts import guard_rail_comparison_figure, guard_rail_figure, rail_colors
+from zabob.retirement.sim import guard_rails as gr
+from zabob.retirement.sim.connection import RunConnection
+from zabob.retirement.sim.guard_rail_charts import guard_rail_comparison_figure, guard_rail_figure, rail_colors
 
 
 def test_a_column_per_measure_with_each_rails_lines(
@@ -62,8 +62,8 @@ def test_the_measure_spans_every_rail_sharing_it(retire_alice_run: RunConnection
 def test_the_ensemble_figure_has_shares_over_rms_annual_and_cumulative(
     mc_batch: Path, scenarios_dir: Path,
 ) -> None:
-    from analysis.sim.guard_rail_charts import ensemble_guard_rail_figure
-    from analysis.sim.series_db import open_series
+    from zabob.retirement.sim.guard_rail_charts import ensemble_guard_rail_figure
+    from zabob.retirement.sim.series_db import open_series
 
     store = open_series(mc_batch)
     results = gr.ensemble_results(store, gr.ensemble_rails(scenarios_dir, "retire_alice"))

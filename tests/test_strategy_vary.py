@@ -10,9 +10,9 @@ from pathlib import Path
 
 import pytest
 
-from analysis.sim.ensemble import resolve_member, varying_names
-from analysis.sim.loader import LoadError, load_scenario
-from analysis.sim.engine import run_scenario
+from zabob.retirement.sim.ensemble import resolve_member, varying_names
+from zabob.retirement.sim.loader import LoadError, load_scenario
+from zabob.retirement.sim.engine import run_scenario
 
 SCENARIO = "alice_spending"
 HEADER = "param,vary_distribution,vary_low,vary_high,vary_mode,vary_correlate_with,vary_correlation\n"
@@ -183,8 +183,8 @@ def test_the_parameters_table_and_draws_db_describe_a_strategy_node(
     strategy_scenarios: Path, strategy_csv: Callable[[str, str], Path], intent_dir: Path,
     runs_dir: Path,
 ) -> None:
-    from analysis.sim.draws_db import build_draws_db
-    from analysis.sim.sensitivity import parameters
+    from zabob.retirement.sim.draws_db import build_draws_db
+    from zabob.retirement.sim.sensitivity import parameters
 
     _vary(strategy_csv, "upper,triangular,10%,30%,,,\n")
     recipe = _load(strategy_scenarios, intent_dir).intent_path
@@ -214,7 +214,7 @@ def test_deleting_an_override_drops_its_vary_file(
 ) -> None:
     from click.testing import CliRunner
 
-    from analysis.cli import main
+    from zabob.retirement.cli import main
 
     child = strategy_scenarios / "scenarios" / "alice_spending_vary"
     child.mkdir()
@@ -234,7 +234,7 @@ def test_deleting_an_override_drops_its_vary_file(
 def test_a_factory_default_is_the_authored_value() -> None:
     import dataclasses
 
-    from analysis.sim.strategy_load import _base_value
+    from zabob.retirement.sim.strategy_load import _base_value
 
     @dataclasses.dataclass
     class FactoryParams:

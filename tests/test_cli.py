@@ -4,9 +4,9 @@ from unittest.mock import patch
 
 from click.testing import CliRunner
 
-from analysis.amazon.cli import _resolve_category_input
-from analysis.cli import main
-from analysis.storage import JsonStateStore
+from zabob.retirement.amazon.cli import _resolve_category_input
+from zabob.retirement.cli import main
+from zabob.retirement.storage import JsonStateStore
 
 DATA_DIR = Path(__file__).resolve().parent / "data" / "amazon"
 
@@ -195,7 +195,7 @@ def test_cli_interactive_uses_existing_category_after_completion(tmp_path: Path)
 
     runner = CliRunner()
 
-    with patch("analysis.amazon.cli.readline") as mocked_readline:
+    with patch("zabob.retirement.amazon.cli.readline") as mocked_readline:
         mocked_readline.get_completer.return_value = None
         mocked_readline.get_completer_delims.return_value = " \t\n-[]~^:/"
         mocked_readline.__doc__ = "GNU readline"
@@ -235,7 +235,7 @@ def test_cli_interactive_unknown_item_is_green_when_color_enabled(tmp_path: Path
 
     runner = CliRunner()
 
-    with patch("analysis.amazon.cli.readline") as mocked_readline:
+    with patch("zabob.retirement.amazon.cli.readline") as mocked_readline:
         mocked_readline.get_completer.return_value = None
         mocked_readline.get_completer_delims.return_value = " \t\n-[]~^:/"
         mocked_readline.__doc__ = "GNU readline"
@@ -272,7 +272,7 @@ def test_cli_interactive_reprompts_for_invalid_category(tmp_path: Path) -> None:
 
     runner = CliRunner()
 
-    with patch("analysis.amazon.cli.readline") as mocked_readline:
+    with patch("zabob.retirement.amazon.cli.readline") as mocked_readline:
         mocked_readline.get_completer.return_value = None
         mocked_readline.get_completer_delims.return_value = " \t\n-[]~^:/"
         mocked_readline.__doc__ = "GNU readline"
@@ -301,9 +301,9 @@ def test_cli_interactive_reprompts_for_invalid_category(tmp_path: Path) -> None:
 
 
 def test_readline_binding_switches_for_libedit() -> None:
-    with patch("analysis.amazon.cli.readline") as mocked_readline:
+    with patch("zabob.retirement.amazon.cli.readline") as mocked_readline:
         mocked_readline.__doc__ = "libedit"
-        from analysis.amazon.cli import _readline_binding
+        from zabob.retirement.amazon.cli import _readline_binding
 
         assert _readline_binding() == "bind ^I rl_complete"
 
@@ -324,7 +324,7 @@ def test_cli_review_mappings_interactive_recategorize_and_remove(tmp_path: Path)
 
     runner = CliRunner()
 
-    with patch("analysis.amazon.cli.readline") as mocked_readline:
+    with patch("zabob.retirement.amazon.cli.readline") as mocked_readline:
         mocked_readline.get_completer.return_value = None
         mocked_readline.get_completer_delims.return_value = " \t\n-[]~^:/"
         mocked_readline.__doc__ = "GNU readline"
@@ -390,7 +390,7 @@ def test_cli_category_delete_removes_category_and_mappings(tmp_path: Path) -> No
 
     runner = CliRunner()
 
-    with patch("analysis.amazon.cli.readline") as mocked_readline:
+    with patch("zabob.retirement.amazon.cli.readline") as mocked_readline:
         mocked_readline.get_completer.return_value = None
         mocked_readline.get_completer_delims.return_value = " \t\n-[]~^:/"
         mocked_readline.__doc__ = "GNU readline"

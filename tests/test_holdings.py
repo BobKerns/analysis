@@ -13,9 +13,9 @@ from click.testing import CliRunner
 
 matplotlib.use("Agg")
 
-from analysis.cli import main
-from analysis.sim.connection import RunConnection, ScenarioConnection
-from analysis.sim.holdings import (
+from zabob.retirement.cli import main
+from zabob.retirement.sim.connection import RunConnection, ScenarioConnection
+from zabob.retirement.sim.holdings import (
     account_holdings,
     holding_accounts,
     current_month,
@@ -26,7 +26,7 @@ from analysis.sim.holdings import (
     security_names,
     symbol_holders,
 )
-from analysis.sim.notebook_ui.holdings_widgets import (
+from zabob.retirement.sim.notebook_ui.holdings_widgets import (
     account_holdings_view,
     account_holdings_widget,
     symbol_holders_view,

@@ -14,14 +14,14 @@ import pandas as pd
 import pytest
 from click.testing import CliRunner
 
-from analysis.cli import main
-from analysis.frames import index_years
-from analysis.sim import compare
-from analysis.sim.connection import RunConnection
-from analysis.sim.engine import _drawdown_tax, run_scenario
-from analysis.sim.registries import SCHEDULED_CSV_HEADER
-from analysis.sim.loader import LoadError, LoadResult
-from analysis.sim.types import DollarMode
+from zabob.retirement.cli import main
+from zabob.retirement.frames import index_years
+from zabob.retirement.sim import compare
+from zabob.retirement.sim.connection import RunConnection
+from zabob.retirement.sim.engine import _drawdown_tax, run_scenario
+from zabob.retirement.sim.registries import SCHEDULED_CSV_HEADER
+from zabob.retirement.sim.loader import LoadError, LoadResult
+from zabob.retirement.sim.types import DollarMode
 
 
 def _set_after_tax(retire_alice_csv: Callable[[str], Path], settings: object) -> None:

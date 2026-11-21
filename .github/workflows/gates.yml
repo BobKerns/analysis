@@ -121,7 +121,7 @@ jobs:
                       docs/*|.cspell/*|.vscode/*|.cursor/*|.serena/*) ;;
                       .github/copilot-instructions.md) ;;
                       cspell.json|.markdownlint.json|.markdownlintignore) ;;
-                      analysis.code-workspace|LICENSE) ;;
+                      zabob-retirement.code-workspace|LICENSE) ;;
                       # Markdown elsewhere (a scenario's README.md) is data.
                       */*) needed=true ;;
                       *.md) ;;

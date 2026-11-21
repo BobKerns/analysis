@@ -12,10 +12,10 @@ from pathlib import Path
 
 import pytest
 
-from analysis.sim import units
-from analysis.sim.engine import _post_transfer
-from analysis.sim.loader import LoadError, LoadResult, growth_rule_name
-from analysis.sim.tax_api import TaxYear
+from zabob.retirement.sim import units
+from zabob.retirement.sim.engine import _post_transfer
+from zabob.retirement.sim.loader import LoadError, LoadResult, growth_rule_name
+from zabob.retirement.sim.tax_api import TaxYear
 
 BROKERAGE = "Asset_Brokerage_Joint"
 
@@ -247,7 +247,7 @@ def test_sale_reduces_only_that_lots_quantity(two_lot_run_file: Path) -> None:
 def test_post_transfer_reduces_quantity_pro_rata_and_zeroes_on_full_drain(
     ledger_con: sqlite3.Connection,
 ) -> None:
-    from analysis.sim.engine import ChainGraph, RefillContext
+    from zabob.retirement.sim.engine import ChainGraph, RefillContext
 
     ctx = RefillContext(
         ChainGraph({}, {}, {}, {}, {}, {}, {}, {}), {}, date(2026, 5, 31), {},
@@ -365,9 +365,9 @@ def test_scheduled_list_and_accounts_view_handle_multi_lot_accounts(
 ) -> None:
     from click.testing import CliRunner
 
-    from analysis.cli import main
-    from analysis.sim.accounts import load_accounts_view
-    from analysis.sim.connection import open_scenario
+    from zabob.retirement.cli import main
+    from zabob.retirement.sim.accounts import load_accounts_view
+    from zabob.retirement.sim.connection import open_scenario
 
     result = CliRunner().invoke(main, [
         "sim", "scheduled", "list", "--scenario", "retire_alice",
@@ -387,7 +387,7 @@ def test_scheduled_list_and_accounts_view_handle_multi_lot_accounts(
 def test_shipped_account_lots_files_carry_every_lot_column(
     repo_root: Path, prototype_data: Path
 ) -> None:
-    from analysis.sim.registries import ACCOUNT_LOTS_CSV_HEADER
+    from zabob.retirement.sim.registries import ACCOUNT_LOTS_CSV_HEADER
 
     for path in (
         prototype_data / "scenarios" / "retire_alice" / "account_lots.csv",
@@ -399,7 +399,7 @@ def test_shipped_account_lots_files_carry_every_lot_column(
 def test_explain_lists_each_lot_with_its_symbol_and_quantity(two_lot_run_file: Path) -> None:
     from click.testing import CliRunner
 
-    from analysis.cli import main
+    from zabob.retirement.cli import main
 
     result = CliRunner().invoke(main, ["sim", "explain", str(two_lot_run_file)])
     assert result.exit_code == 0, result.output
@@ -414,7 +414,7 @@ def test_explain_lists_each_lot_with_its_symbol_and_quantity(two_lot_run_file: P
 def test_items_can_be_limited_to_one_lot(two_lot_run_file: Path) -> None:
     from click.testing import CliRunner
 
-    from analysis.cli import main
+    from zabob.retirement.cli import main
 
     def items(lot: str):
         return CliRunner().invoke(main, [
@@ -432,7 +432,7 @@ def test_items_can_be_limited_to_one_lot(two_lot_run_file: Path) -> None:
 
 
 def test_lot_balance_item_and_member_columns(two_lot_run_file: Path, test_data_dir: Path) -> None:
-    from analysis.sim.connection import open_run, open_scenario
+    from zabob.retirement.sim.connection import open_run, open_scenario
 
     with open_scenario(test_data_dir, "retire_alice") as sc:
         with open_run(two_lot_run_file, sc, scenarios_dir=test_data_dir / "scenarios") as run:
@@ -446,7 +446,7 @@ def test_lot_balance_item_and_member_columns(two_lot_run_file: Path, test_data_d
 
 
 def _ctx(cost_bases, quantities, growth_sources=frozenset(), acquired=None):
-    from analysis.sim.engine import ChainGraph, RefillContext
+    from zabob.retirement.sim.engine import ChainGraph, RefillContext
 
     return RefillContext(
         ChainGraph({}, {}, {}, {}, {}, {}, {}, {}), {}, date(2026, 5, 31), {},
@@ -487,7 +487,7 @@ def test_a_lot_declared_for_a_future_purchase_accumulates_basis(
     retire_alice_csv: Callable[[str], Path], add_account_value: Callable[..., None],
     load_test_copy: Callable[[], LoadResult], runs_dir: Path,
 ) -> None:
-    from analysis.sim.engine import run_scenario
+    from zabob.retirement.sim.engine import run_scenario
 
     add_account_value("Asset_Brokerage_Joint", lot="new", acquired="2027-01-31", opening_balance="0")
     _append_scheduled_row(
@@ -526,14 +526,14 @@ def test_a_lot_declared_for_a_future_purchase_accumulates_basis(
     ("2024-02-29", "2025-03-31", True),
 ])
 def test_holding_period_is_more_than_a_year(acquired: str | None, sale: str, long_term: bool) -> None:
-    from analysis.sim.engine import _is_long_term
+    from zabob.retirement.sim.engine import _is_long_term
 
     parsed = date.fromisoformat(acquired) if acquired else None
     assert _is_long_term(parsed, date.fromisoformat(sale)) is long_term
 
 
 def _sell_from_lot(ledger_con: sqlite3.Connection, acquired: date | None, month: str):
-    from analysis.sim.engine import _post_withdrawal
+    from zabob.retirement.sim.engine import _post_withdrawal
 
     ctx = _ctx({3: 60_000_00}, {}, acquired={3: acquired})
     balances = {3: 100_000_00, 4: 0}
@@ -560,7 +560,7 @@ def test_gain_on_a_lot_held_longer_is_long_term(ledger_con: sqlite3.Connection) 
 def test_short_term_gains_count_as_ordinary_income_in_the_tax_scan(
     ledger_con: sqlite3.Connection, tax_year_of: Callable[..., TaxYear],
 ) -> None:
-    from analysis.sim.taxes.common import capital_gains, income_buckets
+    from zabob.retirement.sim.taxes.common import capital_gains, income_buckets
 
     for character, amount in (("ordinary", 100), ("stcg", 50), ("ltcg", 30), ("ss_benefit", 7)):
         ledger_con.execute(
@@ -617,7 +617,7 @@ def test_long_term_gains_are_taxed_at_the_preferential_rates(
     load_test_copy: Callable[[], LoadResult], runs_dir: Path,
     fund_asset_savings: Callable[..., None], add_tax: Callable[..., Path],
 ) -> None:
-    from analysis.sim.engine import run_scenario
+    from zabob.retirement.sim.engine import run_scenario
 
     fund_asset_savings()
     add_tax()
@@ -669,7 +669,7 @@ def test_state_tax_still_treats_gains_as_ordinary(
     """The preferential table is federal-only: state liability ignores it."""
     import pandas as pd
 
-    from analysis.sim.engine import run_scenario
+    from zabob.retirement.sim.engine import run_scenario
 
     accounts = pd.read_csv(retire_alice_csv("accounts.csv"), dtype=str, keep_default_na=False)
     accounts.loc[len(accounts)] = {

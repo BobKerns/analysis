@@ -1811,8 +1811,8 @@ a year can afford, while their own code decides which trips fit, taken whole:
 ```python
 from dataclasses import dataclass
 
-from analysis.sim.strategies import Guardrail
-from analysis.sim.strategy_api import Context, Decision, RuleView, Spend, register
+from zabob.retirement.sim.strategies import Guardrail
+from zabob.retirement.sim.strategy_api import Context, Decision, RuleView, Spend, register
 
 
 @register

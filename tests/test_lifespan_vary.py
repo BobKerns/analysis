@@ -9,11 +9,11 @@ from pathlib import Path
 
 import pytest
 
-from analysis.sim.dates import final_month_for_age
-from analysis.sim.engine import run_scenario
-from analysis.sim.ensemble import oat_plan, resolve_member, varying_names
-from analysis.sim.loader import LoadError, LoadResult
-from analysis.sim.sensitivity import parameters
+from zabob.retirement.sim.dates import final_month_for_age
+from zabob.retirement.sim.engine import run_scenario
+from zabob.retirement.sim.ensemble import oat_plan, resolve_member, varying_names
+from zabob.retirement.sim.loader import LoadError, LoadResult
+from zabob.retirement.sim.sensitivity import parameters
 
 # Alice was born 1965-03-15 and Bill 1967-08-20 (prototype persons.csv);
 # retire_alice runs 2026-05 through 2040-12.
@@ -303,7 +303,7 @@ def test_guided_set_offers_only_the_parents_the_loader_accepts(
     write_lifespans: Callable[..., None], append_calendar_row: Callable[..., None],
     test_data_dir: Path,
 ) -> None:
-    from analysis.sim.cli import _lifespan_parents
+    from zabob.retirement.sim.cli import _lifespan_parents
 
     write_lifespans("alice,84,uniform,75,95,,,", "bill,86,,,,,,")
     append_calendar_row(

@@ -11,8 +11,8 @@ import pandas as pd
 import pytest
 from click.testing import CliRunner, Result
 
-from analysis.cli import main
-from analysis.sim.registries import YEAR_TO_DATE_CSV_HEADER
+from zabob.retirement.cli import main
+from zabob.retirement.sim.registries import YEAR_TO_DATE_CSV_HEADER
 
 
 def _sim(test_data_dir: Path, scenario: str, *args: str, answers: Sequence[str] = ()) -> Result:

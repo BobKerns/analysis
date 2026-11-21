@@ -16,11 +16,11 @@ from typing import cast
 import pandas as pd
 import pytest
 
-from analysis.sim import engine
-from analysis.sim.engine import RothLot, run_scenario
-from analysis.sim.loader import LoadError, LoadResult
-from analysis.sim.tax_api import TaxYear
-from analysis.sim.taxes.common import income_buckets
+from zabob.retirement.sim import engine
+from zabob.retirement.sim.engine import RothLot, run_scenario
+from zabob.retirement.sim.loader import LoadError, LoadResult
+from zabob.retirement.sim.tax_api import TaxYear
+from zabob.retirement.sim.taxes.common import income_buckets
 
 ROTH = "Asset_Roth_Alice"  # Alice was born 1965-03-15, so 59½ from 2024-09-15
 

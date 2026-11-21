@@ -36,7 +36,7 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from analysis.sim.imports import mapping
+from zabob.retirement.sim.imports import mapping
 
 _OLD_ACCOUNT_MAP = "quicken_account_map.csv"
 _OLD_ACCOUNT_HEADER = ("quicken_name", "account_name", "action", "note")

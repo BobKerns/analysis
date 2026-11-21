@@ -13,11 +13,11 @@ import pandas as pd
 import pytest
 from click.testing import CliRunner
 
-from analysis.cli import main
-from analysis.sim import engine
-from analysis.sim.engine import run_scenario
-from analysis.sim.loader import LoadError, LoadResult
-from analysis.sim.registries import SCHEDULED_CSV_HEADER
+from zabob.retirement.cli import main
+from zabob.retirement.sim import engine
+from zabob.retirement.sim.engine import run_scenario
+from zabob.retirement.sim.loader import LoadError, LoadResult
+from zabob.retirement.sim.registries import SCHEDULED_CSV_HEADER
 
 def _top_22(run: Path, year: int, status: str = "MFJ") -> int:
     """The top of the 22% bracket for ``status`` in tax ``year``, as the run
@@ -318,7 +318,7 @@ def _torpedo_tax(base: int, ss: int) -> Callable[[int, int], int]:
     """Federal-style tax on ``base`` ordinary income plus a conversion, with
     ``ss`` of Social Security taxed by the tiers: its rate climbs through
     the torpedo and falls back once 85% of the benefit is taxed."""
-    from analysis.sim.taxes import common
+    from zabob.retirement.sim.taxes import common
     brackets = [(0, 100_000), (23_850_00, 120_000), (96_950_00, 220_000),
                 (206_700_00, 240_000), (394_600_00, 320_000)]
 

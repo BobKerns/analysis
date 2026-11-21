@@ -20,14 +20,14 @@ from pathlib import Path
 
 import pytest
 
-from analysis.sim import provenance, strategy_code
-from analysis.sim.asset_classes import UNCLASSIFIED, class_weights, is_lot_key, lot_key
-from analysis.sim.loader import LoadError, load_scenario
-from analysis.sim.strategy_api import (
+from zabob.retirement.sim import provenance, strategy_code
+from zabob.retirement.sim.asset_classes import UNCLASSIFIED, class_weights, is_lot_key, lot_key
+from zabob.retirement.sim.loader import LoadError, load_scenario
+from zabob.retirement.sim.strategy_api import (
     Allocation, Dollars, LotRef, Percent, Strategy, StrategyError, Tag, TargetSet,
     is_registered, param_units, percent, register,
 )
-from analysis.sim.strategy_load import convert_params, parse_enabled
+from zabob.retirement.sim.strategy_load import convert_params, parse_enabled
 
 IRA = "Asset_TraditionalIRA_Alice:default"
 BROKERAGE = "Asset_Brokerage_Joint:default"
@@ -170,7 +170,7 @@ def test_builtin_kinds_include_rebalance() -> None:
 
 
 _ECHO = '''
-from analysis.sim.strategy_api import Strategy, register
+from zabob.retirement.sim.strategy_api import Strategy, register
 
 @register
 class Echo(Strategy):
@@ -193,6 +193,7 @@ def test_two_versions_of_a_module_stay_apart() -> None:
 
 @pytest.mark.parametrize(("source", "message"), [
     ("raise RuntimeError('boom')\n", "failed to import"),
+    ("from analysis.sim.strategy_api import register\n", "change `analysis.` to `zabob.retirement.`"),
     ("API_VERSION = 99\n", "written for strategy API 99"),
     (_ECHO.format(n=1).replace('"echo"', '"rebalance"'), "kind 'rebalance' is already defined (built-in)"),
 ])
@@ -490,7 +491,7 @@ def test_a_run_is_the_same_every_time(
 
 
 _STRATEGY = '''
-from analysis.sim.strategy_api import Decision, LotRef, Put, Strategy, Take, register
+from zabob.retirement.sim.strategy_api import Decision, LotRef, Put, Strategy, Take, register
 
 @register
 class Odd(Strategy):
@@ -581,7 +582,7 @@ def test_a_partial_take_falls_back_to_the_chain(
 def _sim(data_dir: Path, *args: str, scenario: str = "alice_rebalance"):
     from click.testing import CliRunner
 
-    from analysis.cli import main
+    from zabob.retirement.cli import main
 
     return CliRunner().invoke(
         main, ["sim", *args, "--data-dir", str(data_dir), "--scenario", scenario], terminal_width=200,
@@ -633,7 +634,7 @@ def test_a_strategy_follows_its_chain_rename(
 
 
 def test_lot_keys_are_not_symbols(strategy_scenarios: Path, strategy_csv: Callable[[str, str], Path]) -> None:
-    from analysis.sim import names, prices, symbols
+    from zabob.retirement.sim import names, prices, symbols
 
     _ira_by_lot_key(strategy_scenarios, strategy_csv)
     assert IRA not in prices.known_symbols(strategy_scenarios)
@@ -647,7 +648,7 @@ def test_lot_keys_are_not_symbols(strategy_scenarios: Path, strategy_csv: Callab
 def _cli(data_dir: Path, *args: str, input: str | None = None):  # noqa: A002 -- CliRunner's name
     from click.testing import CliRunner
 
-    from analysis.cli import main
+    from zabob.retirement.cli import main
 
     return CliRunner().invoke(main, ["sim", *args, "--data-dir", str(data_dir)], input=input,
                               terminal_width=200)

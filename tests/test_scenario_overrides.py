@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from analysis.sim.loader import LoadError, load_scenario
+from zabob.retirement.sim.loader import LoadError, load_scenario
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PROTOTYPE = REPO_ROOT / "prototype_data"

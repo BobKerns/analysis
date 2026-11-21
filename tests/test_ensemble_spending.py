@@ -12,9 +12,9 @@ import pandas as pd
 import pytest
 from click.testing import CliRunner
 
-from analysis.cli import main
-from analysis.sim.connection import RunConnection
-from analysis.sim.reports import (
+from zabob.retirement.cli import main
+from zabob.retirement.sim.connection import RunConnection
+from zabob.retirement.sim.reports import (
     ensemble_spending_summary,
     ensemble_spending_table,
     spending_by_year,
@@ -22,8 +22,8 @@ from analysis.sim.reports import (
     while_alive,
     without_years,
 )
-from analysis.sim.series_db import open_series
-from analysis.sim.types import DollarMode
+from zabob.retirement.sim.series_db import open_series
+from zabob.retirement.sim.types import DollarMode
 
 SCENARIO = "alice_spending"
 
@@ -166,7 +166,7 @@ def test_sim_ensemble_spending(cut_batch: Path, tmp_path: Path) -> None:
 
 
 def test_whole_dollars_never_shows_minus_zero() -> None:
-    from analysis.sim.cli import _whole_dollars
+    from zabob.retirement.sim.cli import _whole_dollars
 
     assert [_whole_dollars(v) for v in (-0.4, 0.4, -12.6, 1234.5)] == ["$0", "$0", "-$13", "$1,234"]
 
@@ -214,7 +214,7 @@ def test_the_spending_widget_draws_a_run(
     strategy_csv: Callable[[str, str], Path], run_strategy_scenario: Callable[[str], Path],
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    from analysis.sim.notebook_ui.networth_plots import spending_widget
+    from zabob.retirement.sim.notebook_ui.networth_plots import spending_widget
 
     _strategy(strategy_csv, "threshold", minimum="5000000.00")
     rc = RunConnection(run_strategy_scenario(SCENARIO))
@@ -235,7 +235,7 @@ def test_the_spending_widget_draws_a_run(
 def test_the_ensemble_spending_widget_draws_a_batch(
     cut_batch: Path, strategy_scenarios: Path, capsys: pytest.CaptureFixture[str],
 ) -> None:
-    from analysis.sim.notebook_ui.ensemble_widgets import ensemble_spending_widget
+    from zabob.retirement.sim.notebook_ui.ensemble_widgets import ensemble_spending_widget
 
     box = ensemble_spending_widget(data_dir=strategy_scenarios, runs_dir=cut_batch.parent.parent.parent,
                                    default=SCENARIO)
@@ -251,8 +251,8 @@ def test_the_spending_compare_widget_sets_runs_side_by_side(
     strategy_csv: Callable[[str, str], Path], run_strategy_scenario: Callable[[str], Path],
     runs_dir: Path, capsys: pytest.CaptureFixture[str],
 ) -> None:
-    from analysis.sim.notebook_ui.compare_plots import spending_compare_widget
-    from analysis.sim.notebook_ui.pickers import MultiScenarioConnections
+    from zabob.retirement.sim.notebook_ui.compare_plots import spending_compare_widget
+    from zabob.retirement.sim.notebook_ui.pickers import MultiScenarioConnections
 
     kept = run_strategy_scenario(SCENARIO)
     (runs_dir / "kept.sqlite3").write_bytes(kept.read_bytes())
@@ -276,7 +276,7 @@ def test_tail_means_leave_out_members_a_row_lacks() -> None:
     a warning (#377)."""
     import warnings
 
-    from analysis.sim.ensemble import tail_means
+    from zabob.retirement.sim.ensemble import tail_means
 
     frame = pd.DataFrame({"a": [10.0, float("nan")], "b": [float("nan"), float("nan")], "c": [30.0, float("nan")]})
     with warnings.catch_warnings():

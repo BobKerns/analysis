@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from analysis.sim.notebook_ui.first_draw import when_cell_is_done
-from analysis.sim.notebook_ui.pickers import Connections
+from zabob.retirement.sim.notebook_ui.first_draw import when_cell_is_done
+from zabob.retirement.sim.notebook_ui.pickers import Connections
 
 
 class FakeEvents:

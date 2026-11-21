@@ -11,15 +11,15 @@ from pathlib import Path
 import pytest
 from click.testing import CliRunner, Result
 
-from analysis.cli import main
-from analysis.sim.dates import final_month_for_age
-from analysis.sim.ensemble import life_table_age, oat_plan, resolve_member, varying_names
-from analysis.sim.life_table import (
+from zabob.retirement.cli import main
+from zabob.retirement.sim.dates import final_month_for_age
+from zabob.retirement.sim.ensemble import life_table_age, oat_plan, resolve_member, varying_names
+from zabob.retirement.sim.life_table import (
     LifeTable, LifeTableAge, LifeTableError, equivalent_multiplier, life_table_from_rows,
     months_since_birth, solve_set_forward,
 )
-from analysis.sim.loader import LoadError, LoadResult
-from analysis.sim.sensitivity import parameters
+from zabob.retirement.sim.loader import LoadError, LoadResult
+from zabob.retirement.sim.sensitivity import parameters
 
 # Alice (f) was born 1965-03-15 and Bill (m) 1967-08-20 (prototype persons.csv);
 # retire_alice starts 2026-05, when Alice is 61 years 2 months old. The

@@ -1,4 +1,4 @@
-"""Tests for analysis.sim.notebook_ui.compare_plots."""
+"""Tests for zabob.retirement.sim.notebook_ui.compare_plots."""
 
 from __future__ import annotations
 
@@ -11,11 +11,11 @@ matplotlib.use("Agg")
 
 from click.testing import CliRunner
 
-from analysis.cli import main
-from analysis.sim.connection import RunConnection
-from analysis.sim.types import DollarMode
-from analysis.sim.notebook_ui import compare_plots as cp
-from analysis.sim.notebook_ui.pickers import (
+from zabob.retirement.cli import main
+from zabob.retirement.sim.connection import RunConnection
+from zabob.retirement.sim.types import DollarMode
+from zabob.retirement.sim.notebook_ui import compare_plots as cp
+from zabob.retirement.sim.notebook_ui.pickers import (
     DollarModePicker,
     MultiScenarioConnections,
     TimeRangePicker,
@@ -83,7 +83,7 @@ def test_breakeven_summary_reports_deficit_and_final_values() -> None:
 
 
 def test_warning_html_escapes_and_formats() -> None:
-    from analysis.sim.notebook_ui.pickers import warning_html
+    from zabob.retirement.sim.notebook_ui.pickers import warning_html
 
     html = warning_html("run `analysis sim load <name>` -- **bold**")
     assert "&lt;name&gt;" in html
@@ -240,7 +240,7 @@ def test_guard_rails_compare_widget_shows_each_rail_by_scenario(
     assert (tables[0]["Δ variant_a"].abs() < 0.01).all()
     assert tables[-1]["scenario"].tolist()[:2] == ["retire_alice", "variant_a"]
 
-    from analysis.sim import guard_rails
+    from zabob.retirement.sim import guard_rails
     evaluated: list[str] = []
     real_evaluate = guard_rails.evaluate_run
     monkeypatch.setattr(guard_rails, "evaluate_run",

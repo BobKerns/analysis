@@ -1,4 +1,4 @@
-# What's on YouTube, written by `python -m analysis.videos publish` (#395).
+# What's on YouTube, written by `python -m zabob.retirement.videos publish` (#395).
 # scenes: each scene's length in seconds in the build that was uploaded.
 
 [en]

@@ -17,11 +17,11 @@ import pandas as pd
 import pytest
 from click.testing import CliRunner
 
-from analysis.cli import main
-from analysis.sim.engine import EngineError, run_scenario
-from analysis.sim.tax_api import TaxError, TaxYear
-from analysis.sim.taxes.common import business_result
-from analysis.sim.loader import LoadError
+from zabob.retirement.cli import main
+from zabob.retirement.sim.engine import EngineError, run_scenario
+from zabob.retirement.sim.tax_api import TaxError, TaxYear
+from zabob.retirement.sim.taxes.common import business_result
+from zabob.retirement.sim.loader import LoadError
 
 
 @pytest.fixture

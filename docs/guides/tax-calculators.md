@@ -72,8 +72,8 @@ of federal AGI."""
 
 from dataclasses import dataclass
 
-from analysis.sim.tax_api import Dollars, Tag, percent, register
-from analysis.sim.taxes.state_tables import StateTables, StateTablesYear
+from zabob.retirement.sim.tax_api import Dollars, Tag, percent, register
+from zabob.retirement.sim.taxes.state_tables import StateTables, StateTablesYear
 
 API_VERSION = 4
 
@@ -261,7 +261,7 @@ owner, tags), its amount in cents, its tax character, its rule's tags and,
 for spending, the rule's `person`.
 
 A state calculator usually builds on `StateTables`, as above, or on
-`StateFromFederal` or `StateFromIncome` in `analysis.sim.taxes.state_base`
+`StateFromFederal` or `StateFromIncome` in `zabob.retirement.sim.taxes.state_base`
 for one that reads its own tables. Its `compute` must be quick: the
 simulator asks it many times a year, with more income on top, to price a
 Roth conversion or a withdrawal.

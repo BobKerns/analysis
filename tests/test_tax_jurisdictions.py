@@ -13,9 +13,9 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from analysis.sim.engine import run_scenario
-from analysis.sim.loader import LoadError, LoadResult
-from analysis.sim.registries import SCHEDULED_CSV_HEADER
+from zabob.retirement.sim.engine import run_scenario
+from zabob.retirement.sim.loader import LoadError, LoadResult
+from zabob.retirement.sim.registries import SCHEDULED_CSV_HEADER
 
 
 @pytest.mark.parametrize(("name", "cells", "message"), [

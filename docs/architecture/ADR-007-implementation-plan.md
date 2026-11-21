@@ -117,7 +117,7 @@ Exit: `sim run <recipe> --sensitivity` produces a complete OAT batch.
 
 ## Phase 3 — OAT report: years, units, tornado table
 
-1. New `src/analysis/sim/sensitivity.py`:
+1. New `src/zabob/retirement/sim/sensitivity.py`:
    - `reporting_months(frame) -> list[month]`: the last simulated month of each calendar year, plus the final month if it isn't a December (ADR-007 §4).
    - `oat_deltas(batch_dir, dollars, relative) -> DataFrame`: long form with columns (row, quantile, year, value, delta, base). Relative Δ is NaN where the base is within $1,000 of zero. Computed per member with that member's own deflator, using `net_worth_frame()`'s `nominal`/`cpi_constant` columns.
    - `min_net_worth` to date, as a second measure column.

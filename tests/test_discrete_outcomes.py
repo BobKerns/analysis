@@ -12,8 +12,8 @@ import pandas as pd
 import pytest
 from click.testing import CliRunner, Result
 
-from analysis.cli import main
-from analysis.sim.distributions import (
+from zabob.retirement.cli import main
+from zabob.retirement.sim.distributions import (
     Discrete,
     DistributionError,
     Outcome,
@@ -22,9 +22,9 @@ from analysis.sim.distributions import (
     parse_outcomes,
     rewrite_outcomes,
 )
-from analysis.sim.engine import run_scenario
-from analysis.sim.ensemble import resolve_member
-from analysis.sim.loader import LoadError, LoadResult
+from zabob.retirement.sim.engine import run_scenario
+from zabob.retirement.sim.ensemble import resolve_member
+from zabob.retirement.sim.loader import LoadError, LoadResult
 
 # "Lost", "Small", "Fair", "Good": an exact zero plus three ranges.
 _OUTCOMES = Discrete((

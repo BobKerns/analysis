@@ -9,9 +9,9 @@ from typing import Any
 import pytest
 from click.testing import CliRunner, Result
 
-from analysis.cli import main
-from analysis.sim import names
-from analysis.sim.loader import LoadError, load_scenario
+from zabob.retirement.cli import main
+from zabob.retirement.sim import names
+from zabob.retirement.sim.loader import LoadError, load_scenario
 
 _HEADER = "effective_date,annual_rate\n"
 
@@ -325,7 +325,7 @@ def test_revert_finds_an_override_in_the_scenarios_aux(
 def test_delete_refuses_when_the_file_changed_while_it_asked(
     sim: Callable[..., Result], series_dir: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from analysis.sim import cli as sim_cli
+    from zabob.retirement.sim import cli as sim_cli
 
     path = series_dir / "rate__spare.csv"
     path.write_text(_HEADER + "2026-01-31,1%\n")
@@ -453,7 +453,7 @@ def test_list_counts_and_names_every_folders_file_with_rates(
 def test_edit_uses_the_rows_on_disk_after_asking_for_the_name(
     sim: Callable[..., Result], series_dir: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from analysis.sim import cli as sim_cli
+    from zabob.retirement.sim import cli as sim_cli
 
     path = series_dir / "rate__spare.csv"
     path.write_text(_HEADER + "2026-01-31,1%\n2030-01-31,2%\n")

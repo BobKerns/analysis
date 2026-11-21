@@ -7,7 +7,7 @@ from pathlib import Path
 
 import git
 
-from analysis.sim import provenance
+from zabob.retirement.sim import provenance
 
 
 
@@ -56,7 +56,7 @@ def test_a_new_price_file_changes_the_tree_even_when_empty_before_the_start(
 
 
 def test_a_scenario_starts_where_its_lineage_last_sets_it(test_data_dir: Path) -> None:
-    from analysis.sim.lineage import scenario_start
+    from zabob.retirement.sim.lineage import scenario_start
 
     assert scenario_start(test_data_dir / "scenarios", "retire_alice") == "2026-05-31"
     text = ("effective_date,price\n2026-05-31,1\n2026-06-01,2\nbad\n"

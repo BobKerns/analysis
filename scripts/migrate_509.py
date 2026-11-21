@@ -42,9 +42,9 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from analysis.sim import registries, states
-from analysis.sim.dates import month_end_iso
-from analysis.sim.lineage import load_order, scenario_dir
+from zabob.retirement.sim import registries, states
+from zabob.retirement.sim.dates import month_end_iso
+from zabob.retirement.sim.lineage import load_order, scenario_dir
 
 RESIDENCE_HEADER = ("effective_date", "state", "county", "description")
 STATE_KEYED = registries.STATE_KEYED_AUX_KINDS

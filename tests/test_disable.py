@@ -9,8 +9,8 @@ from pathlib import Path
 import pytest
 from click.testing import CliRunner, Result
 
-from analysis.cli import main
-from analysis.sim.loader import DISABLE_FILE, read_disabled_scenarios
+from zabob.retirement.cli import main
+from zabob.retirement.sim.loader import DISABLE_FILE, read_disabled_scenarios
 
 
 def _sim(test_data_dir: Path, *args: str, answers: tuple[str, ...] = ()) -> Result:
@@ -60,7 +60,7 @@ def test_scenario_list_marks_a_disabled_scenario(test_data_dir: Path) -> None:
 def test_pickers_leave_out_disabled_scenarios_but_the_one_they_start_on(
     test_data_dir: Path,
 ) -> None:
-    from analysis.sim.notebook_ui.pickers import enabled_scenario_names
+    from zabob.retirement.sim.notebook_ui.pickers import enabled_scenario_names
 
     _sim(test_data_dir, "scenario", "disable", "base")
     assert "base" not in enabled_scenario_names(test_data_dir)
@@ -70,8 +70,8 @@ def test_pickers_leave_out_disabled_scenarios_but_the_one_they_start_on(
 def test_recipe_lists_leave_out_disabled_ensembles(
     test_data_dir: Path, runs_dir: Path,
 ) -> None:
-    from analysis.sim.notebook_ui.ensemble_widgets import list_ensemble_recipes
-    from analysis.sim.notebook_ui.sensitivity_widgets import list_sensitivity_recipes
+    from zabob.retirement.sim.notebook_ui.ensemble_widgets import list_ensemble_recipes
+    from zabob.retirement.sim.notebook_ui.sensitivity_widgets import list_sensitivity_recipes
 
     for name in ("base", "retire_alice"):
         batch = runs_dir / name / "monte-carlo" / "2026-10-26T043000Z"

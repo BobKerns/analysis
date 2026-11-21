@@ -7,8 +7,8 @@ built-in."""
 
 from dataclasses import dataclass
 
-from analysis.sim.strategies import Guardrail
-from analysis.sim.strategy_api import Context, Decision, RuleView, Spend, Strategy, register
+from zabob.retirement.sim.strategies import Guardrail
+from zabob.retirement.sim.strategy_api import Context, Decision, RuleView, Spend, Strategy, register
 
 API_VERSION = 11
 

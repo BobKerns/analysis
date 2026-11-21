@@ -6,10 +6,10 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 
-from analysis.sim.tax_api import NO_EXTRA, Account, CapitalLoss, HsaGain, IncomeItem, Person, Return, TaxYear
-from analysis.sim.taxes import common
-from analysis.sim.taxes.state_base import Basis
-from analysis.sim.taxes.state_tables import StateTablesYear
+from zabob.retirement.sim.tax_api import NO_EXTRA, Account, CapitalLoss, HsaGain, IncomeItem, Person, Return, TaxYear
+from zabob.retirement.sim.taxes import common
+from zabob.retirement.sim.taxes.state_base import Basis
+from zabob.retirement.sim.taxes.state_tables import StateTablesYear
 
 CHECKING = Account("Asset_Checking", "asset", "cash", None)
 ALICE_OWN = Account("Asset_Brokerage_Alice", "asset", "brokerage", "alice")

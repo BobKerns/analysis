@@ -12,10 +12,10 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from analysis.sim import provenance, tax_api, tax_code
-from analysis.sim.connection import open_run
-from analysis.sim.loader import LoadError, LoadResult
-from analysis.sim.tax_api import Account, IncomeItem, SpendingItem
+from zabob.retirement.sim import provenance, tax_api, tax_code
+from zabob.retirement.sim.connection import open_run
+from zabob.retirement.sim.loader import LoadError, LoadResult
+from zabob.retirement.sim.tax_api import Account, IncomeItem, SpendingItem
 
 HOUSING = Account("Expense_Housing", "expense", "housing", "joint", tags=frozenset({"tax:rent"}))
 CHECKING = Account("Asset_Checking", "asset", "cash", "joint")
@@ -151,7 +151,7 @@ def test_a_household_kind_cant_take_a_built_in_name_or_compute_another_tax(
     tax_module: Callable[..., Path], load_test_copy: Callable[[], LoadResult],
 ) -> None:
     kinds = tax_code.TaxKinds({"again": (
-        "from analysis.sim.tax_api import TaxCalculator, register\n"
+        "from zabob.retirement.sim.tax_api import TaxCalculator, register\n"
         "@register\nclass Again(TaxCalculator):\n    kind = 'federal'\n    jurisdiction = 'federal'\n")})
     assert kinds.problems == [
         "taxes/again.py: kind 'federal' is already defined (built-in); rename it or promote it"]
@@ -179,7 +179,7 @@ def test_the_taxes_folder_is_in_the_provenance_scope(
 def _cli(data_dir: Path, *args: str):
     from click.testing import CliRunner
 
-    from analysis.cli import main
+    from zabob.retirement.cli import main
 
     return CliRunner().invoke(main, ["sim", *args, "--data-dir", str(data_dir)], terminal_width=200)
 
@@ -201,9 +201,9 @@ def test_sim_tax_kinds_lists_the_households_kinds_and_their_params(
 _HASHED = '''
 from dataclasses import dataclass
 
-from analysis.sim.tax_api import register
-from analysis.sim.taxes.state_base import Adjustment
-from analysis.sim.taxes.state_tables import StateTables, StateTablesYear
+from zabob.retirement.sim.tax_api import register
+from zabob.retirement.sim.taxes.state_base import Adjustment
+from zabob.retirement.sim.taxes.state_tables import StateTables, StateTablesYear
 
 
 class OddYear(StateTablesYear):

@@ -1,4 +1,4 @@
-"""Smoke tests for analysis.sim.plotting (non-interactive Agg backend)."""
+"""Smoke tests for zabob.retirement.sim.plotting (non-interactive Agg backend)."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ matplotlib.use("Agg")
 
 import pandas as pd
 
-from analysis.sim.plotting import (
+from zabob.retirement.sim.plotting import (
     include_zero,
     plot_income_expense_net,
     plot_stacked_bar,

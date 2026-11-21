@@ -6,7 +6,7 @@ from datetime import date
 
 import pytest
 
-from analysis.sim.dates import (
+from zabob.retirement.sim.dates import (
     is_month_or_date, month_end_iso, parse_day, parse_month, parse_vary_date,
 )
 

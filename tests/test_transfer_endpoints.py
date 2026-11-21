@@ -14,10 +14,10 @@ import pandas as pd
 import pytest
 from click.testing import CliRunner, Result
 
-from analysis.cli import main
-from analysis.sim import calendar_guide
-from analysis.sim.engine import run_scenario
-from analysis.sim.loader import LoadError, LoadResult
+from zabob.retirement.cli import main
+from zabob.retirement.sim import calendar_guide
+from zabob.retirement.sim.engine import run_scenario
+from zabob.retirement.sim.loader import LoadError, LoadResult
 
 CHAIN = "asset_checking_liquidity"  # the prototype's one interior chain, a source
 INTO = "savings_first"  # a destination chain, from the ``into_chain`` fixture

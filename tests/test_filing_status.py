@@ -8,8 +8,8 @@ from pathlib import Path
 
 import pytest
 
-from analysis.sim.engine import EngineError, _active_filing_status, run_scenario
-from analysis.sim.loader import LoadResult
+from zabob.retirement.sim.engine import EngineError, _active_filing_status, run_scenario
+from zabob.retirement.sim.loader import LoadResult
 
 TAXPAYERS = {"alice", "bill"}
 

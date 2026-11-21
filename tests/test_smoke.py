@@ -1,4 +1,4 @@
 def test_imports():
-    import analysis
+    import zabob.retirement
 
-    assert analysis is not None
+    assert zabob.retirement is not None

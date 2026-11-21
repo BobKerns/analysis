@@ -1,10 +1,10 @@
-"""Scenario README.md -> scenario.description extraction (analysis.sim.readme)."""
+"""Scenario README.md -> scenario.description extraction (zabob.retirement.sim.readme)."""
 
 from __future__ import annotations
 
 from pathlib import Path
 
-from analysis.sim.readme import (
+from zabob.retirement.sim.readme import (
     _regenerate_more_link,
     parse_readme_summary,
     readme_description,

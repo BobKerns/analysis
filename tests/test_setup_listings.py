@@ -11,9 +11,9 @@ import pandas as pd
 import pytest
 from click.testing import CliRunner, Result
 
-from analysis.cli import main
-from analysis.sim import setup_listings
-from analysis.sim.registries import CALENDAR_HEADER
+from zabob.retirement.cli import main
+from zabob.retirement.sim import setup_listings
+from zabob.retirement.sim.registries import CALENDAR_HEADER
 
 
 @pytest.fixture

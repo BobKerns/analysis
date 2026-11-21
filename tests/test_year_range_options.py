@@ -12,8 +12,8 @@ import pandas as pd
 import pytest
 from click.testing import CliRunner, Result
 
-from analysis.cli import main
-from analysis.frames import row_years
+from zabob.retirement.cli import main
+from zabob.retirement.frames import row_years
 
 
 def _sim(*args: str) -> Result:
@@ -70,7 +70,7 @@ def test_sim_networth_monthly_with_one_year(report_run_file: Path) -> None:
 def test_sim_networth_chart_draws_only_the_years_asked_for(
     report_run_file: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
-    from analysis.sim import run_charts
+    from zabob.retirement.sim import run_charts
 
     drawn: list[pd.DataFrame] = []
     real = run_charts.net_worth_figure
@@ -182,7 +182,7 @@ def test_sim_ensemble_summary_log_chart_of_the_years_asked_for(
     seeded_ensemble_batch: Callable[..., Path], runs_dir: Path, tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from analysis.sim import ensemble_plots
+    from zabob.retirement.sim import ensemble_plots
 
     figures: list = []
     shown: list[pd.DataFrame] = []
@@ -209,7 +209,7 @@ def test_sim_ensemble_compare_log_chart_uses_symmetric_log(
     seeded_ensemble_batch: Callable[..., Path], runs_dir: Path, tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from analysis.sim import ensemble_plots
+    from zabob.retirement.sim import ensemble_plots
 
     figures: list = []
     real = ensemble_plots.ensemble_compare_grid_figure
@@ -235,8 +235,8 @@ def test_sim_ensemble_compare_log_chart_uses_symmetric_log(
 def test_a_fan_reaching_zero_is_drawn_linear_with_a_warning(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    from analysis.sim.cli import _fan_can_log
-    from analysis.sim.ensemble import summary_with_percentiles
+    from zabob.retirement.sim.cli import _fan_can_log
+    from zabob.retirement.sim.ensemble import summary_with_percentiles
 
     index = pd.to_datetime(["2030-01-31", "2030-02-28"])
     members = pd.DataFrame({"m0": [10.0, -5.0], "m1": [20.0, 30.0]}, index=index)

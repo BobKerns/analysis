@@ -12,11 +12,11 @@ import numpy as np
 import pytest
 from click.testing import CliRunner, Result
 
-from analysis.cli import main
-from analysis.sim import guard_rails as gr
-from analysis.sim.connection import RunConnection
-from analysis.sim.series_db import open_series
-from analysis.sim.types import DollarMode
+from zabob.retirement.cli import main
+from zabob.retirement.sim import guard_rails as gr
+from zabob.retirement.sim.connection import RunConnection
+from zabob.retirement.sim.series_db import open_series
+from zabob.retirement.sim.types import DollarMode
 
 
 @pytest.fixture
@@ -171,8 +171,8 @@ def test_the_ensemble_guard_rails_widget_shows_each_rail_and_rereads_them(
     mc_batch: Path, test_data_dir: Path, runs_dir: Path, write_guard_rails,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from analysis.sim.notebook_ui import ensemble_widgets
-    from analysis.sim.notebook_ui.pickers import TimeRangePicker
+    from zabob.retirement.sim.notebook_ui import ensemble_widgets
+    from zabob.retirement.sim.notebook_ui.pickers import TimeRangePicker
 
     shown: list[Any] = []
     monkeypatch.setattr(ensemble_widgets, "display", lambda *args, **kwargs: shown.extend(args))
@@ -207,8 +207,8 @@ def test_the_ensemble_guard_rails_table_widget_compares_recipes_by_year(
 ) -> None:
     """A recipe sharing the baseline's seed against it: every change is zero,
     one row per (year, recipe), then the whole-run summary by recipe."""
-    from analysis.sim.notebook_ui import ensemble_widgets
-    from analysis.sim.notebook_ui.pickers import TimeRangePicker
+    from zabob.retirement.sim.notebook_ui import ensemble_widgets
+    from zabob.retirement.sim.notebook_ui.pickers import TimeRangePicker
 
     shutil.copytree(mc_batch.parent.parent, runs_dir / "same")
     shutil.copytree(test_data_dir / "scenarios" / "retire_alice", test_data_dir / "scenarios" / "same")
@@ -235,7 +235,7 @@ def test_the_ensemble_guard_rails_table_widget_compares_recipes_by_year(
     assert summary["recipe"].tolist()[:2] == ["retire_alice", "same"]
     assert summary["Δpast"].dropna().abs().max() < 1e-9
 
-    from analysis.sim import guard_rails
+    from zabob.retirement.sim import guard_rails
     evaluated: list[Any] = []
     real_results = guard_rails.ensemble_results
     monkeypatch.setattr(guard_rails, "ensemble_results",
@@ -247,7 +247,7 @@ def test_the_ensemble_guard_rails_table_widget_compares_recipes_by_year(
     assert not evaluated  # the years only re-clip what was found
 
     # A recipe without rails: said so, and its store is never opened.
-    from analysis.sim.registries import GUARD_RAILS_CSV_HEADER
+    from zabob.retirement.sim.registries import GUARD_RAILS_CSV_HEADER
     (test_data_dir / "scenarios" / "same" / "guard_rails.csv").write_text(
         ",".join(GUARD_RAILS_CSV_HEADER) + "\n")
     opened: list[str] = []

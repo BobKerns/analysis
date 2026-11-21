@@ -18,10 +18,10 @@ import os
 import sys
 from pathlib import Path
 
-from analysis.sim.builder import build_pending
-from analysis.sim.cli import _resolve_runs_dir  # the CLI's own default
-from analysis.sim.loader import list_scenario_names
-from analysis.sim.scenario import ensemble_settings
+from zabob.retirement.sim.builder import build_pending
+from zabob.retirement.sim.cli import _resolve_runs_dir  # the CLI's own default
+from zabob.retirement.sim.loader import list_scenario_names
+from zabob.retirement.sim.scenario import ensemble_settings
 
 
 def main(names: list[str]) -> int:

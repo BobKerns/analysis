@@ -14,9 +14,9 @@ import pandas as pd
 import pytest
 from click.testing import CliRunner
 
-from analysis.cli import main
-from analysis.sim import scenario
-from analysis.sim.correlation import (
+from zabob.retirement.cli import main
+from zabob.retirement.sim import scenario
+from zabob.retirement.sim.correlation import (
     CorrelationError,
     Link,
     expected_rank_correlation,
@@ -27,10 +27,10 @@ from analysis.sim.correlation import (
     topological_order,
     tree_members,
 )
-from analysis.sim.distributions import Triangular, TruncatedNormal, Uniform
-from analysis.sim.engine import run_scenario
-from analysis.sim.loader import LoadError, LoadResult, load_scenario
-from analysis.sim.registries import CALENDAR_HEADER
+from zabob.retirement.sim.distributions import Triangular, TruncatedNormal, Uniform
+from zabob.retirement.sim.engine import run_scenario
+from zabob.retirement.sim.loader import LoadError, LoadResult, load_scenario
+from zabob.retirement.sim.registries import CALENDAR_HEADER
 
 
 def _factor(append_calendar_row: Callable[..., None], name: str, **extra: str) -> None:
@@ -408,7 +408,7 @@ def test_standard_normal_is_standard() -> None:
 def _resolve(recipe: Path, out: Path, member_index: int, *, seed: int | None = 21, **kwargs) -> dict:  # type: ignore[no-untyped-def]
     """Resolve one member; ``{name: (vary_target, drawn_value, z)}`` from its
     ensemble_draw, plus its calendar rows by name."""
-    from analysis.sim.ensemble import resolve_member
+    from zabob.retirement.sim.ensemble import resolve_member
 
     member = resolve_member(recipe, out / f"member_{member_index:04d}.sqlite3", seed=seed,
                             member_index=member_index, member_count=999,
@@ -463,7 +463,7 @@ def test_rows_outside_every_tree_draw_exactly_as_before(
     (randint) for a uniform date."""
     from datetime import date
 
-    from analysis.sim.distributions import member_rng
+    from zabob.retirement.sim.distributions import member_rng
 
     _correlated_recipe(append_calendar_row)
     recipe = load_test_copy().intent_path
@@ -575,7 +575,7 @@ def test_correlated_ramp_lands_on_its_drawn_target(
         vary_correlate_with="economy", vary_correlation="0.7",
     )
     recipe = load_test_copy().intent_path
-    from analysis.sim.ensemble import resolve_member
+    from zabob.retirement.sim.ensemble import resolve_member
 
     member = resolve_member(recipe, tmp_path / "m.sqlite3", seed=21, member_index=4,
                             member_count=9, recipe_tree_id="deadbeef")
@@ -651,7 +651,7 @@ def correlated_mc_batch(
     intent_dir: Path, runs_dir: Path,
 ) -> Path:
     """A 6-member Monte Carlo batch of the correlated recipe."""
-    from analysis.sim.loader import latest_ensemble_batch
+    from zabob.retirement.sim.loader import latest_ensemble_batch
 
     _correlated_recipe(append_calendar_row)
     runner = CliRunner()
@@ -675,7 +675,7 @@ def correlated_mc_batch(
 
 
 def test_parameters_show_parents_rho_and_factors(correlated_mc_batch: Path) -> None:
-    from analysis.sim import sensitivity
+    from zabob.retirement.sim import sensitivity
 
     table = sensitivity.parameters(correlated_mc_batch)
     assert table.loc["tied_rate", ["correlate_with", "rho"]].tolist() == ["economy", "+0.8"]
@@ -692,8 +692,8 @@ def test_monte_carlo_report_ranks_by_srrc_and_shows_factors_and_scores(
 ) -> None:
     """#38: the factor isn't a regressor, but gets an informational line; a
     correlated batch is ranked and pinned by SRRC and checks its scores."""
-    from analysis.sim import sensitivity
-    from analysis.sim.ensemble import load_ensemble
+    from zabob.retirement.sim import sensitivity
+    from zabob.retirement.sim.ensemble import load_ensemble
 
     connections = load_ensemble(correlated_mc_batch)
     try:
@@ -724,7 +724,7 @@ def test_monte_carlo_report_ranks_by_srrc_and_shows_factors_and_scores(
 
 
 def test_uncorrelated_batch_has_no_correlation_note(mc_batch: Path) -> None:
-    from analysis.sim import sensitivity
+    from zabob.retirement.sim import sensitivity
 
     assert not sensitivity.has_correlated_rows(mc_batch)
 
@@ -736,7 +736,7 @@ def test_an_unused_factor_still_draws_and_is_recorded(
     """PR #37 review: a factor with neither parent nor dependents (allowed,
     with a warning) still resolves to its own draw and gets provenance, and
     its presence doesn't disturb any row."""
-    from analysis.sim.distributions import member_rng
+    from zabob.retirement.sim.distributions import member_rng
 
     _correlated_recipe(append_calendar_row)
     before = _resolve(load_test_copy().intent_path, tmp_path / "b", 3)["draws"]
@@ -752,7 +752,7 @@ def test_an_unused_factor_still_draws_and_is_recorded(
 def _small_mc_batch(test_data_dir: Path, intent_dir: Path, runs_dir: Path) -> Path:
     """Load the private retire_alice copy (after a test's calendar edits) and
     run a 3-member Monte Carlo batch of it."""
-    from analysis.sim.loader import latest_ensemble_batch
+    from zabob.retirement.sim.loader import latest_ensemble_batch
 
     runner = CliRunner()
     load = runner.invoke(main, [
@@ -782,7 +782,7 @@ def test_independent_inputs_are_not_marked_correlated(
     """PR #37 review: the note needs two modeled rows that actually depend on
     each other -- not an unused factor's provenance, a lone row under a
     factor, or a link whose rho is 0."""
-    from analysis.sim import sensitivity
+    from zabob.retirement.sim import sensitivity
 
     _factor(append_calendar_row, "f")
     if case == "lone child":
@@ -807,7 +807,7 @@ def test_two_dependent_rows_mark_a_batch_correlated(
     append_calendar_row: Callable[..., None], test_data_dir: Path,
     intent_dir: Path, runs_dir: Path,
 ) -> None:
-    from analysis.sim import sensitivity
+    from zabob.retirement.sim import sensitivity
 
     _factor(append_calendar_row, "f")
     _varying_rate(append_calendar_row, "a", vary_correlate_with="f", vary_correlation="0.8")
@@ -838,7 +838,7 @@ def test_conditional_scores_multiply_rho_down_the_family() -> None:
     """Each descendant at its conditional median given the node: the product
     of rho along the path, times the node's score. Other trees, and the
     node's own ancestors, aren't included."""
-    from analysis.sim.correlation import conditional_scores
+    from zabob.retirement.sim.correlation import conditional_scores
 
     links = {
         "a": Link("f", 0.5), "b": Link("a", 0.4), "c": Link("f", -0.6),
@@ -893,7 +893,7 @@ def test_oat_factor_moves_its_family_to_conditional_medians(
 
 
 def test_oat_plan_sweeps_factors_that_move_something(tmp_path: Path) -> None:
-    from analysis.sim.ensemble import EnsembleError, oat_plan
+    from zabob.retirement.sim.ensemble import EnsembleError, oat_plan
 
     plan = oat_plan(["r1", "r2"], (0.1, 0.9), factors={"economy": 2, "someday": 0})
     assert plan == [{}, {"economy": 0.1}, {"economy": 0.9}, {"r1": 0.1}, {"r1": 0.9},
@@ -911,7 +911,7 @@ def test_factor_reach_counts_varying_descendants(
     append_calendar_row: Callable[..., None], load_test_copy: Callable[[], LoadResult],
 ) -> None:
     """Through a sub-factor, too; an unused factor reaches nothing."""
-    from analysis.sim.ensemble import factor_reach
+    from zabob.retirement.sim.ensemble import factor_reach
 
     _correlated_recipe(append_calendar_row)
     _factor(append_calendar_row, "regime")
@@ -940,7 +940,7 @@ def factor_oat_batch(
 ) -> Path:
     """An OAT batch of the correlated recipe, perturbing the factor and one
     ordinary row (5 members)."""
-    from analysis.sim.loader import latest_ensemble_batch
+    from zabob.retirement.sim.loader import latest_ensemble_batch
 
     _correlated_recipe(append_calendar_row)
     runner = CliRunner()
@@ -965,7 +965,7 @@ def test_factor_rows_are_labeled_and_left_out_of_share(
     """A factor appears in the table as target 'factor', its share is over
     the ordinary rows' total (so theirs still sum to 1), it's never a pin
     candidate, and the CLI and parameters view label it."""
-    from analysis.sim import sensitivity
+    from zabob.retirement.sim import sensitivity
 
     deltas = sensitivity.oat_deltas(factor_oat_batch)
     assert sensitivity.factor_rows(deltas) == {"economy"}
@@ -987,7 +987,7 @@ def test_factor_rows_are_labeled_and_left_out_of_share(
 def test_attribution_works_for_a_factor(factor_oat_batch: Path) -> None:
     """A factor member's delta decomposes exactly like a row's: nothing
     unattributed."""
-    from analysis.sim import sensitivity
+    from zabob.retirement.sim import sensitivity
 
     by_q = sensitivity.oat_attribution(factor_oat_batch, "economy")
     assert sorted(by_q) == [0.1, 0.9]
@@ -998,7 +998,7 @@ def test_attribution_works_for_a_factor(factor_oat_batch: Path) -> None:
 def test_conditional_scores_at_an_endpoint_respect_a_zero_rho() -> None:
     """PR #53 review: an infinite (endpoint) score propagates as +/-inf, and
     a zero rho leaves its child at its median rather than 0 * inf = nan."""
-    from analysis.sim.correlation import conditional_scores
+    from zabob.retirement.sim.correlation import conditional_scores
 
     links = {"a": Link("f", 0.5), "b": Link("f", 0.0), "c": Link("f", -0.3)}
     assert conditional_scores(links, "f", math.inf) == {"a": math.inf, "b": 0.0, "c": -math.inf}
@@ -1022,7 +1022,7 @@ def test_oat_factor_at_an_endpoint_puts_its_family_on_their_bounds(
 def test_factor_share_survives_a_zero_ordinary_total() -> None:
     """PR #53 review: rows whose own impact is zero (say, they only matter
     jointly) mustn't make a factor's real impact read as a zero share."""
-    from analysis.sim import sensitivity
+    from zabob.retirement.sim import sensitivity
 
     records = []
     for row, target, d in (("f", sensitivity.FACTOR_TARGET, 50_000.0), ("r", "amount", 0.0)):
@@ -1042,7 +1042,7 @@ def test_oat_rejects_an_out_of_range_factor_quantile(
 ) -> None:
     """PR #53 review: a factor has no distribution to reject a bad quantile,
     so resolve_member must, rather than treat it as an endpoint."""
-    from analysis.sim.ensemble import EnsembleError
+    from zabob.retirement.sim.ensemble import EnsembleError
 
     _correlated_recipe(append_calendar_row)
     with pytest.raises(EnsembleError, match="quantile must be in"):

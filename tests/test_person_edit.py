@@ -9,8 +9,8 @@ import pandas as pd
 import pytest
 from click.testing import CliRunner, Result
 
-from analysis.cli import main
-from analysis.sim.staging import EditRejected, staged_edit
+from zabob.retirement.cli import main
+from zabob.retirement.sim.staging import EditRejected, staged_edit
 
 
 @pytest.fixture
@@ -170,7 +170,7 @@ def test_person_edit_refuses_when_persons_csv_changes_meanwhile(
         if "carol" not in persons.read_text():
             persons.write_text(persons.read_text() + "carol,Carol (fake),1995-02-03,,,{}\n")
         return ""
-    monkeypatch.setattr("analysis.sim.cli._prompt_with_completion", role_prompt)
+    monkeypatch.setattr("zabob.retirement.sim.cli._prompt_with_completion", role_prompt)
 
     result = sim("person", "edit", "bill", input="\n1967-09-01\n{}\n")
 

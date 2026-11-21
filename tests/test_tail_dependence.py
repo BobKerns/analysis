@@ -16,9 +16,9 @@ from click.testing import CliRunner
 from scipy.stats import kendalltau, kstest
 from scipy.stats import t as student_t
 
-from analysis.cli import main
-from analysis.sim import sensitivity
-from analysis.sim.correlation import (
+from zabob.retirement.cli import main
+from zabob.retirement.sim import sensitivity
+from zabob.retirement.sim.correlation import (
     Link,
     expected_kendall_tau,
     probability,
@@ -29,8 +29,8 @@ from analysis.sim.correlation import (
     tail_scale,
     tree_root,
 )
-from analysis.sim.distributions import TruncatedNormal, member_rng, tail_rng
-from analysis.sim.loader import LoadError, LoadResult
+from zabob.retirement.sim.distributions import TruncatedNormal, member_rng, tail_rng
+from zabob.retirement.sim.loader import LoadError, LoadResult
 
 from tests.test_correlation import _correlated_recipe, _factor, _resolve, _varying_rate
 
@@ -365,7 +365,7 @@ def test_rows_sharing_a_t_tree_are_dependent(
 def test_the_smallest_nu_draws_a_finite_scale_even_at_the_extreme() -> None:
     """At nu = 1, the floor, even the smallest uniform draw gives a positive
     chi-square and a finite scale, so no member's scores overflow."""
-    from analysis.sim.registries import MIN_TAIL_DEPENDENCE
+    from zabob.retirement.sim.registries import MIN_TAIL_DEPENDENCE
 
     class Smallest(random.Random):
         def random(self) -> float:

@@ -22,15 +22,15 @@ from click.testing import CliRunner
 from matplotlib.dates import date2num
 from matplotlib.figure import Figure
 
-from analysis.cli import main
-from analysis.sim import compare, engine, step_ups
-from analysis.sim.connection import RunConnection
-from analysis.sim.engine import run_scenario
-from analysis.sim.ensemble import base_case_deaths
-from analysis.sim.loader import LoadError, LoadResult
-from analysis.sim.notebook_ui.accounts_plots import basis_step_up_table
-from analysis.sim.plotting import mark_deaths
-from analysis.sim.types import Death
+from zabob.retirement.cli import main
+from zabob.retirement.sim import compare, engine, step_ups
+from zabob.retirement.sim.connection import RunConnection
+from zabob.retirement.sim.engine import run_scenario
+from zabob.retirement.sim.ensemble import base_case_deaths
+from zabob.retirement.sim.loader import LoadError, LoadResult
+from zabob.retirement.sim.notebook_ui.accounts_plots import basis_step_up_table
+from zabob.retirement.sim.plotting import mark_deaths
+from zabob.retirement.sim.types import Death
 
 BROKERAGE = "Asset_Brokerage_Joint"
 ALICE_DIES = "alice,70,,,,,,"  # born 1965-03-15: final month 2035-03
@@ -360,9 +360,9 @@ def test_the_net_worth_notebook_charts_mark_the_deaths(
     """Each widget's own figure marks both deaths (#327): the figures are
     caught as the widgets show them, so a widget that stopped passing its
     run's deaths would fail here."""
-    from analysis.sim import reports
-    from analysis.sim.notebook_ui import networth_plots
-    from analysis.sim.types import DollarMode
+    from zabob.retirement.sim import reports
+    from zabob.retirement.sim.notebook_ui import networth_plots
+    from zabob.retirement.sim.types import DollarMode
 
     fund_asset_savings("500000.00")
     write_lifespans(ALICE_DIES, BILL_DIES)

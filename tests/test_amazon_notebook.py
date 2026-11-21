@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from analysis.amazon.notebook import (
+from zabob.retirement.amazon.notebook import (
     load_categorization_state,
     load_events_dataframe,
     load_monthly_summaries,
@@ -8,7 +8,7 @@ from analysis.amazon.notebook import (
     summarize_over_all_time,
     top_category_trend,
 )
-from analysis.storage import JsonStateStore
+from zabob.retirement.storage import JsonStateStore
 
 DATA_DIR = Path(__file__).resolve().parent / "data" / "amazon"
 

@@ -12,11 +12,11 @@ import pandas as pd
 import pytest
 from click.testing import CliRunner, Result
 
-from analysis.cli import main
-from analysis.frames import named_rows
-from analysis.sim import compare, roll
-from analysis.sim.connection import RunConnection
-from analysis.sim.dates import month_before
+from zabob.retirement.cli import main
+from zabob.retirement.frames import named_rows
+from zabob.retirement.sim import compare, roll
+from zabob.retirement.sim.connection import RunConnection
+from zabob.retirement.sim.dates import month_before
 
 
 def _sim(data_dir: Path, *args: str, input: str | None = None) -> Result:  # noqa: A002 -- CliRunner's name
@@ -314,7 +314,7 @@ def test_a_second_roll_in_a_year_keeps_the_plan_under_its_month(
 def test_roll_writes_nothing_when_a_file_changed_while_it_asked(
     test_data_dir: Path, retire_alice_csv: Callable[[str], Path], monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from analysis.sim import cli
+    from zabob.retirement.sim import cli
 
     lots = retire_alice_csv("account_lots.csv")
     asked = cli._ask_money

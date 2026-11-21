@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from analysis.sim.loader import LoadError, LoadResult
+from zabob.retirement.sim.loader import LoadError, LoadResult
 
 PRICES = (
     "effective_date,price\n"

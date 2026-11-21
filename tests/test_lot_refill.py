@@ -8,8 +8,8 @@ from pathlib import Path
 
 import pytest
 
-from analysis.sim.engine import run_scenario
-from analysis.sim.loader import LoadError, LoadResult
+from zabob.retirement.sim.engine import run_scenario
+from zabob.retirement.sim.loader import LoadError, LoadResult
 
 CHECKING = "Asset_Checking"
 

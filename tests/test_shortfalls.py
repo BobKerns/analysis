@@ -12,10 +12,10 @@ from pathlib import Path
 
 import pytest
 
-from analysis.sim import shortfalls
-from analysis.sim.connection import RunConnection
-from analysis.sim.notebook_ui.ensemble_widgets import batch_shortfalls, shortfall_message
-from analysis.sim.notebook_ui.pickers import shortfall_banner, shortfall_summary_line
+from zabob.retirement.sim import shortfalls
+from zabob.retirement.sim.connection import RunConnection
+from zabob.retirement.sim.notebook_ui.ensemble_widgets import batch_shortfalls, shortfall_message
+from zabob.retirement.sim.notebook_ui.pickers import shortfall_banner, shortfall_summary_line
 
 
 @pytest.fixture
@@ -127,8 +127,8 @@ def test_scenario_picker_shows_the_banner_under_the_picker(
 ) -> None:
     from click.testing import CliRunner
 
-    from analysis.cli import main
-    from analysis.sim.notebook_ui import pickers
+    from zabob.retirement.cli import main
+    from zabob.retirement.sim.notebook_ui import pickers
 
     append_calendar_row(
         date="2027-03-31", kind="one_off_transfer", name="huge_bill",

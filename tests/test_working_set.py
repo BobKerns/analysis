@@ -9,12 +9,12 @@ import ipywidgets as widgets
 import pytest
 from click.testing import CliRunner, Result
 
-from analysis.cli import main
-from analysis.sim import working_set
-from analysis.sim.loader import current_scenario_path
-from analysis.sim.locks import BUILDER_CHILD_ENV
-from analysis.sim.notebook_ui.pickers import note_picks
-from analysis.sim.working_set import read_working_set, working_set_path
+from zabob.retirement.cli import main
+from zabob.retirement.sim import working_set
+from zabob.retirement.sim.loader import current_scenario_path
+from zabob.retirement.sim.locks import BUILDER_CHILD_ENV
+from zabob.retirement.sim.notebook_ui.pickers import note_picks
+from zabob.retirement.sim.working_set import read_working_set, working_set_path
 
 pytestmark = pytest.mark.uses_working_set_write
 

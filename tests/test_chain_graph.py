@@ -11,8 +11,8 @@ from pathlib import Path
 import pytest
 from click.testing import CliRunner
 
-from analysis.cli import main
-from analysis.sim import chain_graph
+from zabob.retirement.cli import main
+from zabob.retirement.sim import chain_graph
 
 # A PNG header claiming 640 x 200 pixels, which is all png_size() reads.
 FAKE_PNG = b"\x89PNG\r\n\x1a\n" + b"\0\0\0\rIHDR" + (640).to_bytes(4) + (200).to_bytes(4) + b"\0" * 5000

@@ -11,8 +11,8 @@ import pandas as pd
 import pytest
 from click.testing import CliRunner, Result
 
-from analysis.cli import main
-from analysis.sim.registries import CALENDAR_HEADER
+from zabob.retirement.cli import main
+from zabob.retirement.sim.registries import CALENDAR_HEADER
 
 # The prototype calendar's own rows, by number:
 #   1 set_rate Asset_Checking   2 retire_scheduled salary_alice   3 set_amount healthcare

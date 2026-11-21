@@ -10,9 +10,9 @@ from pathlib import Path
 
 import pytest
 
-from analysis.sim import engine
-from analysis.sim.engine import run_scenario
-from analysis.sim.loader import LoadError, load_scenario
+from zabob.retirement.sim import engine
+from zabob.retirement.sim.engine import run_scenario
+from zabob.retirement.sim.loader import LoadError, load_scenario
 
 # prototype_data/aux/standard_deduction.csv: 2027 MFJ, indexed by cpi.
 MFJ_2027 = 32_200_00

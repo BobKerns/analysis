@@ -27,7 +27,7 @@ here, and on this machine when it isn't (saying so); `--docker` or `--local`
 chooses. The result is `out/videos/00-pilot.en.mp4`, with its captions
 (`00-pilot.en.srt`) and thumbnail (`00-pilot.en.jpg`) beside it. A native
 build needs `analysis video setup` once first (voice model, VHS, ttyd).
-`python -m analysis.videos` is the same command run only on this machine
+`python -m zabob.retirement.videos` is the same command run only on this machine
 (the container runs it), and `scripts/videos/docker.sh` starts the
 container; both work on their own too.
 
@@ -43,7 +43,7 @@ container; both work on their own too.
 | `docs/videos/theme/templates/*.html` | Slide templates (Jinja2): `title` opens every video, `card` for breaks and endings, `figure` for a picture a command made, `window` for a screen the tapes can't record |
 | `docs/videos/youtube.toml` | The channel's settings and the wording around each description |
 | `docs/videos/assets/*.svg` | Reusable characters and props: Alice, Bill, their home |
-| `src/analysis/videos/` | The builder |
+| `src/zabob/retirement/videos/` | The builder |
 | `scripts/videos/tts_kokoro.py` | The narration worker (runs in its own environment) |
 
 `00-pilot` exists to prove the pipeline. Real videos are numbered in the

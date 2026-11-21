@@ -132,7 +132,7 @@ if [ -s "$SHARED/sim/.analysis_user" ]; then
     # sim init (or an earlier link from this machine) already chose.
     IFS= read -r user < "$SHARED/sim/.analysis_user"
     echo "Linked $SHARED to $target, used as '$user'."
-elif user="$("$PYTHON" -m analysis.sim.choose_user "$SHARED/sim")"; then
+elif user="$("$PYTHON" -m zabob.retirement.sim.choose_user "$SHARED/sim")"; then
     printf '%s\n' "$user" > "$SHARED/sim/.analysis_user"
     echo "Linked $SHARED to $target, used as '$user'."
 else

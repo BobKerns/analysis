@@ -15,9 +15,9 @@ import git
 import pytest
 from click.testing import CliRunner
 
-from analysis.sim import builder, price_schedule
-from analysis.sim.cli import sim_group_command
-from analysis.sim.prices import PriceError
+from zabob.retirement.sim import builder, price_schedule
+from zabob.retirement.sim.cli import sim_group_command
+from zabob.retirement.sim.prices import PriceError
 
 NY = price_schedule.MARKET
 

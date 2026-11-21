@@ -11,9 +11,9 @@ from pathlib import Path
 import pytest
 from click.testing import CliRunner, Result
 
-from analysis import checkout
-from analysis.cli import main
-from analysis.sim import builder, data_repo
+from zabob.retirement import checkout
+from zabob.retirement.cli import main
+from zabob.retirement.sim import builder, data_repo
 
 
 @pytest.fixture(autouse=True)
@@ -437,8 +437,8 @@ def test_account_list_shows_each_accounts_own_growth(tmp_path: Path, monkeypatch
     """#368: a growth rule's to_account names a chain, whose ids needn't match
     the accounts'; each account shows its own lots' series (several when its
     lots differ), and an income account none."""
-    from analysis.sim.accounts import load_accounts_view
-    from analysis.sim.connection import open_scenario
+    from zabob.retirement.sim.accounts import load_accounts_view
+    from zabob.retirement.sim.connection import open_scenario
 
     monkeypatch.chdir(tmp_path)
     assert _init("retirement", *_ALICE, "--no-builder").exit_code == 0

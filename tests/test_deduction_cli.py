@@ -13,8 +13,8 @@ from pathlib import Path
 import pytest
 from click.testing import CliRunner, Result
 
-from analysis.cli import main
-from analysis.sim import cli, setup_listings
+from zabob.retirement.cli import main
+from zabob.retirement.sim import cli, setup_listings
 
 
 def _sim(data: Path, scenario: str, *args: str, answers: Sequence[str] = ()) -> Result:

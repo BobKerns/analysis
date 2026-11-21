@@ -14,8 +14,8 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from analysis.sim.engine import run_scenario
-from analysis.sim.loader import LoadError, LoadResult, _firing_years, _residence_states
+from zabob.retirement.sim.engine import run_scenario
+from zabob.retirement.sim.loader import LoadError, LoadResult, _firing_years, _residence_states
 
 BRACKETS = "effective_date,filing_status,bracket_index,floor,marginal_rate\n"
 
@@ -242,7 +242,7 @@ def test_a_state_fill_bracket_rate_must_be_one_of_each_states_it_converts_in(
     """A conversion to the top of California's 9.3% bracket has nothing to
     fill after a move to a state without one, so the loader says so; ending
     the rule before the move's year is fine."""
-    from analysis.sim.registries import SCHEDULED_CSV_HEADER
+    from zabob.retirement.sim.registries import SCHEDULED_CSV_HEADER
 
     add_state_tax("CA")
     _oregon(write_aux, "1%")

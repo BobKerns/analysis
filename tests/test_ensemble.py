@@ -12,8 +12,8 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from analysis.sim.engine import run_scenario
-from analysis.sim.ensemble import (
+from zabob.retirement.sim.engine import run_scenario
+from zabob.retirement.sim.ensemble import (
     EnsembleError,
     latest_ensemble_batch,
     load_ensemble,
@@ -27,7 +27,7 @@ from analysis.sim.ensemble import (
     summary_with_percentiles,
     write_batch_manifest,
 )
-from analysis.sim.loader import LoadResult
+from zabob.retirement.sim.loader import LoadResult
 
 
 def test_resolve_member_amount_target_draws_within_bounds(
@@ -851,7 +851,7 @@ def test_a_batch_name_is_unique_across_both_modes_folders(
     # reserved in the same second as a Monte Carlo one takes a suffix.
     from datetime import UTC, datetime
 
-    from analysis.sim import cli
+    from zabob.retirement.sim import cli
 
     class _Frozen(datetime):
         @classmethod

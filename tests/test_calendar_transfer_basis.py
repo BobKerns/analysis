@@ -13,8 +13,8 @@ from pathlib import Path
 
 import pytest
 
-from analysis.sim.engine import run_scenario
-from analysis.sim.loader import LoadResult
+from zabob.retirement.sim.engine import run_scenario
+from zabob.retirement.sim.loader import LoadResult
 
 SALE = {
     "date": "2027-03-31", "kind": "one_off_transfer",

@@ -13,11 +13,11 @@ import pandas as pd
 import pytest
 from click.testing import CliRunner, Result
 
-from analysis.cli import main
-from analysis.sim import cli as sim_cli
-from analysis.sim import completion, names
-from analysis.sim.cli import sim_group_command
-from analysis.sim.loader import BATCH_MANIFEST_FILENAME, batches_dir, write_current_scenario
+from zabob.retirement.cli import main
+from zabob.retirement.sim import cli as sim_cli
+from zabob.retirement.sim import completion, names
+from zabob.retirement.sim.cli import sim_group_command
+from zabob.retirement.sim.loader import BATCH_MANIFEST_FILENAME, batches_dir, write_current_scenario
 
 
 @pytest.fixture

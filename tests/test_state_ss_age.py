@@ -13,11 +13,11 @@ from typing import Any
 
 import pytest
 
-from analysis.sim import registries
-from analysis.sim.engine import TaxRule, _prepare_tax
-from analysis.sim.loader import LoadError, LoadResult, _validate_state_social_security
-from analysis.sim.tax_api import Return
-from analysis.sim.taxes import common
+from zabob.retirement.sim import registries
+from zabob.retirement.sim.engine import TaxRule, _prepare_tax
+from zabob.retirement.sim.loader import LoadError, LoadResult, _validate_state_social_security
+from zabob.retirement.sim.tax_api import Return
+from zabob.retirement.sim.taxes import common
 
 Aux = dict[tuple[str, str | None], list[tuple[str, dict[str, Any]]]]
 

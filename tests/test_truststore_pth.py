@@ -1,4 +1,4 @@
-"""The venv's ``analysis_truststore.pth`` puts every process on the OS trust store (#86)."""
+"""The venv's ``zabob_retirement_truststore.pth`` puts every process on the OS trust store (#86)."""
 
 import subprocess
 import sys
@@ -7,7 +7,7 @@ from pathlib import Path
 
 
 def test_pth_is_installed_in_site_packages():
-    pth = Path(sysconfig.get_paths()["purelib"]) / "analysis_truststore.pth"
+    pth = Path(sysconfig.get_paths()["purelib"]) / "zabob_retirement_truststore.pth"
     assert pth.read_text().strip() == "import truststore; truststore.inject_into_ssl()"
 
 

@@ -22,11 +22,11 @@ from pathlib import Path
 import pytest
 from click.testing import CliRunner
 
-from analysis.cli import main
-from analysis.sim import guard_rails, provenance
-from analysis.sim.connection import RunConnection
-from analysis.sim.loader import LoadError
-from analysis.sim.types import DollarMode
+from zabob.retirement.cli import main
+from zabob.retirement.sim import guard_rails, provenance
+from zabob.retirement.sim.connection import RunConnection
+from zabob.retirement.sim.loader import LoadError
+from zabob.retirement.sim.types import DollarMode
 
 SCENARIO = "alice_triggers"
 RESPOND = "strategies/respond.csv"
@@ -196,7 +196,7 @@ def test_cut_on_breach_a_rail_to_stay_inside_wins(run_strategy_scenario, strateg
 
 
 MOVER = '''
-from analysis.sim.strategy_api import Decision, LotRef, Strategy, Transfer, register
+from zabob.retirement.sim.strategy_api import Decision, LotRef, Strategy, Transfer, register
 
 
 @register
@@ -227,7 +227,7 @@ def test_on_breach_may_move_money(run_strategy_scenario, strategy_csv, strategy_
 
 SWEEP = '''
 from dataclasses import dataclass
-from analysis.sim.strategy_api import Decision, LotRef, Strategy, Transfer, register
+from zabob.retirement.sim.strategy_api import Decision, LotRef, Strategy, Transfer, register
 
 SAVINGS = LotRef("Asset_Savings", "default")
 CHECKING = LotRef("Asset_Checking", "default")
