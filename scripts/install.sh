@@ -1,7 +1,7 @@
 #!/bin/sh
-# Install the simulator with one line, no git knowledge needed (#308):
+# Install Zabob Retirement with one line, no git knowledge needed (#308):
 #
-#   curl -fsSL https://raw.githubusercontent.com/BobKerns/analysis/main/scripts/install.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/BobKerns/zabob-retirement/main/scripts/install.sh | sh
 #
 # Gets git if it's missing, clones the code into ~/retirement/analysis (or
 # updates the clone already there), runs scripts/setup.sh, and links the data
@@ -22,7 +22,7 @@
 # input, so questions are read from /dev/tty, never from stdin.
 set -eu
 
-REPO_URL=${ANALYSIS_REPO_URL:-https://github.com/BobKerns/analysis.git}
+REPO_URL=${ANALYSIS_REPO_URL:-https://github.com/BobKerns/zabob-retirement.git}
 
 say() { printf '%s\n' "$*"; }
 die() {
@@ -144,7 +144,7 @@ main() {
     # A terminal for questions, even when stdin is this script.
     if (: </dev/tty) 2>/dev/null; then tty=/dev/tty; else tty=/dev/null; fi
 
-    say "This installs the retirement simulator."
+    say "This installs Zabob Retirement, a retirement simulator."
     code=$(full_path "${code:-$(ask "Where should the code go?" "$HOME/retirement/analysis")}")
     need_git
     get_code
@@ -188,7 +188,8 @@ main() {
     fi
     say ""
     say "Installed. Open a new terminal window, then:"
-    say "    source $shared/sim/activate-analysis"
+    # Through the checkout's link, so the code activated is this checkout's.
+    say "    source $code/data/shared/sim/activate-analysis"
     say "    sim run"
     say "To update later, run the same install line again."
 }

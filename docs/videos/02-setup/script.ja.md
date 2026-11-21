@@ -9,7 +9,7 @@ title = "セットアップ"
 summary = """
 アリスが、自分のコンピューターでシミュレーターを動かせるようにして、世帯のデータを\
 入れるフォルダーを作ります。1行インストーラーのあるセットアップガイド(英語): \
-https://github.com/BobKerns/analysis/blob/main/docs/SETUP.md
+https://github.com/BobKerns/zabob-retirement/blob/main/docs/SETUP.md
 
 Windowsでは、先にWSLを準備してください: https://youtu.be/zeTFTujsWwI"""
 contents = [

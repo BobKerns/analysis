@@ -1,3 +1,5 @@
+![Zabob Retirement](../assets/brand/banner.jpg)
+
 # State income tax, state by state
 
 > To read a formatted `.md` file:
@@ -48,14 +50,14 @@ every state's list.
   Security you receive (Idaho, Maryland) is too, with `less_ss`: each
   filer's own benefits off their own cap with `per_person`, the
   household's off one cap without it
-  ([#579](https://github.com/BobKerns/analysis/issues/579)).
+  ([#579](https://github.com/BobKerns/zabob-retirement/issues/579)).
 - **Spending-based deductions and credits.** A renter's deduction or
   credit, a property tax deduction or credit figured as a share of the tax
   paid, a deduction for 529 contributions, a deduction or credit for
   long-term care premiums: a `state_adjustments` row on tagged spending,
   **table**. A credit the state pays even when it's more than the tax is
   a row with `refundable`: **table**
-  ([#579](https://github.com/BobKerns/analysis/issues/579)).
+  ([#579](https://github.com/BobKerns/zabob-retirement/issues/579)).
 - **Circuit breakers.** Property tax or rent relief figured from the tax as
   a share of household income, or from a table of income bands (Michigan's
   homestead credit, Minnesota's renter's credit and property tax refund,
@@ -83,7 +85,7 @@ every state's list.
   Carolina's do.
 - **Married couples filing separately on one return** (Arkansas, Delaware,
   the District, Kentucky, Virginia,
-  [#580](https://github.com/BobKerns/analysis/issues/580)): each spouse's
+  [#580](https://github.com/BobKerns/zabob-retirement/issues/580)): each spouse's
   income runs through the brackets and standard deduction alone, which
   saves tax where the lower brackets or the deduction aren't doubled for a
   joint return. A `state_separate_return__<state>.csv` with `allowed`
@@ -91,7 +93,7 @@ every state's list.
   rows and the income that's theirs (by account owner, joint income split
   evenly), and take the lower. The rule that both spouses itemize or
   neither (Kentucky, Delaware) isn't modeled.
-- **Itemized deductions** ([#542](https://github.com/BobKerns/analysis/issues/542)):
+- **Itemized deductions** ([#542](https://github.com/BobKerns/zabob-retirement/issues/542)):
   a state with its own `state_itemized_limits__<state>.csv` (California's
   ships) figures them from spending as the federal return does, under its
   own limits, never deducting an income tax. Another state figures none:
@@ -159,7 +161,7 @@ on interest and dividends ended with 2024.
 - A pension and annuity subtraction from 55, larger from 65: **table**.
 - Social Security is subtracted in full from 65, and from 55 below an
   income: **table**, `state_social_security` rows by `min_age`
-  ([#581](https://github.com/BobKerns/analysis/issues/581)).
+  ([#581](https://github.com/BobKerns/zabob-retirement/issues/581)).
 - From 55 to 64 over that income, taxable Social Security shares the
   pension subtraction's cap instead. `state_retirement_exclusion` covers
   no Social Security, so that part is **not supported**.
@@ -177,7 +179,7 @@ on interest and dividends ended with 2024.
   supported**.
 - Benefit recapture, which taxes all income at the top rate at high
   incomes: **not supported**
-  ([#549](https://github.com/BobKerns/analysis/issues/549)).
+  ([#549](https://github.com/BobKerns/zabob-retirement/issues/549)).
 - A property tax credit, limited to filers 65 and over: **table**.
 
 ### Delaware
@@ -508,7 +510,7 @@ These are rare for a retired household, or need a design of their own:
   gains above $350,000 of income, Minnesota's 1% above $1 million).
 - Gain exclusions with a holding or acquisition test (Arizona, Vermont).
 - Benefit recapture: Connecticut's, and New York's supplemental tax, two
-  states ([#549](https://github.com/BobKerns/analysis/issues/549)).
+  states ([#549](https://github.com/BobKerns/zabob-retirement/issues/549)).
 - Pennsylvania's income classes, and local taxes on a base of their own
   (Michigan's cities, Philadelphia's).
 - Connecticut's 25% cap on taxed Social Security, and its personal tax

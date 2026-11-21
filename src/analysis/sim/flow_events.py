@@ -24,8 +24,9 @@ from analysis.sim.connection import (
 )
 
 __all__ = [
-    "FlowSide", "INCOME_REPORT_CATEGORIES", "SPENDING_BASELINE", "UNTAGGED", "event_groups",
-    "flow_events", "group_order", "is_cash", "shortfall_events", "spending_by_month", "uses_spending_strategies",
+    "FlowSide", "INCOME_REPORT_CATEGORIES", "RULE_REASONS", "SPENDING_BASELINE", "UNTAGGED",
+    "event_groups", "event_tags", "flow_account", "flow_events", "group_order", "is_cash",
+    "shortfall_events", "spending_by_month", "uses_spending_strategies",
 ]
 
 SPENDING_BASELINE = "spending_baseline"
@@ -42,7 +43,7 @@ came in."""
 UNTAGGED = "(untagged)"
 """The group of an event with no tag in the ``--by tag:ROLE`` role."""
 
-_RULE_REASONS = ("rule", "ytd_rule")
+RULE_REASONS = ("rule", "ytd_rule")
 """``transfer_event.reason_kind`` values whose ``reason_id`` is a scheduled rule."""
 
 
@@ -131,17 +132,36 @@ def event_groups(rc: RunConnection, events: pd.DataFrame, side: FlowSide, by: st
         return categories.mask(events["subkind"] == registries.BUSINESS_SUBKIND, "business")
     if by == "account":
         return events["account"]
-    role = by.removeprefix("tag:")
+    return event_tags(rc, events, by.removeprefix("tag:"), events["account"]).fillna(UNTAGGED)
+
+
+def flow_account(events: pd.DataFrame) -> pd.Series:
+    """The income or expense account each ``transfer_event`` row counts
+    against, as :func:`flow_events` picks it: the income account it is drawn
+    from, else the income or expense account it is paid into; None for a
+    move between balance accounts."""
+    drawn = events["from_name"].where(events["from_kind"] == "income")
+    paid = events["to_name"].where(events["to_kind"].isin(["income", "expense"]))
+    return drawn.fillna(paid).astype(object).where(drawn.notna() | paid.notna(), None)
+
+
+def event_tags(rc: RunConnection, events: pd.DataFrame, role: str, account: pd.Series) -> pd.Series:
+    """Each event's tag names in ``role``, joined with ``+``, or None.
+
+    A tag is looked up on the scheduled rule that posted the event, then on
+    ``account`` (its income or expense account), so a rule can refine its
+    account's tag. ``report --by tag:ROLE`` groups by this, and ``sim items
+    --tag`` filters by it."""
     accounts = rc.items("account").set_index("name")["tags"]
     rules = rc.items("scheduled").set_index("id")["tags"]
     rule_tag = pd.Series(
-        [_tag_names(rules.get(int(rid), ""), role) if kind in _RULE_REASONS and pd.notna(rid)
+        [_tag_names(rules.get(int(rid), ""), role) if kind in RULE_REASONS and pd.notna(rid)
          else None
          for kind, rid in zip(events["reason_kind"], events["reason_id"], strict=True)],
         index=events.index, dtype=object,
     )
-    account_tag = events["account"].map(lambda name: _tag_names(accounts.get(name, ""), role))
-    return rule_tag.fillna(account_tag).fillna(UNTAGGED)
+    account_tag = account.map(lambda name: _tag_names(accounts.get(name, ""), role) if name else None)
+    return rule_tag.fillna(account_tag)
 
 
 def group_order(side: FlowSide, by: str, totals: pd.Series) -> list[str]:

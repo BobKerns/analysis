@@ -13,7 +13,7 @@ what each account holds, so they stop typing numbers into the plan. They \
 export two reports and two downloads, tell the simulator once which of their \
 accounts, lots and categories each outside name means, and from then on an \
 import is one command. Guide: \
-https://github.com/BobKerns/analysis/blob/main/docs/guides/importing-data.md"""
+https://github.com/BobKerns/zabob-retirement/blob/main/docs/guides/importing-data.md"""
 contents = [
   "Match each name once",
   "Exporting the reports and downloads",
@@ -180,9 +180,13 @@ Sleep 9s
 Type "Asset_Checking"
 Sleep 600ms
 Enter
+Sleep 1s
+Enter
 Sleep 2s
 Type "Asset_Savings"
 Sleep 600ms
+Enter
+Sleep 1s
 Enter
 Sleep 3s
 Type "skip"
@@ -191,6 +195,8 @@ Enter
 Sleep 4s
 Type "Asset_TraditionalIRA_Alice"
 Sleep 600ms
+Enter
+Sleep 1s
 Enter
 Sleep 2s
 Type "skip"
@@ -215,7 +221,8 @@ Sleep 20s
 
 Sim import holdings reads the net worth report. It hasn't seen any of
 these names before, so it asks about each, and lists the plan's accounts
-to choose from. Joint Checking is asset checking. Online Savings is asset
+to choose from, and then which lot of the account; Enter takes its one
+lot. Joint Checking is asset checking. Online Savings is asset
 savings. The brokerage is different. Quicken's report has one number for
 it, and the plan keeps it as two lots, stocks and bonds. The brokerage's
 own download lists each fund, so Alice answers skip here, and imports that

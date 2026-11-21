@@ -21,6 +21,7 @@ from click.testing import CliRunner, Result
 from analysis.cli import main
 from analysis.expenses.baseline import Occasional
 from analysis.sim import cli
+from analysis.sim.imports import holdings as import_holdings
 from analysis.sim.imports import ofx as import_ofx
 from analysis.sim.imports import sources as import_sources
 from analysis.sim.imports import mapping as import_mapping
@@ -172,7 +173,7 @@ def test_sim_import_holdings_asks_for_unmapped_accounts_and_saves_the_answers(
         "Asset_Brokerage_Joint,,map,Asset_Brokerage_Joint,,\n")
     # In the file's order: the IRA, then the mortgage; a name that isn't a
     # choice is asked for again.
-    answers = "nope\nAsset_TraditionalIRA_Alice\nskip\n"
+    answers = "nope\nAsset_TraditionalIRA_Alice\n\nskip\n"
 
     dry = _import(test_data_dir, "holdings", str(quicken_net_worth_export), "--dry-run",
                   input=answers)
@@ -216,7 +217,7 @@ def test_sim_import_holdings_keeps_a_saved_mapping_another_scenario_may_use(
 
     # The answer is used, and the shared row is left as it was: N to replacing it.
     result = _import(test_data_dir, "holdings", str(quicken_net_worth_export),
-                     input="Asset_Brokerage_Joint\nn\n")
+                     input="Asset_Brokerage_Joint\n\nn\n")
     assert result.exit_code == 0, result.output
     assert "is mapped to Asset_Brokerage, which retire_alice doesn't have" in result.output
     assert "saved mappings" not in result.output
@@ -225,7 +226,7 @@ def test_sim_import_holdings_keeps_a_saved_mapping_another_scenario_may_use(
 
     # Y replaces it for every scenario.
     result = _import(test_data_dir, "holdings", str(quicken_net_worth_export),
-                     input="Asset_Brokerage_Joint\ny\n")
+                     input="Asset_Brokerage_Joint\n\ny\n")
     assert result.exit_code == 0, result.output
     assert "Asset_Brokerage_Joint,,map,Asset_Brokerage_Joint,," in \
         quicken_account_map.read_text(encoding="utf-8")
@@ -760,6 +761,15 @@ def test_sim_import_transactions_needs_a_category_map(
     assert result.exit_code != 0
     assert "category map not found" in result.output
     assert "imports/quicken/categories.csv" in result.output
+    assert "--summary shows the file's categories" in result.output
+
+    # A look needs none: the file's own categories are shown.
+    looked = _transactions(test_data_dir, quicken_transaction_export, "--summary")
+    assert looked.exit_code == 0, looked.output
+    assert "note: no category map yet" in looked.output
+    assert "Groceries" in looked.output and "Coffee Shops" in looked.output
+    assert "put in Other" not in looked.output
+    assert not (test_data_dir / "imports" / "quicken" / "categories.csv").exists()
 
 
 @pytest.mark.usefixtures("quicken_category_map")
@@ -957,7 +967,9 @@ def test_sim_import_holdings_adds_an_account_named_at_the_mapping_question(
         "quicken/accounts.csv",
         "Asset_Checking,,map,Asset_Checking,,\nAsset_Brokerage_Joint,,skip,,,\nLiability_Mortgage,,skip,,,\n")
     # The outside IRA is a new savings account here: its name, yes, then what `sim account add` asks.
-    answers = "Asset_Savings_New\ny\nasset\ncash\njoint\n"
+    # Its lot is named as it is made, so it needn't be renamed when the account has two.
+    # A name a lot can't have is asked again, before the account is written.
+    answers = "Asset_Savings_New\ny\nasset\ncash\njoint\nmy:savings\nsavings\n"
 
     result = _import(test_data_dir, "holdings", str(quicken_net_worth_export), input=answers)
 
@@ -968,8 +980,11 @@ def test_sim_import_holdings_adds_an_account_named_at_the_mapping_question(
     with retire_alice_csv("accounts.csv").open(newline="", encoding="utf-8") as f:
         added = next(row for row in csv.DictReader(f) if row["name"] == "Asset_Savings_New")
     assert (added["kind"], added["subkind"], added["owner"]) == ("asset", "cash", "joint")
-    assert _lots(test_data_dir)["Asset_Savings_New"]["opening_balance"] == "510000.00"
-    assert "Asset_TraditionalIRA_Alice,,map,Asset_Savings_New,," in saved.read_text(encoding="utf-8")
+    assert "name of Asset_Savings_New's lot (a name of your own, such as checking) [default]:" in result.output
+    assert "a lot label may not contain ':'" in result.output
+    lot = _lots(test_data_dir)["Asset_Savings_New"]
+    assert (lot["lot"], lot["opening_balance"]) == ("savings", "510000.00")
+    assert "Asset_TraditionalIRA_Alice,,map,Asset_Savings_New,savings," in saved.read_text(encoding="utf-8")
 
 
 @pytest.mark.usefixtures("at_a_terminal")
@@ -982,7 +997,8 @@ def test_sim_import_holdings_asks_again_for_a_slip_at_a_new_account_s_questions(
         "Asset_Checking,,map,Asset_Checking,,\nAsset_Brokerage_Joint,,skip,,,\nLiability_Mortgage,,skip,,,\n")
     # An expense account's name can't take the balance or be added; then a
     # new name, with a slip at its subkind and one at its owner.
-    answers = "Expense_Living\nAsset_Savings_New\ny\nasset\nnothing\ncash\nnobody\njoint\n"
+    # Enter at the lot's name leaves it the default one, which the row needn't name.
+    answers = "Expense_Living\nAsset_Savings_New\ny\nasset\nnothing\ncash\nnobody\njoint\n\n"
 
     result = _import(test_data_dir, "holdings", str(quicken_net_worth_export), input=answers)
 
@@ -1430,7 +1446,7 @@ def test_a_rename_warns_when_a_mapping_file_does_not_read(
     assert result.exit_code == 0, result.output
     assert "warning: the saved import mappings still name Asset_Checking, not Asset_Bank" \
         in result.output
-    assert "action must be 'map' or 'skip'" in result.output
+    assert "action must be 'map', 'skip' or 'split'" in result.output
     assert saved.read_text(encoding="utf-8") == before
     assert "Asset_Bank" in _lots(test_data_dir)
 
@@ -1652,6 +1668,117 @@ def test_sim_import_holdings_asks_which_account_a_file_without_its_number_is(
     assert "One you have imported (Bill Roth)" in result.output
     assert "from the file's name" not in result.output
     assert _all_lots(test_data_dir)["Asset_Roth_Bill", "vtsax"]["opening_balance"] == "400000.00"
+
+
+def test_sim_import_holdings_asks_whose_a_quicken_portfolio_report_is(
+    test_data_dir: Path, quicken_portfolio_report: Path, quicken_account_map: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    refused = _import(test_data_dir, "holdings", str(quicken_portfolio_report), "--new-lots")
+    assert refused.exit_code != 0
+    assert "doesn't say which account it is (a portfolio report names none)" in refused.output
+
+    monkeypatch.setattr(cli, "_interactive", lambda: True)
+    result = _import(test_data_dir, "holdings", str(quicken_portfolio_report), "--new-lots",
+                     input="Asset_Brokerage_Joint\n\n")
+    assert result.exit_code == 0, result.output
+    # The accounts of the net worth report are offered: the report's own is one of them.
+    assert "portfolio.csv doesn't say which quicken account it is; it holds (cash), VTSAX, ACME, " \
+        "Stable Value Trust." in result.output
+    assert "One you have imported (Asset_Checking, Asset_Brokerage_Joint," in result.output
+    assert "those of 2026-08-18 are used, the nearest to 2026-05-01 (not 2025-12-31)" in result.output
+    lots = _all_lots(test_data_dir)
+    assert lots["Asset_Brokerage_Joint", "vtsax"]["opening_balance"] == "300000.00"
+    assert lots["Asset_Brokerage_Joint", "vtsax"]["opening_cost_basis"] == "210000.00"
+    assert lots["Asset_Brokerage_Joint", "cash"]["opening_balance"] == "2500.00"
+    assert ("Asset_Brokerage_Joint", "vbtlx") not in lots     # sold before the date used
+
+    named = _import(test_data_dir, "holdings", str(quicken_portfolio_report), "--dry-run",
+                    "--outside-account", "Asset_Brokerage_Joint")
+    assert named.exit_code == 0, named.output
+
+
+def test_sim_import_holdings_makes_a_lot_of_each_quicken_tax_lot(
+    test_data_dir: Path, quicken_tax_lot_report: Path, quicken_account_map: Path,
+    add_account_value: Callable[..., None],
+) -> None:
+    # A lot of the fund with no date, from an import before the tax lots were listed.
+    add_account_value("Asset_Brokerage_Joint", lot="stock", symbol="VTSAX", opening_balance="1000.00")
+    args = ("holdings", str(quicken_tax_lot_report), "--new-lots", "--outside-account", "Asset_Brokerage_Joint")
+
+    result = _import(test_data_dir, *args)
+
+    assert result.exit_code == 0, result.output
+    lots = _all_lots(test_data_dir)
+    assert {lot: (row["acquired"], row["opening_balance"], row["opening_cost_basis"])
+            for (account, lot), row in lots.items() if row["symbol"] == "VTSAX"} == {
+        "vtsax-2019-03-15": ("2019-03-15", "195000.00", "120000.00"),
+        "vtsax-2022-06-01": ("2022-06-01", "93000.00", "80000.00"),
+        "vtsax-2026-02-10": ("2026-02-10", "12000.00", "10000.00"),
+        # The dated lots hold its total now.
+        "stock": ("", "0.00", ""),
+    }
+    assert lots["Asset_Brokerage_Joint", "acme"]["acquired"] == ""     # its line wasn't opened
+    assert not [lot for _, lot in lots if lot.startswith("vbtlx")]     # sold before the date used
+
+    again = _import(test_data_dir, *args)
+    assert again.exit_code == 0, again.output
+    assert "updated 0 lot(s)" in again.output and _all_lots(test_data_dir) == lots
+
+
+def test_sim_import_holdings_gives_what_the_tax_lots_leave_a_lot_with_no_date(
+    test_data_dir: Path, quicken_tax_lot_report: Path, quicken_account_map: Path, rewrite_download: Rewrite,
+) -> None:
+    # One of the fund's three purchases isn't listed: its share of the total has no date.
+    short = rewrite_download(quicken_tax_lot_report, lambda raw: b"".join(
+        line for line in raw.splitlines(keepends=True) if not line.startswith(b",6/1/2022")))
+    args = ("holdings", str(short), "--new-lots", "--outside-account", "Asset_Brokerage_Joint")
+
+    result = _import(test_data_dir, *args)
+
+    assert result.exit_code == 0, result.output
+    assert "skipped" not in result.output.split("updated")[0]
+    lots = _all_lots(test_data_dir)
+    assert {lot: (row["acquired"], row["opening_balance"], row["opening_cost_basis"])
+            for (account, lot), row in lots.items() if row["symbol"] == "VTSAX"} == {
+        "vtsax-2019-03-15": ("2019-03-15", "195000.00", "120000.00"),
+        "vtsax-2026-02-10": ("2026-02-10", "12000.00", "10000.00"),
+        "vtsax": ("", "93000.00", "80000.00"),
+    }
+    again = _import(test_data_dir, *args)
+    assert again.exit_code == 0 and _all_lots(test_data_dir) == lots, again.output
+
+
+def test_sim_import_holdings_asks_whether_each_tax_lot_gets_a_lot(
+    test_data_dir: Path, quicken_tax_lot_report: Path, quicken_account_map: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(cli, "_interactive", lambda: True)
+    original = (test_data_dir / "scenarios" / "retire_alice" / "account_lots.csv").read_text(encoding="utf-8")
+
+    # Enter takes the name the report was saved under as the outside account's.
+    result = _import(test_data_dir, "holdings", str(quicken_tax_lot_report),
+                     input="\nAsset_Brokerage_Joint\n\n\n\n\n")
+
+    assert result.exit_code == 0, result.output
+    assert "quicken account [Joint Brokerage]:" in result.output
+    assert "the quicken file lists 2 holding(s) in it: VTSAX, ACME." in result.output
+    assert "lists VTSAX in Asset_Brokerage_Joint by tax lot: 3 with no lot here yet, " \
+        "acquired 2019-03-15 to 2026-02-10." in result.output
+    assert result.output.count("A lot for each tax lot of VTSAX?") == 1
+    lots = _all_lots(test_data_dir)
+    assert lots["Asset_Brokerage_Joint", "vtsax-2022-06-01"]["acquired"] == "2022-06-01"
+    assert "Joint Brokerage,,map,Asset_Brokerage_Joint,," in _saved(test_data_dir, "quicken")
+
+    # A no gathers them into one lot, named in the mapping so each finds it.
+    (test_data_dir / "scenarios" / "retire_alice" / "account_lots.csv").write_text(original, encoding="utf-8")
+    one = _import(test_data_dir, "holdings", str(quicken_tax_lot_report),
+                  input="\n\n\nn\nfunds\n\n")
+    assert one.exit_code == 0, one.output
+    assert "has no lot of 'Joint Brokerage / VTSAX' (Total Stock Fund), 300000.00." in one.output
+    fund = _all_lots(test_data_dir)["Asset_Brokerage_Joint", "funds"]
+    assert (fund["acquired"], fund["opening_balance"], fund["opening_cost_basis"]) == ("", "300000.00", "210000.00")
+    assert "Joint Brokerage,VTSAX,map,Asset_Brokerage_Joint,funds," in _saved(test_data_dir, "quicken")
 
 
 def test_sim_import_holdings_offers_a_share_count_from_a_stored_price(
@@ -3249,6 +3376,350 @@ def test_sim_import_holdings_sets_a_balance_from_an_ofx_statement(
     assert card.exit_code != 0 and "Example Card card ...1007" in card.output
 
 
+@pytest.mark.usefixtures("at_a_terminal")
+def test_sim_import_holdings_asks_which_lot_a_bank_balance_goes_into_and_adds_a_new_one(
+    test_data_dir: Path, ofx_bank_download: Path, ofx_bank_like_accounts_download: Path,
+) -> None:
+    # Enter takes the account's one lot, and the row names none, as before there was a question.
+    one = _import(test_data_dir, "holdings", str(ofx_bank_download), "--dry-run", input="Asset_Checking\n\n")
+    assert one.exit_code == 0, one.output
+    assert "lots: default; a new name adds a lot to Asset_Checking" in one.output
+    assert "lot of Asset_Checking [default]:" in one.output
+
+    # A bank's checking and savings as two lots of one account, beside what
+    # its one lot `default` holds: each new name is asked about (a slip
+    # isn't a lot), then added with the balance.
+    result = _import(test_data_dir, "holdings", str(ofx_bank_like_accounts_download),
+                     input="Asset_Checking\nchecking\nadd\nAsset_Checking\nsaving\nn\nsavings\ny\n")
+    assert result.exit_code == 0, result.output
+    assert "Asset_Checking has one lot, 'default', with a balance of 5000.00." in result.output
+    assert "Add lot saving to Asset_Checking? [y/N]" in result.output
+    with (test_data_dir / "scenarios" / "retire_alice" / "account_lots.csv").open(encoding="utf-8") as f:
+        lots = {row["lot"]: row["opening_balance"] for row in csv.DictReader(f)
+                if row["account_name"] == "Asset_Checking"}
+    assert lots["checking"] == lots["savings"] == "4321.09" and "saving" not in lots
+    assert _saved(test_data_dir, "ofx") == [
+        "First Example Bank checking ...4321,,map,Asset_Checking,checking,",
+        "First Example Bank savings ...4321,,map,Asset_Checking,savings,"]
+
+
+@pytest.mark.usefixtures("at_a_terminal")
+def test_sim_import_holdings_names_the_one_lot_in_its_row_when_the_account_gets_a_second(
+    test_data_dir: Path, ofx_bank_like_accounts_download: Path,
+) -> None:
+    # Checking takes the account's one lot with Enter, so its row names none;
+    # savings then adds a second lot, and the first row would mean neither.
+    result = _import(test_data_dir, "holdings", str(ofx_bank_like_accounts_download),
+                     input="Asset_Checking\n\nAsset_Checking\nsavings\ny\n")
+    assert result.exit_code == 0, result.output
+    assert "names none, so it was skipped" not in result.output
+    lots = _all_lots(test_data_dir)
+    assert lots["Asset_Checking", ""]["opening_balance"] == "4321.09"     # `default`, written blank
+    assert lots["Asset_Checking", "savings"]["opening_balance"] == "4321.09"
+    assert _saved(test_data_dir, "ofx") == [
+        "First Example Bank checking ...4321,,map,Asset_Checking,default,",
+        "First Example Bank savings ...4321,,map,Asset_Checking,savings,"]
+
+
+def test_sim_import_holdings_leaves_other_files_rows_in_the_shared_map_as_they_are(
+    test_data_dir: Path, ofx_bank_like_accounts_download: Path, write_import_map: MapWriter,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(cli, "_interactive", lambda: True)
+    # A row for an account this file doesn't have: another scenario's one
+    # lot may have another name, so the saved map keeps it naming none.
+    write_import_map("ofx/accounts.csv", "Elsewhere Bank checking ...9999,,map,Asset_Checking,,\n")
+    result = _import(test_data_dir, "holdings", str(ofx_bank_like_accounts_download),
+                     input="Asset_Checking\n\nAsset_Checking\nsavings\ny\n")
+    assert result.exit_code == 0, result.output
+    assert _saved(test_data_dir, "ofx") == [
+        "Elsewhere Bank checking ...9999,,map,Asset_Checking,,",
+        "First Example Bank checking ...4321,,map,Asset_Checking,default,",
+        "First Example Bank savings ...4321,,map,Asset_Checking,savings,"]
+
+
+def _lot_references(data: Path, account: str) -> set[str]:
+    """The lots of ``account`` that retire_alice's rules pay from or into."""
+    with (data / "scenarios" / "retire_alice" / "scheduled.csv").open(newline="", encoding="utf-8") as f:
+        rows = list(csv.DictReader(f))
+    return {row[f"{side}_lot"] for row in rows for side in ("from", "to") if row[f"{side}_account"] == account}
+
+
+@pytest.mark.usefixtures("at_a_terminal")
+def test_sim_import_holdings_renames_the_default_lot_a_named_balance_is(
+    test_data_dir: Path, ofx_bank_download: Path, write_import_map: MapWriter,
+) -> None:
+    # Another institution's row that names the lot by its old name.
+    write_import_map("ofx/accounts.csv", "Elsewhere Bank checking ...9999,,map,Asset_Checking,default,\n")
+    before = _all_lots(test_data_dir)
+
+    # A dry run says what it would do, and writes nothing.
+    dry = _import(test_data_dir, "holdings", str(ofx_bank_download), "--dry-run",
+                  input="Asset_Checking\nmain\nrename\n")
+    assert dry.exit_code == 0, dry.output
+    assert "(dry run) lot default of Asset_Checking would be renamed main" in dry.output
+    assert _all_lots(test_data_dir) == before and _lot_references(test_data_dir, "Asset_Checking") == {""}
+
+    # `back` asks for the lot again, and Enter then takes the one there is.
+    back = _import(test_data_dir, "holdings", str(ofx_bank_download), "--dry-run",
+                   input="Asset_Checking\nmain\nback\n\n")
+    assert back.exit_code == 0, back.output
+    assert "would be renamed" not in back.output
+
+    result = _import(test_data_dir, "holdings", str(ofx_bank_download), input="Asset_Checking\nmain\nrename\n")
+    assert result.exit_code == 0, result.output
+    assert "Asset_Checking has one lot, 'default', with a balance of 5000.00." in result.output
+    assert "Add lot" not in result.output
+    lots = {lot: row for (account, lot), row in _all_lots(test_data_dir).items() if account == "Asset_Checking"}
+    # One lot still, under its new name, with the file's balance and what it had beside it.
+    assert list(lots) == ["main"]
+    assert lots["main"]["opening_balance"] == "4321.09"
+    assert lots["main"]["minimum_balance"] == before["Asset_Checking", ""]["minimum_balance"] == "2000.00"
+    # The rules that named the lot follow, and so does the other institution's row.
+    assert _lot_references(test_data_dir, "Asset_Checking") == {"main"}
+    assert _saved(test_data_dir, "ofx") == [
+        "Elsewhere Bank checking ...9999,,map,Asset_Checking,main,",
+        "First Example Bank checking ...4321,,map,Asset_Checking,main,"]
+
+    # The next import has nothing to ask.
+    again = _import(test_data_dir, "holdings", str(ofx_bank_download))
+    assert again.exit_code == 0, again.output
+    assert "0 lot(s)" in again.output
+
+
+@pytest.mark.usefixtures("at_a_terminal")
+def test_sim_import_holdings_keeps_a_rename_in_the_splits_it_then_saves(
+    test_data_dir: Path, ofx_bank_like_accounts_download: Path, write_import_map: MapWriter,
+) -> None:
+    # Another institution's number is divided among Asset_Checking's lots, by the lot's old name.
+    write_import_map("ofx/accounts.csv", "Elsewhere Bank checking ...9999,,split,Asset_Checking,,\n")
+    split = write_import_map("ofx/lot_splits.csv", "Elsewhere Bank checking ...9999,,default,,\n")
+    # One run renames that lot, and then asks for a split of its own, which writes the file whole.
+    result = _import(test_data_dir, "holdings", str(ofx_bank_like_accounts_download),
+                     input="Asset_Checking\nmain\nrename\nAsset_Savings\nsplit\ndefault\nrest\n\n")
+    assert result.exit_code == 0, result.output
+    assert split.read_text(encoding="utf-8").splitlines()[1:] == [
+        "Elsewhere Bank checking ...9999,,main,,", "First Example Bank savings ...4321,,default,,"]
+    assert _all_lots(test_data_dir)["Asset_Savings", ""]["opening_balance"] == "4321.09"
+
+
+def test_sim_import_holdings_divides_one_number_among_lots_and_keeps_the_split(
+    test_data_dir: Path, ofx_bank_download: Path, rewrite_download: Rewrite, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(cli, "_interactive", lambda: True)
+    # 1000.00 stays in the one lot there is; a new lot takes the rest. A
+    # lot named twice, and more than is left, are asked for again.
+    answers = "Asset_Checking\nsplit\ndefault\n-500\n1000\ndefault\ncd\ny\n9000\nrest\n\n"
+    dry = _import(test_data_dir, "holdings", str(ofx_bank_download), "--dry-run", input=answers)
+    assert dry.exit_code == 0, dry.output
+    assert "(dry run) the mappings you gave were not saved" in dry.output
+    assert not (test_data_dir / "imports").exists()
+
+    result = _import(test_data_dir, "holdings", str(ofx_bank_download), input=answers)
+    assert result.exit_code == 0, result.output
+    assert "lots: default; a new name adds a lot to Asset_Checking; 'split' divides this number among lots" \
+        in result.output
+    assert "Dividing 'First Example Bank checking ...4321', 4321.09, among lots of Asset_Checking." in result.output
+    assert "lot (3321.09 left)" in result.output
+    assert "default has its part already" in result.output
+    assert "that is more than the 3321.09 left" in result.output
+    # A part of the other sign would leave more to give out than the file has.
+    assert "a part of 4321.09 is between 0.00 and the 4321.09 left" in result.output
+    lots = _all_lots(test_data_dir)
+    assert lots["Asset_Checking", ""]["opening_balance"] == "1000.00"
+    assert lots["Asset_Checking", "cd"]["opening_balance"] == "3321.09"
+    assert _saved(test_data_dir, "ofx") == ["First Example Bank checking ...4321,,split,Asset_Checking,,"]
+    split = test_data_dir / "imports" / "ofx" / "lot_splits.csv"
+    assert split.read_text(encoding="utf-8").splitlines() == [
+        "outside_account,asset,lot,amount,cost_basis",
+        "First Example Bank checking ...4321,,default,1000.00,",
+        "First Example Bank checking ...4321,,cd,,",
+    ]
+
+    # Away from a terminal, a later file with another balance: the lot that takes the rest follows it.
+    monkeypatch.setattr(cli, "_interactive", lambda: False)
+    later = rewrite_download(ofx_bank_download, lambda raw: raw.replace(b"4321.09", b"5000.00"))
+    result = _import(test_data_dir, "holdings", str(later))
+    assert result.exit_code == 0, result.output
+    lots = _all_lots(test_data_dir)
+    assert lots["Asset_Checking", ""]["opening_balance"] == "1000.00"
+    assert lots["Asset_Checking", "cd"]["opening_balance"] == "4000.00"
+
+    # A split of fixed amounts fits one number only: it is refused, with both numbers.
+    split.write_text(split.read_text(encoding="utf-8").replace(",cd,,", ",cd,2000.00,"), encoding="utf-8")
+    refused = _import(test_data_dir, "holdings", str(later))
+    assert refused.exit_code != 0
+    assert "gives out 3000.00, and the file has 5000.00; run at a terminal to be asked" in refused.output
+    assert "one lot's amount may be blank, to take the rest" in refused.output
+
+    # At a terminal it is asked again, with the saved lots and amounts as the defaults.
+    monkeypatch.setattr(cli, "_interactive", lambda: True)
+    result = _import(test_data_dir, "holdings", str(later), input="\n\n\nrest\n\n")
+    assert result.exit_code == 0, result.output
+    assert "lot (5000.00 left) [default]:" in result.output
+    assert "amount for cd, or rest [2000.00]:" in result.output
+    assert split.read_text(encoding="utf-8").splitlines()[1:] == [
+        "First Example Bank checking ...4321,,default,1000.00,", "First Example Bank checking ...4321,,cd,,"]
+
+
+@pytest.mark.usefixtures("at_a_terminal")
+def test_sim_import_holdings_splits_a_brokerage_total_into_lots_with_a_symbol_and_a_basis(
+    test_data_dir: Path, quicken_net_worth_export: Path, write_import_map: MapWriter,
+) -> None:
+    write_import_map(
+        "quicken/accounts.csv",
+        "Asset_Checking,,skip,,,\nAsset_Brokerage_Joint,,split,Asset_Brokerage_Joint,,\n"
+        "Asset_TraditionalIRA_Alice,,skip,,,\nLiability_Mortgage,,skip,,,\n")
+    # What stays in `default`, with its basis; then a new lot of one fund,
+    # with the day it was bought (asked again when it isn't a day), for the rest.
+    # The fund isn't traded, so its symbol is its CUSIP: any name without a space is one.
+    answers = ("default\n100000\n80000\nplan\ny\n92290 8769\nfund:a\nabc/1\n92290876\nn\n922908769\ny\n"
+               "soon\n2020-03-02\nrest\n150000\n\n")
+    result = _import(test_data_dir, "holdings", str(quicken_net_worth_export), input=answers)
+    assert result.exit_code == 0, result.output
+    assert "date must be YYYY-MM-DD: 'soon'" in result.output
+    lots = _all_lots(test_data_dir)
+    # A symbol names a prices file, as for every command that writes one.
+    for refused in ("92290 8769", "FUND:A", "ABC/1"):
+        assert f"symbol {refused!r} must be one word" in result.output
+    assert "--never-fetch" in result.output
+    # Not a ticker: asked about, since it may be a slip (one digit short, declined), and taken on a yes.
+    assert "92290876 doesn't look like a ticker, and isn't a symbol the plan knows." in result.output
+    # Nothing can fetch a price for it, so it is marked.
+    assert "922908769: marked no_fetch in securities.csv" in result.output
+    with (test_data_dir / "securities.csv").open(newline="", encoding="utf-8") as f:
+        assert {row["symbol"]: row["no_fetch"] for row in csv.DictReader(f) if row["no_fetch"] == "1"} == {
+            "922908769": "1"}
+    kept, new = lots["Asset_Brokerage_Joint", "default"], lots["Asset_Brokerage_Joint", "plan"]
+    assert (kept["opening_balance"], kept["opening_cost_basis"]) == ("100000.00", "80000.00")
+    assert (new["symbol"], new["acquired"], new["quantity"]) == ("922908769", "2020-03-02", "")
+    assert (new["opening_balance"], new["opening_cost_basis"]) == ("210000.00", "150000.00")
+    assert (test_data_dir / "imports" / "quicken" / "lot_splits.csv").read_text(encoding="utf-8").splitlines()[1:] == [
+        "Asset_Brokerage_Joint,,default,100000.00,80000.00", "Asset_Brokerage_Joint,,plan,,150000.00"]
+
+    # A lot renamed afterwards is followed in the split.
+    renamed = CliRunner().invoke(main, [
+        "sim", "account", "lot", "rename", "Asset_Brokerage_Joint", "plan", "index",
+        "--scenario", "retire_alice", "--data-dir", str(test_data_dir)])
+    assert renamed.exit_code == 0, renamed.output
+    assert "imports/quicken/lot_splits.csv" in renamed.output
+    again = _import(test_data_dir, "holdings", str(quicken_net_worth_export))
+    assert again.exit_code == 0, again.output
+    assert "0 lot(s)" in again.output
+
+
+def test_sim_import_says_a_file_that_is_not_text_is_no_exported_report(
+    test_data_dir: Path, quicken_transaction_export: Path, rewrite_download: Rewrite,
+) -> None:
+    # A program's own data file, given where a report was meant, under each named source.
+    binary = rewrite_download(quicken_transaction_export, lambda _: b"\xbc\x01\x00\xfe data", name="family.qxf")
+    for command in ("transactions", "holdings", "budget"):
+        result = _import(test_data_dir, command, str(binary), "--source", "quicken", "--from", "Asset_Checking")
+        if command == "holdings":
+            result = _import(test_data_dir, command, str(binary), "--source", "quicken")
+        assert result.exit_code != 0, result.output
+        assert "codec" not in result.output
+        assert f"{binary} isn't a text file, so it isn't a report exported as CSV" in result.output
+        assert "'sim import sources' lists what each source reads" in result.output
+
+
+def _downloaded_in_june(raw: bytes) -> bytes:
+    """``ofx_bank_download`` as made on June 15 with everything since
+    January 1: the move to savings in May, a purchase in June, and a bill
+    paid after the balance's date."""
+    return (raw.replace(b"<DTEND>20260228", b"<DTEND>20260630")
+            .replace(b"<DTASOF>20260228", b"<DTASOF>20260615")
+            .replace(b"<DTPOSTED>20260205", b"<DTPOSTED>20260510")
+            .replace(b"<DTPOSTED>20260220", b"<DTPOSTED>20260605")
+            .replace(b"<DTPOSTED>20260201", b"<DTPOSTED>20260620"))
+
+
+def test_sim_import_holdings_works_an_ofx_balance_back_to_the_scenario_s_start(
+    test_data_dir: Path, ofx_bank_download: Path, write_import_map: MapWriter, rewrite_download: Rewrite,
+) -> None:
+    write_import_map("ofx/accounts.csv", "First Example Bank checking ...4321,,map,Asset_Checking,,\n")
+    # The scenario starts in May: 1000.00 and 200.00 have left the account since.
+    result = _import(test_data_dir, "holdings", str(rewrite_download(ofx_bank_download, _downloaded_in_june)))
+
+    assert result.exit_code == 0, result.output
+    assert "ofx snapshot as of 2026-06-15" in result.output
+    assert ("note: First Example Bank checking ...4321: its balance of 4321.09 as of 2026-06-15 is worked "
+            "back to 2026-05-01: what was posted from that day comes to -1200.00, so it opened the day with "
+            "5521.09") in result.output
+    assert "warning: the file is as of" not in result.output
+    assert _lots(test_data_dir)["Asset_Checking"]["opening_balance"] == "5521.09"
+
+    # A download that starts after the scenario does can't say what it opened with.
+    short = rewrite_download(ofx_bank_download, lambda raw: _downloaded_in_june(raw).replace(
+        b"<DTSTART>20260101", b"<DTSTART>20260515"), name="short.qfx")
+    result = _import(test_data_dir, "holdings", str(short))
+    assert result.exit_code == 0, result.output
+    assert ("note: First Example Bank checking ...4321: the file's transactions are those of 2026-05-15 to "
+            "2026-06-30, so its balance can't be worked back to 2026-05-01; a download of every day from "
+            "2026-05-01 to the day it is made can be") in result.output
+    assert "warning: the file is as of 2026-06-15, and its balances are being set as of 2026-05-01" in result.output
+    assert _lots(test_data_dir)["Asset_Checking"]["opening_balance"] == "4321.09"
+
+
+def test_holdings_are_worked_back_only_where_the_file_accounts_for_the_days_between(
+    ofx_bank_download: Path, ofx_card_download: Path, ofx_brokerage_download: Path, rewrite_download: Rewrite,
+) -> None:
+    june = import_ofx.read_holdings(rewrite_download(ofx_bank_download, _downloaded_in_june))
+    account = "First Example Bank checking ...4321"
+
+    # Last year's end is the balance before January 1: everything up to the
+    # balance's date comes off, and what was posted after it doesn't.
+    year_end, back, _ = import_holdings.at(june, date(2026, 1, 1))
+    assert [each.value_cents for each in year_end.holdings] == [432109 - 325000]
+    assert back == {account} and year_end.as_of == date(2026, 1, 1)
+
+    # A file older than the day wanted, or one that ends before its balance's date, says nothing of it.
+    assert import_holdings.at(june, date(2026, 7, 1)) == (june, frozenset(), ())
+    ended = import_ofx.read_holdings(rewrite_download(ofx_bank_download, lambda raw: _downloaded_in_june(raw).replace(
+        b"<DTEND>20260630", b"<DTEND>20260601"), name="ended.qfx"))
+    unchanged, back, notes = import_holdings.at(ended, date(2026, 5, 1))
+    assert unchanged == ended and not back and "2026-01-01 to 2026-06-01" in notes[0]
+
+    # A correction may be of a transaction in another file, so the amounts don't add up to the change.
+    corrected = rewrite_download(ofx_bank_download, lambda raw: raw.replace(
+        b"<FITID>B0006", b"<FITID>B0007\n<CORRECTFITID>B0006\n<CORRECTACTION>REPLACE"), name="corrected.qfx")
+    refused = import_ofx.read_holdings(corrected)
+    assert not refused.activity
+    # Never silently: a balance wanted as of an earlier day says why it is the file's day's.
+    assert import_holdings.at(refused, date(2026, 1, 1)) == (refused, frozenset(), (
+        f"{account}: its balance can't be worked back to 2026-01-01: the file has a correction of a "
+        "transaction, so its amounts don't add up to the change",))
+    undated = import_ofx.read_holdings(rewrite_download(ofx_bank_download, lambda raw: raw.replace(
+        b"<DTSTART>20260101\n<DTEND>20260228\n", b""), name="undated.qfx"))
+    assert "no DTSTART and DTEND" in import_holdings.at(undated, date(2026, 1, 1))[2][0]
+    # What a card owes written above zero has the other sign from its transactions.
+    assert import_ofx.read_holdings(ofx_card_download).activity
+    positive = rewrite_download(ofx_card_download, lambda raw: raw.replace(b"-250.00", b"310.00"))
+    owed = import_ofx.read_holdings(positive)
+    assert not owed.activity and "above zero" in import_holdings.at(owed, date(2026, 2, 1))[2][0]
+    # Nor can a card's signs be relied on where a charge is written above zero: a
+    # balance of zero or less doesn't show which way the issuer writes what is owed.
+    flipped = import_ofx.read_holdings(rewrite_download(ofx_card_download, lambda raw: raw.replace(
+        b"<TRNAMT>-80.00", b"<TRNAMT>80.00", 1).replace(b"<TRNTYPE>DEBIT", b"<TRNTYPE>XX").replace(
+        b"<TRNTYPE>CREDIT", b"<TRNTYPE>DEBIT").replace(b"<TRNTYPE>XX", b"<TRNTYPE>DEBIT")))
+    assert not flipped.activity
+    assert "writes the card's charges above zero" in import_holdings.at(flipped, date(2026, 2, 1))[2][0]
+    # A transaction that can't be read costs the working back, not the balance.
+    garbled = import_ofx.read_holdings(rewrite_download(ofx_bank_download, lambda raw: raw.replace(
+        b"<TRNAMT>-400.00", b"<TRNAMT>-400.005")))
+    assert [each.value_cents for each in garbled.holdings] == [432109] and not garbled.activity
+    assert "one of its transactions can't be read (" in import_holdings.at(garbled, date(2026, 1, 1))[2][0]
+    # Positions on an earlier day can't be had from a brokerage's file.
+    brokerage = import_ofx.read_holdings(ofx_brokerage_download)
+    assert not brokerage.activity
+
+    # With a holding that isn't worked back, the snapshot is still of the file's day.
+    mixed = dataclasses.replace(june, holdings=(*june.holdings, *brokerage.holdings))
+    partly, back, _ = import_holdings.at(mixed, date(2026, 5, 1))
+    assert back == {account} and partly.as_of == date(2026, 6, 15)
+    assert partly.holdings[0].value_cents == 552109 and partly.holdings[1:] == brokerage.holdings
+
+
 def test_sim_import_holdings_reads_an_ofx_brokerage_s_positions_by_symbol(
     test_data_dir: Path, ofx_brokerage_download: Path, rewrite_download: Rewrite, write_import_map: MapWriter,
 ) -> None:
@@ -3332,3 +3803,4 @@ def test_sim_import_holdings_gives_a_new_account_s_cash_a_lot_of_its_own(
     assert ("note: the ofx file has no cost basis for Asset_New_Brokerage's new lot(s) vtsax, vmfxx. A run stops "
             "at the first withdrawal from a taxable lot with none") in result.output
     assert _saved(test_data_dir, "ofx") == ["Example Brokerage investment ...5678,,map,Asset_New_Brokerage,,"]
+

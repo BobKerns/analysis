@@ -1,6 +1,8 @@
+![Zabob Retirement](../assets/brand/banner.jpg)
+
 # Instructional videos
 
-How the videos for [#366](https://github.com/BobKerns/analysis/issues/366) are
+How the videos for [#366](https://github.com/BobKerns/zabob-retirement/issues/366) are
 made. Everything a video needs is committed here as text: its script, the
 terminal sessions it records, its slides and the shared look. The pictures
 and sound are rebuilt from those, so a CLI change means re-running a build,
@@ -525,7 +527,7 @@ The description is put together from it and `youtube.toml`: the summary,
 the list, the chapters, the language's footer, a link to the video in each
 other language, and the previous and next videos (linked once they're
 up). The title is the language's `title` pattern, such as
-`Retirement Simulator: {number}—{title}`, where `{number}` is the folder's
+`Zabob Retirement: {number}—{title}`, where `{number}` is the folder's
 prefix.
 
 **A title must show whole.** YouTube cuts long titles off in lists, on

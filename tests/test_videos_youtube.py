@@ -45,7 +45,7 @@ def test_description_has_summary_list_chapters_footer_and_neighbors(videos_root:
     folder = _video(videos_root, "02-second", youtube_toml=YT, episode="Video 2", title="Second\\nhalf")
     _video(videos_root, "03-third", youtube_toml=YT, episode="Video 3", title="Third")
     meta = youtube.metadata(scripts.load(folder), [("title", 7.0), ("one", 65.0), ("two", 4.0), ("end", 30.0)])
-    assert meta.title == "Retirement Simulator: 02—Second half"
+    assert meta.title == "Zabob Retirement: 02—Second half"
     # The 7 s title card takes in the scene after it, and the 4 s one joins
     # the one before: two chapters, which YouTube wouldn't show, so none.
     assert meta.description == (
@@ -77,7 +77,7 @@ def test_translation_has_its_own_words_and_inherits_its_place(videos_root: Path)
     ja = scripts.load(folder, "ja")
     assert ja.meta["youtube"] == {"next": "", "summary": "内容。"}  # not the English title, tags or list
     meta = youtube.metadata(ja, _lengths(ja))
-    assert meta.title == "Retirement Simulator: 01—動画"
+    assert meta.title == "Zabob Retirement: 01—動画"
     assert "0:00 はじめに\n0:30 oneの場面" in meta.description
     assert "次回" not in meta.description  # next = "" in script.md: no next video
 
@@ -189,7 +189,7 @@ def test_dry_run_sends_and_writes_nothing(videos_root: Path, tmp_path: Path) -> 
                     worker=lambda *_: pytest.fail("sent"), log=lines.append)
     assert not (folder / youtube.PUBLISHED_FILE).exists()
     assert any("would upload 01-x.en.mp4 as private" in line for line in lines)
-    assert any("Retirement Simulator: 01—A video" in line for line in lines)
+    assert any("Zabob Retirement: 01—A video" in line for line in lines)
 
 
 def test_a_failed_step_after_the_upload_keeps_the_id(videos_root: Path, tmp_path: Path) -> None:
@@ -252,7 +252,7 @@ def test_build_writes_the_scene_lengths_and_the_description(videos_root: Path, r
     lengths = json.loads(youtube.scene_lengths_path(result.video).read_text())
     assert [sid for sid, _ in lengths] == ["title", "end"]
     assert result.description is not None
-    assert result.description.read_text().startswith("Retirement Simulator: 01—A video\n\nWhat it shows.")
+    assert result.description.read_text().startswith("Zabob Retirement: 01—A video\n\nWhat it shows.")
     # And publish finds that build.
     assert youtube.built(scripts.load(folder), tmp_path / "out").lengths == [tuple(x) for x in lengths]
 
@@ -277,5 +277,5 @@ def test_a_title_that_would_be_cut_off_is_refused(videos_root: Path) -> None:
     long = _video(videos_root, "01-x", youtube_toml=YT, title="A title long enough to be cut off")
     with pytest.raises(ScriptError, match="title_width of 50"):
         youtube.check(scripts.load(long))
-    # CJK characters count double: 25 for the prefix, 26 for 13 kana.
-    assert youtube.title_width("Retirement Simulator: 02—セットアップとインストール") == 51
+    # CJK characters count double: 21 for the prefix, 26 for 13 kana.
+    assert youtube.title_width("Zabob Retirement: 02—セットアップとインストール") == 47

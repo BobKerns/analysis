@@ -11,7 +11,7 @@ summary = """
 For Windows only. Not on Windows? Press Next to skip ahead to video 2. \
 Alice turns on WSL, the Linux built into Windows, and \
 gets the terminal that video 2 starts from. Setup guide: \
-https://github.com/BobKerns/analysis/blob/main/docs/SETUP.md#windows-set-up-wsl-first"""
+https://github.com/BobKerns/zabob-retirement/blob/main/docs/SETUP.md#windows-set-up-wsl-first"""
 contents = [
   "Why WSL",
   "Turning it on (wsl --install)",
@@ -270,7 +270,7 @@ save the chart as a picture file there, and say where to find it.
 ```tape
 Set FontSize 27
 Sleep 500ms
-Type "curl -fsSL https://raw.githubusercontent.com/BobKerns/analysis/main/scripts/install.sh | sh"
+Type "curl -fsSL https://raw.githubusercontent.com/BobKerns/zabob-retirement/main/scripts/install.sh | sh"
 Sleep 12s
 ```
 

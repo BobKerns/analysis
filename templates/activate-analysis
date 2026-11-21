@@ -2,39 +2,39 @@
 # See ADR-004 §4 for full semantics.
 
 if [ -n "${BASH_SOURCE-}" ]; then
-	_ANALYSIS_SELF="${BASH_SOURCE[0]}"
+    _ANALYSIS_SELF="${BASH_SOURCE[0]}"
 elif [ -n "${ZSH_VERSION-}" ]; then
-	# shellcheck disable=SC2296
-	_ANALYSIS_SELF="${(%):-%x}"
+    # shellcheck disable=SC2296
+    _ANALYSIS_SELF="${(%):-%x}"
 else
-	echo "activate-analysis: source from bash or zsh" >&2
-	# shellcheck disable=SC2317
-	return 1 2>/dev/null || exit 1
+    echo "activate-analysis: source from bash or zsh" >&2
+    # shellcheck disable=SC2317
+    return 1 2>/dev/null || exit 1
 fi
 
 _analysis_fail() {
-	echo "activate-analysis: $*" >&2
-	# shellcheck disable=SC2317
-	return 1 2>/dev/null || exit 1
+    echo "activate-analysis: $*" >&2
+    # shellcheck disable=SC2317
+    return 1 2>/dev/null || exit 1
 }
 
 _analysis_validate_repo_dir() {
-	[ -n "$1" ] || return 1
-	[ -d "$1" ] || return 1
-	[ -f "$1/pyproject.toml" ] || return 1
-	[ -f "$1/src/analysis/cli.py" ] || return 1
-	[ -f "$1/src/analysis/amazon/cli.py" ] || return 1
-	[ -f "$1/src/analysis/sim/cli.py" ] || return 1
-	return 0
+    [ -n "$1" ] || return 1
+    [ -d "$1" ] || return 1
+    [ -f "$1/pyproject.toml" ] || return 1
+    [ -f "$1/src/analysis/cli.py" ] || return 1
+    [ -f "$1/src/analysis/amazon/cli.py" ] || return 1
+    [ -f "$1/src/analysis/sim/cli.py" ] || return 1
+    return 0
 }
 
 _analysis_enable_completion() {
-	# Click completion env var differs by command name.
-	_analysis_shell_mode="$1"
-	eval "$(_ANALYSIS_COMPLETE=${_analysis_shell_mode} analysis)" 2>/dev/null || true
-	eval "$(_AMAZON_COMPLETE=${_analysis_shell_mode} amazon)" 2>/dev/null || true
-	eval "$(_SIM_COMPLETE=${_analysis_shell_mode} sim)" 2>/dev/null || true
-	unset _analysis_shell_mode
+    # Click completion env var differs by command name.
+    _analysis_shell_mode="$1"
+    eval "$(_ANALYSIS_COMPLETE=${_analysis_shell_mode} analysis)" 2>/dev/null || true
+    eval "$(_AMAZON_COMPLETE=${_analysis_shell_mode} amazon)" 2>/dev/null || true
+    eval "$(_SIM_COMPLETE=${_analysis_shell_mode} sim)" 2>/dev/null || true
+    unset _analysis_shell_mode
 }
 
 export ANALYSIS_DATA_DIR
@@ -42,45 +42,118 @@ ANALYSIS_DATA_DIR="$(cd "$(dirname "$_ANALYSIS_SELF")" && pwd)"
 export ANALYSIS_DATA_REPO_NAME="${ANALYSIS_DATA_REPO_NAME:-$(basename "$ANALYSIS_DATA_DIR")}"
 
 _ANALYSIS_POINTER_FILE="$ANALYSIS_DATA_DIR/.analysis"
-_ANALYSIS_REPO_CANDIDATE="${ANALYSIS_REPO_DIR-}"
+_ANALYSIS_REMEMBERED=""
+if [ -f "$_ANALYSIS_POINTER_FILE" ]; then
+    IFS= read -r _ANALYSIS_REMEMBERED < "$_ANALYSIS_POINTER_FILE"
+fi
 
-if [ -z "$_ANALYSIS_REPO_CANDIDATE" ] && [ -f "$_ANALYSIS_POINTER_FILE" ]; then
-	IFS= read -r _ANALYSIS_REPO_CANDIDATE < "$_ANALYSIS_POINTER_FILE"
+# The code checkout this was sourced through (<checkout>/data/shared/sim)
+# comes first (#654): several worktrees can link one data repo, and each
+# then gets its own code, whichever was activated last or made the data
+# repo. Then ANALYSIS_REPO_DIR, then the checkout remembered in .analysis.
+# The path is taken as it was typed, not from ANALYSIS_DATA_DIR: where the
+# shell follows links on cd (zsh's CHASE_LINKS, bash's set -P) that one is
+# the data repo's own folder, with no checkout around it.
+_ANALYSIS_REPO_CANDIDATE=""
+_ANALYSIS_THROUGH=""
+_ANALYSIS_TYPED="$(dirname "$_ANALYSIS_SELF")"
+case "$_ANALYSIS_TYPED" in
+    /*) ;;
+    *) _ANALYSIS_TYPED="$PWD/$_ANALYSIS_TYPED" ;;
+esac
+for _analysis_spelled in "$_ANALYSIS_TYPED" "$ANALYSIS_DATA_DIR"; do
+    case "$_analysis_spelled" in
+        */data/shared/sim)
+            if _analysis_validate_repo_dir "${_analysis_spelled%/data/shared/sim}"; then
+                _ANALYSIS_THROUGH="$(cd "${_analysis_spelled%/data/shared/sim}" && pwd)"
+                _ANALYSIS_REPO_CANDIDATE="$_ANALYSIS_THROUGH"
+                break
+            fi
+            ;;
+    esac
+done
+unset _analysis_spelled _ANALYSIS_TYPED
+if [ -z "$_ANALYSIS_REPO_CANDIDATE" ]; then
+    _ANALYSIS_REPO_CANDIDATE="${ANALYSIS_REPO_DIR-}"
+fi
+if [ -z "$_ANALYSIS_REPO_CANDIDATE" ]; then
+    _ANALYSIS_REPO_CANDIDATE="$_ANALYSIS_REMEMBERED"
 fi
 
 if ! _analysis_validate_repo_dir "$_ANALYSIS_REPO_CANDIDATE"; then
-	echo "activate-analysis: analysis program repo path not configured." >&2
-	printf "Enter ANALYSIS_REPO_DIR: " >&2
-	read -r _ANALYSIS_REPO_CANDIDATE
+    echo "activate-analysis: analysis program repo path not configured." >&2
+    printf "Enter ANALYSIS_REPO_DIR: " >&2
+    read -r _ANALYSIS_REPO_CANDIDATE
 fi
 
 if ! _analysis_validate_repo_dir "$_ANALYSIS_REPO_CANDIDATE"; then
-	_analysis_fail "invalid repo path: '$_ANALYSIS_REPO_CANDIDATE' (expected pyproject.toml and src/analysis/*/cli.py)"
+    _analysis_fail "invalid repo path: '$_ANALYSIS_REPO_CANDIDATE' (expected pyproject.toml and src/analysis/*/cli.py)"
 fi
 
 export ANALYSIS_REPO_DIR="$_ANALYSIS_REPO_CANDIDATE"
 
+# The two are compared as the folders they are, not as they are spelled:
+# `sim init` writes the path it finds itself at, this the one it was sourced
+# through, and under a linked folder those differ for one checkout.
+_analysis_same_dir() {
+    [ "$1" = "$2" ] && return 0
+    [ "$(cd "$1" 2>/dev/null && pwd -P)" = "$(cd "$2" 2>/dev/null && pwd -P)" ]
+}
+# .analysis names the one checkout the data repo is paired with: the
+# builder's hooks run that checkout's sim. Another worktree sourcing this
+# through its own data/shared uses its own code and leaves the pair alone.
+# The pair is written when .analysis names no checkout, or when this is
+# sourced by the data repo's own path with another checkout named
+# (ANALYSIS_REPO_DIR, or typed just now).
+_ANALYSIS_KEEP_POINTER=""
+if [ -n "$_ANALYSIS_REMEMBERED" ] && ! _analysis_same_dir "$_ANALYSIS_REMEMBERED" "$ANALYSIS_REPO_DIR"; then
+    # Said, since the wrong checkout's code is otherwise found out much
+    # later, by what it lacks.
+    if [ -n "$_ANALYSIS_THROUGH" ] && _analysis_validate_repo_dir "$_ANALYSIS_REMEMBERED"; then
+        _ANALYSIS_KEEP_POINTER=1
+        echo "activate-analysis: using the code in $ANALYSIS_REPO_DIR; the data repo stays paired with $_ANALYSIS_REMEMBERED (its background builds run there)" >&2
+    else
+        echo "activate-analysis: using the code in $ANALYSIS_REPO_DIR (it was $_ANALYSIS_REMEMBERED)" >&2
+    fi
+elif [ -n "$_ANALYSIS_REMEMBERED" ]; then
+    # The same checkout, however it is spelled: nothing to rewrite.
+    _ANALYSIS_KEEP_POINTER=1
+fi
+unset -f _analysis_same_dir
+# `sim init` copied this file from the code's templates/, where it changes.
+# Which of the two is the newer isn't known here: with several checkouts on
+# one data repo, an older one's would undo what a newer one brought.
+if [ -f "$ANALYSIS_REPO_DIR/templates/activate-analysis" ] && \
+    ! cmp -s "$_ANALYSIS_SELF" "$ANALYSIS_REPO_DIR/templates/activate-analysis"; then
+    echo "activate-analysis: this copy differs from $ANALYSIS_REPO_DIR/templates/activate-analysis." >&2
+    echo "  If that checkout has the newest code of those using this data repo, take its copy:" >&2
+    echo "  cp $ANALYSIS_REPO_DIR/templates/activate-analysis $ANALYSIS_DATA_DIR/" >&2
+fi
+
 # Persist pointer and ensure it is ignored by the data repo.
-printf '%s\n' "$ANALYSIS_REPO_DIR" > "$_ANALYSIS_POINTER_FILE" || \
-	_analysis_fail "unable to write $_ANALYSIS_POINTER_FILE"
+if [ -z "$_ANALYSIS_KEEP_POINTER" ]; then
+    printf '%s\n' "$ANALYSIS_REPO_DIR" > "$_ANALYSIS_POINTER_FILE" || \
+        _analysis_fail "unable to write $_ANALYSIS_POINTER_FILE"
+fi
+unset _ANALYSIS_KEEP_POINTER _ANALYSIS_THROUGH
 
 for _analysis_ignored in .analysis .current_scenario .analysis_user .retention.yaml; do
-	if [ ! -f "$ANALYSIS_DATA_DIR/.gitignore" ]; then
-		printf '%s\n' "$_analysis_ignored" > "$ANALYSIS_DATA_DIR/.gitignore" || \
-			_analysis_fail "unable to write $ANALYSIS_DATA_DIR/.gitignore"
-	elif ! grep -qxF "$_analysis_ignored" "$ANALYSIS_DATA_DIR/.gitignore"; then
-		printf '%s\n' "$_analysis_ignored" >> "$ANALYSIS_DATA_DIR/.gitignore" || \
-			_analysis_fail "unable to update $ANALYSIS_DATA_DIR/.gitignore"
-	fi
+    if [ ! -f "$ANALYSIS_DATA_DIR/.gitignore" ]; then
+        printf '%s\n' "$_analysis_ignored" > "$ANALYSIS_DATA_DIR/.gitignore" || \
+            _analysis_fail "unable to write $ANALYSIS_DATA_DIR/.gitignore"
+    elif ! grep -qxF "$_analysis_ignored" "$ANALYSIS_DATA_DIR/.gitignore"; then
+        printf '%s\n' "$_analysis_ignored" >> "$ANALYSIS_DATA_DIR/.gitignore" || \
+            _analysis_fail "unable to update $ANALYSIS_DATA_DIR/.gitignore"
+    fi
 done
 unset _analysis_ignored
 
 if [ ! -f "$ANALYSIS_REPO_DIR/.venv/bin/activate" ]; then
-	command -v uv >/dev/null 2>&1 || _analysis_fail "uv not found; install uv to bootstrap .venv"
-	(
-		cd "$ANALYSIS_REPO_DIR" || exit 1
-		uv sync --group dev
-	) || _analysis_fail "uv sync failed while creating $ANALYSIS_REPO_DIR/.venv"
+    command -v uv >/dev/null 2>&1 || _analysis_fail "uv not found; install uv to bootstrap .venv"
+    (
+        cd "$ANALYSIS_REPO_DIR" || exit 1
+        uv sync --group dev
+    ) || _analysis_fail "uv sync failed while creating $ANALYSIS_REPO_DIR/.venv"
 fi
 
 # Activate the project virtual environment.
@@ -88,39 +161,39 @@ fi
 . "$ANALYSIS_REPO_DIR/.venv/bin/activate" || _analysis_fail "failed to activate .venv"
 
 if [ -z "${ANALYSIS_USER-}" ] && [ -r "$ANALYSIS_DATA_DIR/.analysis_user" ]; then
-	IFS= read -r ANALYSIS_USER < "$ANALYSIS_DATA_DIR/.analysis_user"
+    IFS= read -r ANALYSIS_USER < "$ANALYSIS_DATA_DIR/.analysis_user"
 fi
 
 # A remembered or exported user that persons.csv no longer has is asked
 # again rather than failing, so a renamed person isn't a dead end.
 if [ -n "${ANALYSIS_USER-}" ] && \
-	! grep -qE "^${ANALYSIS_USER}," "$ANALYSIS_DATA_DIR/persons.csv" 2>/dev/null; then
-	echo "activate-analysis: '$ANALYSIS_USER' is not in $ANALYSIS_DATA_DIR/persons.csv" >&2
-	unset ANALYSIS_USER
+    ! grep -qE "^${ANALYSIS_USER}," "$ANALYSIS_DATA_DIR/persons.csv" 2>/dev/null; then
+    echo "activate-analysis: '$ANALYSIS_USER' is not in $ANALYSIS_DATA_DIR/persons.csv" >&2
+    unset ANALYSIS_USER
 fi
 
 if [ -z "${ANALYSIS_USER-}" ]; then
-	# The same prompt scripts/link-data.sh uses: pick a primary person by id
-	# or display name.
-	ANALYSIS_USER="$(python -m analysis.sim.choose_user "$ANALYSIS_DATA_DIR")" || {
-		unset ANALYSIS_USER
-		echo "activate-analysis: no ANALYSIS_USER chosen" >&2
-		# Stop sourcing here: _analysis_fail's return only leaves the function.
-		# shellcheck disable=SC2317
-		return 1 2>/dev/null || exit 1
-	}
+    # The same prompt scripts/link-data.sh uses: pick a primary person by id
+    # or display name.
+    ANALYSIS_USER="$(python -m analysis.sim.choose_user "$ANALYSIS_DATA_DIR")" || {
+        unset ANALYSIS_USER
+        echo "activate-analysis: no ANALYSIS_USER chosen" >&2
+        # Stop sourcing here: _analysis_fail's return only leaves the function.
+        # shellcheck disable=SC2317
+        return 1 2>/dev/null || exit 1
+    }
 fi
 export ANALYSIS_USER
 
 # Persist the ANALYSIS_USER for future sessions.
 printf '%s\n' "$ANALYSIS_USER" > "$ANALYSIS_DATA_DIR/.analysis_user" || \
-	_analysis_fail "unable to write $ANALYSIS_DATA_DIR/.analysis_user"
+    _analysis_fail "unable to write $ANALYSIS_DATA_DIR/.analysis_user"
 
 
 if [ -n "${ZSH_VERSION-}" ]; then
-	_analysis_enable_completion "zsh_source"
+    _analysis_enable_completion "zsh_source"
 elif [ -n "${BASH_VERSION-}" ]; then
-	_analysis_enable_completion "bash_source"
+    _analysis_enable_completion "bash_source"
 fi
 
 # Prompt segment, in the style of oh-my-zsh's git_prompt_info: PS1 holds a
@@ -129,52 +202,52 @@ fi
 # .current_scenario afresh each time, since any sim command naming a scenario
 # changes it; with no current scenario the segment leaves it out (#214).
 analysis_prompt_info() {
-	[ -n "${ANALYSIS_DATA_REPO_NAME-}" ] && [ -n "${ANALYSIS_USER-}" ] || return 0
-	_analysis_scenario=""
-	if [ -r "${ANALYSIS_DATA_DIR-}/.current_scenario" ]; then
-		IFS= read -r _analysis_scenario < "$ANALYSIS_DATA_DIR/.current_scenario"
-	fi
-	if [ -n "$_analysis_scenario" ]; then
-		printf '[analysis:%s:%s:%s] ' "$ANALYSIS_DATA_REPO_NAME" "$ANALYSIS_USER" "$_analysis_scenario"
-	else
-		printf '[analysis:%s:%s] ' "$ANALYSIS_DATA_REPO_NAME" "$ANALYSIS_USER"
-	fi
-	unset _analysis_scenario
+    [ -n "${ANALYSIS_DATA_REPO_NAME-}" ] && [ -n "${ANALYSIS_USER-}" ] || return 0
+    _analysis_scenario=""
+    if [ -r "${ANALYSIS_DATA_DIR-}/.current_scenario" ]; then
+        IFS= read -r _analysis_scenario < "$ANALYSIS_DATA_DIR/.current_scenario"
+    fi
+    if [ -n "$_analysis_scenario" ]; then
+        printf '[analysis:%s:%s:%s] ' "$ANALYSIS_DATA_REPO_NAME" "$ANALYSIS_USER" "$_analysis_scenario"
+    else
+        printf '[analysis:%s:%s] ' "$ANALYSIS_DATA_REPO_NAME" "$ANALYSIS_USER"
+    fi
+    unset _analysis_scenario
 }
 
 if [ -n "${ZSH_VERSION-}" ]; then
-	# Only the first sourcing (before any matching deactivate-analysis)
-	# records the pre-activation state; re-sourcing while already active
-	# must not overwrite it with "already set" from our own setopt below,
-	# or deactivation would leak prompt_subst into the user's shell.
-	if [ -z "${_ANALYSIS_PROMPT_SUBST_WAS_SET+x}" ]; then
-		if [[ -o prompt_subst ]]; then
-			_ANALYSIS_PROMPT_SUBST_WAS_SET=1
-		else
-			_ANALYSIS_PROMPT_SUBST_WAS_SET=0
-		fi
-	fi
-	setopt prompt_subst
+    # Only the first sourcing (before any matching deactivate-analysis)
+    # records the pre-activation state; re-sourcing while already active
+    # must not overwrite it with "already set" from our own setopt below,
+    # or deactivation would leak prompt_subst into the user's shell.
+    if [ -z "${_ANALYSIS_PROMPT_SUBST_WAS_SET+x}" ]; then
+        if [[ -o prompt_subst ]]; then
+            _ANALYSIS_PROMPT_SUBST_WAS_SET=1
+        else
+            _ANALYSIS_PROMPT_SUBST_WAS_SET=0
+        fi
+    fi
+    setopt prompt_subst
 fi
 # shellcheck disable=SC2016
 case "${PS1-}" in
-	*'$(analysis_prompt_info)'*) ;;
-	*) PS1='$(analysis_prompt_info)'"${PS1-}" ;;
+    *'$(analysis_prompt_info)'*) ;;
+    *) PS1='$(analysis_prompt_info)'"${PS1-}" ;;
 esac
 
 deactivate-analysis() {
-	# shellcheck disable=SC2016
-	PS1="${PS1//'$(analysis_prompt_info)'/}"
-	if typeset -f deactivate >/dev/null 2>&1; then
-		deactivate
-	fi
-	if [ -n "${ZSH_VERSION-}" ] && [ "${_ANALYSIS_PROMPT_SUBST_WAS_SET-0}" = "0" ]; then
-		unsetopt prompt_subst
-	fi
-	unset ANALYSIS_DATA_DIR ANALYSIS_USER ANALYSIS_DATA_REPO_NAME ANALYSIS_REPO_DIR
-	unset _ANALYSIS_SELF
-	unset _ANALYSIS_POINTER_FILE _ANALYSIS_REPO_CANDIDATE
-	unset _ANALYSIS_PROMPT_SUBST_WAS_SET
-	unset -f _analysis_fail _analysis_validate_repo_dir _analysis_enable_completion
-	unset -f analysis_prompt_info deactivate-analysis
+    # shellcheck disable=SC2016
+    PS1="${PS1//'$(analysis_prompt_info)'/}"
+    if typeset -f deactivate >/dev/null 2>&1; then
+        deactivate
+    fi
+    if [ -n "${ZSH_VERSION-}" ] && [ "${_ANALYSIS_PROMPT_SUBST_WAS_SET-0}" = "0" ]; then
+        unsetopt prompt_subst
+    fi
+    unset ANALYSIS_DATA_DIR ANALYSIS_USER ANALYSIS_DATA_REPO_NAME ANALYSIS_REPO_DIR
+    unset _ANALYSIS_SELF
+    unset _ANALYSIS_POINTER_FILE _ANALYSIS_REPO_CANDIDATE _ANALYSIS_REMEMBERED
+    unset _ANALYSIS_PROMPT_SUBST_WAS_SET
+    unset -f _analysis_fail _analysis_validate_repo_dir _analysis_enable_completion
+    unset -f analysis_prompt_info deactivate-analysis
 }

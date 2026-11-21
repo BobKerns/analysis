@@ -68,6 +68,7 @@ def test_add_writes_the_lot_from_its_options_with_the_symbol_upper_cased(
 @pytest.mark.parametrize(("account", "label", "message"), [
     (BROKERAGE, "default", "already has a lot 'default'"),
     (BROKERAGE, "a:b", "may not contain ':'"),
+    (BROKERAGE, "a,b", "may not contain ','"),
     ("Income_Salary_Alice", "x", "unknown account"),
 ])
 def test_add_refuses_a_lot_it_cannot_add(

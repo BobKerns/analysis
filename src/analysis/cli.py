@@ -12,7 +12,7 @@ from analysis.videos.cli import video_group_command
 
 @click.group()
 def main() -> None:
-    """Analysis command-line tools."""
+    """Zabob Retirement command-line tools."""
 
 
 main.add_command(amazon_group_command)
