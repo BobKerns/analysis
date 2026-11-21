@@ -1,10 +1,12 @@
 {
     "folders": [
         {
-            "path": "."
+            "path": ".",
+            "name": "zabob-workspace"
         },
         {
-            "path": "./data/shared"
+            "path": "./data/shared",
+            "name": "shared"
         }
     ],
     "settings": {
