@@ -8,7 +8,7 @@
             "type": "shell",
             "command": "source data/shared/sim/activate-analysis &&./.venv/bin/python -m zabob.retirement jupyter",
             "options": {
-                "cwd": "${workspaceFolder:zabob-retirement}",
+                "cwd": "${workspaceFolder}",
             },
             "problemMatcher": []
         },
@@ -17,7 +17,7 @@
             "type": "shell",
             "command": "source data/shared/sim/activate-analysis && ./.venv/bin/python -m zabob.retirement sim prices fetch || exit 0",
             "options": {
-                "cwd": "${workspaceFolder:zabob-retirement}"
+                "cwd": "${workspaceFolder}"
             },
             "problemMatcher": []
         },
@@ -26,7 +26,7 @@
             "type": "shell",
             "command": "source data/shared/sim/activate-analysis && ./.venv/bin/python -m zabob.retirement sim all --allow-dirty-data || exit 0",
             "options": {
-                "cwd": "${workspaceFolder:zabob-retirement}"
+                "cwd": "${workspaceFolder}"
             },
             "presentation": {
                 "echo": true,
