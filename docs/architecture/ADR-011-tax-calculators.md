@@ -1,3 +1,5 @@
+![Zabob Retirement](../assets/brand/banner.jpg)
+
 # ADR-011: Tax calculators
 
 - **Status:** Accepted

@@ -1,3 +1,5 @@
+![Zabob Retirement](../assets/brand/banner.jpg)
+
 # ADR-008: Correlated parameters in ensembles
 
 - **Status:** Accepted

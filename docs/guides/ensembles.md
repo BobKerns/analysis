@@ -1,3 +1,5 @@
+![Zabob Retirement](../assets/brand/banner.jpg)
+
 # Ensembles: ranges of outcomes, not one number
 
 > To read a formatted `.md` file:

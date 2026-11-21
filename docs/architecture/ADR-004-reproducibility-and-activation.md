@@ -1,3 +1,5 @@
+![Zabob Retirement](../assets/brand/banner.jpg)
+
 # ADR-004: Reproducibility, activation contract, and gating
 
 - **Status:** Accepted

@@ -1,3 +1,5 @@
+![Zabob Retirement](../assets/brand/banner.jpg)
+
 # Chains: where money comes from, and where extra money goes
 
 > To read a formatted `.md` file:

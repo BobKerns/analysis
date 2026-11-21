@@ -1,3 +1,5 @@
+![Zabob Retirement](../assets/brand/banner.jpg)
+
 # A private remote for the data repo
 
 > To read a formatted `.md` file:
