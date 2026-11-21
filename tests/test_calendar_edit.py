@@ -13,16 +13,16 @@ import pandas as pd
 import pytest
 from click.testing import CliRunner, Result
 
-from analysis.cli import main
-from analysis.sim import cli as cli_module, scenario
-from analysis.sim.cli import (
+from zabob.retirement.cli import main
+from zabob.retirement.sim import cli as cli_module, scenario
+from zabob.retirement.sim.cli import (
     _CALENDAR_REPLACE_ROW,
     _read_calendar_rows,
     _write_calendar_row,
     calendar_edit as calendar_edit_command,
 )
-from analysis.sim.loader import calendar_row_key
-from analysis.sim.registries import CALENDAR_HEADER
+from zabob.retirement.sim.loader import calendar_row_key
+from zabob.retirement.sim.registries import CALENDAR_HEADER
 
 # The prototype calendar's own rows, by number:
 #   1 set_rate Asset_Checking   2 retire_scheduled salary_alice   3 set_amount healthcare

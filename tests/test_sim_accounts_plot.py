@@ -1,18 +1,18 @@
-"""Tests for the balance-history chart in analysis.sim.run_charts."""
+"""Tests for the balance-history chart in zabob.retirement.sim.run_charts."""
 
 from __future__ import annotations
 
 import matplotlib
 import numpy as np
 
-from analysis.sim.run_charts import trim_to_last_nonzero
+from zabob.retirement.sim.run_charts import trim_to_last_nonzero
 
 matplotlib.use("Agg")
 
 import pandas as pd
 
-from analysis.sim.run_charts import balance_history_figure
-from analysis.sim.types import ValuePlotMode
+from zabob.retirement.sim.run_charts import balance_history_figure
+from zabob.retirement.sim.types import ValuePlotMode
 
 
 def test_trim_to_last_nonzero_keeps_one_month_past_last_nonzero() -> None:

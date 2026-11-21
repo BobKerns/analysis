@@ -1,4 +1,4 @@
-"""analysis.historical (``analysis historical``): parsing each source and the statistics,
+"""zabob.retirement.historical (``analysis historical``): parsing each source and the statistics,
 all offline (downloads are stubbed)."""
 
 from __future__ import annotations
@@ -22,8 +22,8 @@ import pytest
 import truststore
 from click.testing import CliRunner
 
-import analysis.historical.calibration as calibration
-from analysis.historical.cli import historical_command
+import zabob.retirement.historical.calibration as calibration
+from zabob.retirement.historical.cli import historical_command
 
 @pytest.fixture
 def hc():
@@ -577,7 +577,7 @@ def test_main_reports_source_errors_without_a_traceback(calibration_cache_dir):
 
 
 def test_historical_is_an_analysis_subcommand():
-    from analysis.cli import main
+    from zabob.retirement.cli import main
     assert main.get_command(click.Context(main), "historical") is historical_command
 
 

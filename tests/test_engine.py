@@ -1,4 +1,4 @@
-"""Tests for analysis.sim.engine."""
+"""Tests for zabob.retirement.sim.engine."""
 
 from __future__ import annotations
 
@@ -11,10 +11,10 @@ from pathlib import Path
 
 import pytest
 
-from analysis.sim.engine import EngineError, run_scenario
-from analysis.sim.taxes.common import state_ss_exclusion
-from analysis.sim.loader import LoadError, growth_rule_name, load_scenario
-from analysis.sim import registries
+from zabob.retirement.sim.engine import EngineError, run_scenario
+from zabob.retirement.sim.taxes.common import state_ss_exclusion
+from zabob.retirement.sim.loader import LoadError, growth_rule_name, load_scenario
+from zabob.retirement.sim import registries
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PROTOTYPE = REPO_ROOT / "prototype_data"
@@ -354,7 +354,7 @@ def test_zero_sum_invariant_holds_per_step(tmp_path: Path) -> None:
 def test_biweekly_count_in_month_basic() -> None:
     from datetime import date
 
-    from analysis.sim.engine import _biweekly_count_in_month
+    from zabob.retirement.sim.engine import _biweekly_count_in_month
 
     start = date(2026, 5, 15)
     end = date(2027, 5, 26)
@@ -379,7 +379,7 @@ def _append_scheduled(path: Path, **fields: str) -> None:
     """Append one scheduled.csv row, addressing columns by name."""
     import pandas as pd
 
-    from analysis.sim.registries import SCHEDULED_CSV_HEADER
+    from zabob.retirement.sim.registries import SCHEDULED_CSV_HEADER
 
     df = pd.read_csv(path, dtype=str, keep_default_na=False)
     df = df.reindex(columns=SCHEDULED_CSV_HEADER, fill_value="")
@@ -404,7 +404,7 @@ def _shorten_scenario_end(repo: Path, end: str) -> None:
 
 
 def test_post_transfer_caps_payment_to_liability_balance(ledger_con: sqlite3.Connection) -> None:
-    from analysis.sim.engine import _post_transfer
+    from zabob.retirement.sim.engine import _post_transfer
 
     balances = {1: 1_000_00, 2: 300_00}
     account_kinds = {1: "asset", 2: "liability"}
@@ -429,7 +429,7 @@ def test_chain_draw_single_leaf_account_respects_minimum_balance(ledger_con: sql
     """_chain_draw on a bare leaf chain (a real account) draws only down to
     its own minimum_balance_cents floor, and never draws the target from
     itself."""
-    from analysis.sim.engine import ChainGraph, _chain_draw
+    from zabob.retirement.sim.engine import ChainGraph, _chain_draw
 
     balances = {1: 100_000, 2: 500_000}
     account_kinds = {1: "asset", 2: "asset"}
@@ -453,7 +453,7 @@ def test_chain_draw_single_leaf_account_respects_minimum_balance(ledger_con: sql
 
 
 def test_chain_draw_never_draws_target_from_itself(ledger_con: sqlite3.Connection) -> None:
-    from analysis.sim.engine import ChainGraph, _chain_draw
+    from zabob.retirement.sim.engine import ChainGraph, _chain_draw
 
     balances = {1: 100_000}
     graph = ChainGraph({}, {10: 1}, {}, {}, {}, {}, {}, {})
@@ -470,7 +470,7 @@ def test_chain_draw_walks_multi_step_chain_in_order_with_per_leg_tax_character(l
     """A chain with an interior step and two leaves drains them in
     step_order, and each leg's tax_character is derived from the source
     account it actually drew from (ADR-003 §4.7's core correctness goal)."""
-    from analysis.sim.engine import ChainGraph, _chain_draw
+    from zabob.retirement.sim.engine import ChainGraph, _chain_draw
 
     # 1=target checking, 2=taxable savings, 3=tax_deferred IRA.
     balances = {1: 0, 2: 200_000, 3: 1_000_000}
@@ -518,7 +518,7 @@ def test_chain_draw_percent_splits_then_falls_through_when_one_source_is_exhaust
     the rest, exactly the parallel-draw-until-exhausted behavior ADR-003
     §4.7 describes rather than the old 'drain each step to zero in turn'
     bug."""
-    from analysis.sim.engine import ChainGraph, _chain_draw
+    from zabob.retirement.sim.engine import ChainGraph, _chain_draw
 
     balances = {1: 0, 2: 1_000, 3: 1_000_000}
     account_kinds = dict.fromkeys(balances, "asset")
@@ -546,7 +546,7 @@ def test_chain_draw_step_maximum_caps_allocation_even_when_more_is_available(led
     """The `amount`/`maximum` column is a per-step ceiling, not a target: once
     a step has supplied its cap, the remainder moves to the next step even
     though the source account could have covered more."""
-    from analysis.sim.engine import ChainGraph, _chain_draw
+    from zabob.retirement.sim.engine import ChainGraph, _chain_draw
 
     balances = {1: 0, 2: 1_000_000, 3: 1_000_000}
     account_kinds = dict.fromkeys(balances, "asset")
@@ -575,7 +575,7 @@ def test_chain_draw_refills_source_before_checking_availability(ledger_con: sqli
     supply, so a source that's below its own minimum_balance still
     contributes up to what its refill chain can restore, rather than falling
     straight through to the next step."""
-    from analysis.sim.engine import ChainGraph, RefillContext, _chain_draw
+    from zabob.retirement.sim.engine import ChainGraph, RefillContext, _chain_draw
 
     # 1=target, 2=source (near-empty but refillable), 3=source's refill chain.
     balances = {1: 0, 2: 500, 3: 1_000_000}
@@ -617,7 +617,7 @@ def test_refill_legs_point_at_the_debit_that_triggered_them(ledger_con: sqlite3.
     parent_event_id (#104). A nested refill (the refill source needing its
     own refill) points at the refill leg that set it off, so the legs form a
     cause tree rooted at the debit."""
-    from analysis.sim.engine import ChainGraph, RefillContext, _post_transfer
+    from zabob.retirement.sim.engine import ChainGraph, RefillContext, _post_transfer
 
     # 1=payee, 2=checking (refills from 3), 3=savings (refills from 4), 4=brokerage.
     balances = {1: 0, 2: 10_000, 3: 1_000, 4: 1_000_000}
@@ -674,7 +674,7 @@ def test_negative_balance_warning_says_what_the_refill_did(
     """#105: the warning, and its negative_balance_warnings record, name the
     refill chain tried and how much of what was needed it supplied, so a
     misdirected refill_chain is visible rather than a bare shortfall."""
-    from analysis.sim.engine import REFILL_STATUSES, ChainGraph, RefillContext, _post_transfer
+    from zabob.retirement.sim.engine import REFILL_STATUSES, ChainGraph, RefillContext, _post_transfer
 
     # 1=payee, 2=checking (refills from chain 30), 3=an empty account.
     balances = {1: 0, 2: 0, 3: 0}
@@ -713,7 +713,7 @@ def test_chain_draw_warning_reports_the_refill_it_drew(ledger_con: sqlite3.Conne
     """#105: a chain step that refills, then gives what it can down to a
     negative minimum_balance, warns with that refill -- not with the empty
     re-check a second look-ahead on the same debit used to record."""
-    from analysis.sim.engine import ChainGraph, RefillContext, _chain_draw
+    from zabob.retirement.sim.engine import ChainGraph, RefillContext, _chain_draw
 
     # 1=target, 2=step account (minimum -$300, refills from 3), 3=$50 refill source.
     balances = {1: 0, 2: 0, 3: 5_000}
@@ -780,7 +780,7 @@ def test_negative_balance_warnings_record_the_refill_in_run_args(
 def test_refill_before_a_split_withdrawal_points_at_its_basis_leg(ledger_con: sqlite3.Connection) -> None:
     """A basis-tracked withdrawal refills once on its net amount; the refill
     is linked to the first leg posted, the return_of_capital leg."""
-    from analysis.sim.engine import ChainGraph, RefillContext, _post_withdrawal
+    from zabob.retirement.sim.engine import ChainGraph, RefillContext, _post_withdrawal
 
     # 1=payee, 2=brokerage (refills from 3), 3=cash.
     balances = {1: 0, 2: 10_000, 3: 1_000_000}
@@ -815,7 +815,7 @@ def test_refill_before_a_split_withdrawal_points_at_its_basis_leg(ledger_con: sq
 
 
 def test_post_withdrawal_rejects_untracked_taxable_non_cash_account(ledger_con: sqlite3.Connection) -> None:
-    from analysis.sim.engine import EngineError, _post_withdrawal
+    from zabob.retirement.sim.engine import EngineError, _post_withdrawal
 
     balances = {3: 100_000, 4: 0}
     try:
@@ -836,7 +836,7 @@ def test_post_withdrawal_splits_return_of_capital_and_ltcg_pro_rata(ledger_con: 
     """A taxable brokerage withdrawal with tracked cost basis splits into a
     return_of_capital leg (pro-rata basis) and an ltcg leg (the gain), and
     reduces the account's running cost basis by the basis consumed."""
-    from analysis.sim.engine import _post_withdrawal
+    from zabob.retirement.sim.engine import _post_withdrawal
 
     balances = {3: 10_000_00, 4: 0}
     cost_bases: dict[int, int | None] = {3: 4_000_00}
@@ -863,7 +863,7 @@ def test_post_withdrawal_splits_return_of_capital_and_ltcg_pro_rata(ledger_con: 
 def test_post_withdrawal_realizes_loss_as_negative_ltcg_leg(ledger_con: sqlite3.Connection) -> None:
     """A withdrawal from a position underwater vs. its basis realizes a loss:
     the ltcg leg comes out negative rather than erroring or clamping to zero."""
-    from analysis.sim.engine import _post_withdrawal
+    from zabob.retirement.sim.engine import _post_withdrawal
 
     balances = {3: 9_000_00, 4: 0}
     cost_bases: dict[int, int | None] = {3: 20_000_00}  # bought high, now worth less than basis
@@ -890,7 +890,7 @@ def test_chain_draw_at_a_loss_checks_the_net_amount_not_each_leg(
     Refill, share tracking and the negative-balance warning see the net
     draw, so the lot neither pulls a phantom refill for the overshoot nor
     warns (an error under this suite) about a negative it never reaches."""
-    from analysis.sim.engine import ChainGraph, RefillContext, _chain_draw
+    from zabob.retirement.sim.engine import ChainGraph, RefillContext, _chain_draw
 
     # 1=target, 2=brokerage worth $10k on a $20k basis, 3=its refill source.
     balances = {1: 0, 2: 10_000_00, 3: refill_funds}
@@ -933,7 +933,7 @@ def test_loss_withdrawal_into_a_liability_is_capped_before_the_split(
     """A loss-position withdrawal paying down a liability with less owed than
     the draw: the net amount is capped to what's owed first, then split, so
     the legs, the shares and the basis all follow what the liability took."""
-    from analysis.sim.engine import ChainGraph, RefillContext, _post_withdrawal
+    from zabob.retirement.sim.engine import ChainGraph, RefillContext, _post_withdrawal
 
     # 1=mortgage with $1k owed, 2=brokerage worth $10k on a $20k basis.
     balances = {1: 1_000_00, 2: 10_000_00}
@@ -971,7 +971,7 @@ def test_chain_draw_into_a_liability_counts_only_what_it_owed(
     """A chain paying a liability that owes less than the ask reports, and
     records as fulfilled, only what was owed: the rest stays outstanding in
     remainder_cents instead of being counted as paid."""
-    from analysis.sim.engine import ChainGraph, _chain_draw
+    from zabob.retirement.sim.engine import ChainGraph, _chain_draw
 
     # 1=loan with $1k owed, 2=checking with $5k.
     balances = {1: 1_000_00, 2: 5_000_00}
@@ -999,7 +999,7 @@ def test_chain_sweep_into_a_liability_spills_past_what_it_owed(
     """A sweep whose first destination is a liability owing less than the
     excess pays it off and passes the rest to the next destination, rather
     than counting the whole excess as swept."""
-    from analysis.sim.engine import ChainGraph, _chain_sweep
+    from zabob.retirement.sim.engine import ChainGraph, _chain_sweep
 
     # 1=checking sweeping $3k, 2=loan with $1k owed, 3=savings.
     balances = {1: 5_000_00, 2: 1_000_00, 3: 0}
@@ -1020,7 +1020,7 @@ def test_chain_sweep_into_a_liability_spills_past_what_it_owed(
 
 
 def test_chain_sweep_allocates_fixed_then_percent_of_remainder(ledger_con: sqlite3.Connection) -> None:
-    from analysis.sim.engine import ChainGraph, _chain_sweep
+    from zabob.retirement.sim.engine import ChainGraph, _chain_sweep
 
     balances = {1: 1_000_000, 2: 0, 3: 0, 4: 0}
     account_kinds = dict.fromkeys(balances, "asset")
@@ -1052,7 +1052,7 @@ def test_chain_sweep_allocates_fixed_then_percent_of_remainder(ledger_con: sqlit
 
 
 def test_ytd_preroll_expands_interior_chain_month_by_month(ledger_con: sqlite3.Connection) -> None:
-    from analysis.sim.engine import ChainGraph, _apply_ytd_catchups
+    from zabob.retirement.sim.engine import ChainGraph, _apply_ytd_catchups
 
     graph = ChainGraph(
         members={100: [(2, 25_000), (3,)]},
@@ -1079,7 +1079,7 @@ def test_ytd_preroll_expands_interior_chain_month_by_month(ledger_con: sqlite3.C
 
 
 def test_ytd_preroll_annual_fixed_amount_fires_only_if_month_has_passed(ledger_con: sqlite3.Connection) -> None:
-    from analysis.sim.engine import ChainGraph, _apply_ytd_catchups
+    from zabob.retirement.sim.engine import ChainGraph, _apply_ytd_catchups
 
     graph = ChainGraph(
         members={},
@@ -1106,7 +1106,7 @@ def test_ytd_preroll_annual_fixed_amount_fires_only_if_month_has_passed(ledger_c
 
 
 def test_ytd_amount_from_interior_source_chain_records_first_leaf_account(ledger_con: sqlite3.Connection) -> None:
-    from analysis.sim.engine import ChainGraph, _apply_ytd_catchups
+    from zabob.retirement.sim.engine import ChainGraph, _apply_ytd_catchups
 
     graph = ChainGraph(
         members={100: [(2,), (3,)]},
@@ -1150,7 +1150,7 @@ _MORTGAGE_GRAPH_LEAVES = {1: 1, 4: 4, 5: 5}
 def test_ytd_preroll_splits_each_mortgage_payment_from_the_jan_1_balance(
     ledger_con: sqlite3.Connection,
 ) -> None:
-    from analysis.sim.engine import ChainGraph, _apply_ytd_catchups
+    from zabob.retirement.sim.engine import ChainGraph, _apply_ytd_catchups
 
     graph = ChainGraph(
         members={}, leaf_lot=_MORTGAGE_GRAPH_LEAVES,
@@ -1188,7 +1188,7 @@ def test_ytd_preroll_splits_each_mortgage_payment_from_the_jan_1_balance(
 def test_mortgage_ytd_amount_of_zero_or_less_posts_nothing(
     ledger_con: sqlite3.Connection,
 ) -> None:
-    from analysis.sim.engine import ChainGraph, _apply_ytd_catchups
+    from zabob.retirement.sim.engine import ChainGraph, _apply_ytd_catchups
 
     graph = ChainGraph(
         members={}, leaf_lot=_MORTGAGE_GRAPH_LEAVES,
@@ -1204,7 +1204,7 @@ def test_mortgage_ytd_amount_of_zero_or_less_posts_nothing(
 
 
 def test_mortgage_balance_before_with_no_exact_fit_replays_a_cent_high() -> None:
-    from analysis.sim.engine import _mortgage_balance_before, _mortgage_payments_split
+    from zabob.retirement.sim.engine import _mortgage_balance_before, _mortgage_payments_split
 
     # Interest rounds down, so no Jan 1 balance pays down to exactly this one.
     jan_1 = _mortgage_balance_before(25_000_098, [185_000], 60_000)
@@ -1218,7 +1218,7 @@ def test_mortgage_balance_before_with_no_exact_fit_replays_a_cent_high() -> None
 def test_mortgage_ytd_prefers_a_stated_prior_year_end_balance(
     ledger_con: sqlite3.Connection,
 ) -> None:
-    from analysis.sim.engine import ChainGraph, _apply_ytd_catchups
+    from zabob.retirement.sim.engine import ChainGraph, _apply_ytd_catchups
 
     graph = ChainGraph(
         members={}, leaf_lot=_MORTGAGE_GRAPH_LEAVES,
@@ -1241,7 +1241,7 @@ def test_settle_order_settles_dependency_before_dependent() -> None:
     """An account whose refill_chain reaches another policy account's own
     account must settle after that account (ADR-003 §4.7's topological
     settle pass, independent of authoring/CSV order)."""
-    from analysis.sim.engine import ChainGraph, _settle_order
+    from zabob.retirement.sim.engine import ChainGraph, _settle_order
 
     # Account 1 (checking) refills from chain 10 -> leaf account 2 (savings).
     # Account 2 (savings) itself has a policy: refills from chain 20 -> leaf

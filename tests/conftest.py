@@ -71,16 +71,16 @@ import git
 import pandas as pd
 import pytest
 
-from analysis.sim import scenario
-from analysis.sim.connection import RunConnection, ScenarioConnection, open_scenario, open_run
-from analysis.sim.engine import _load_aux, _tax_year, run_scenario
-from analysis.sim.ensemble import resolve_member
-from analysis.sim.schema import apply_run_schema
-from analysis.sim.tax_api import TaxYear
-from analysis.sim.loader import LoadResult, ScenarioRef, latest_run_path, load_scenario, resolve_scenario_name
-from analysis.sim.notebook_ui.pickers import MultiScenarioConnections, multi_scenario_picker
-from analysis.sim.provenance import CodeStamps
-from analysis.sim.registries import (
+from zabob.retirement.sim import scenario
+from zabob.retirement.sim.connection import RunConnection, ScenarioConnection, open_scenario, open_run
+from zabob.retirement.sim.engine import _load_aux, _tax_year, run_scenario
+from zabob.retirement.sim.ensemble import resolve_member
+from zabob.retirement.sim.schema import apply_run_schema
+from zabob.retirement.sim.tax_api import TaxYear
+from zabob.retirement.sim.loader import LoadResult, ScenarioRef, latest_run_path, load_scenario, resolve_scenario_name
+from zabob.retirement.sim.notebook_ui.pickers import MultiScenarioConnections, multi_scenario_picker
+from zabob.retirement.sim.provenance import CodeStamps
+from zabob.retirement.sim.registries import (
     ACCOUNT_LOTS_CSV_HEADER, CALENDAR_HEADER, GUARD_RAILS_CSV_HEADER, SCENARIO_HEADER,
     RESIDENCE_CSV_HEADER, RESIDENCE_FILE, SCHEDULED_CSV_HEADER, TAX_CSV_HEADER,
 )
@@ -98,10 +98,10 @@ def _no_ambient_analysis_env(
     for name in _ANALYSIS_ENV_VARS:
         monkeypatch.delenv(name, raising=False)
     # Without $ANALYSIS_DATA_DIR the notebook widgets fall back to the
-    # checkout's data/shared/sim: on a dev machine, the real data repo,
+    # checkout's data/private/sim: on a dev machine, the real data repo,
     # whose disabled scenarios once hid a test's recipe (#401).
     monkeypatch.setattr(
-        "analysis.sim.notebook_ui.pickers._checkout_data_dir",
+        "zabob.retirement.sim.notebook_ui.pickers._checkout_data_dir",
         lambda: tmp_path_factory.getbasetemp() / "no-checkout-data" / "sim")
     # No test starts or waits on a background builder (#300) unless it
     # turns the builder back on itself.
@@ -129,7 +129,7 @@ def _stable_code_stamps() -> Generator[None]:
     Patched once per session, since nothing a test does can change the stub.
     """
     with pytest.MonkeyPatch.context() as patch:
-        for name in ("analysis.sim.runs.code_stamps", "analysis.sim.loader.code_stamps"):
+        for name in ("zabob.retirement.sim.runs.code_stamps", "zabob.retirement.sim.loader.code_stamps"):
             patch.setattr(name, lambda: _STABLE_CODE_STAMPS)
         yield
 
@@ -171,9 +171,9 @@ def _no_current_scenario_writes(
     """
     if request.node.get_closest_marker("uses_current_scenario_write"):
         return
-    monkeypatch.setattr("analysis.sim.cli.write_current_scenario", lambda *args, **kwargs: None)
+    monkeypatch.setattr("zabob.retirement.sim.cli.write_current_scenario", lambda *args, **kwargs: None)
     # And its notice, which would otherwise announce a switch that never happens.
-    monkeypatch.setattr("analysis.sim.cli._make_current", lambda *args, **kwargs: None)
+    monkeypatch.setattr("zabob.retirement.sim.cli._make_current", lambda *args, **kwargs: None)
 
 
 @pytest.fixture(autouse=True)
@@ -186,7 +186,7 @@ def _no_working_set_writes(
     ``@pytest.mark.uses_working_set_write``."""
     if request.node.get_closest_marker("uses_working_set_write"):
         return
-    monkeypatch.setattr("analysis.sim.working_set._write", lambda *args, **kwargs: None)
+    monkeypatch.setattr("zabob.retirement.sim.working_set._write", lambda *args, **kwargs: None)
 
 
 @pytest.fixture(autouse=True)
@@ -203,7 +203,7 @@ def _one_cpu_for_default_jobs(
     """
     if request.node.get_closest_marker("uses_real_cpu_count"):
         return
-    monkeypatch.setattr("analysis.sim.cli._available_cpus", lambda: 1)
+    monkeypatch.setattr("zabob.retirement.sim.cli._available_cpus", lambda: 1)
 
 
 @pytest.fixture(autouse=True)
@@ -278,7 +278,7 @@ def template_data_dir(tmp_path: Path, repo_root: Path) -> Path:
     """A private data repo built as ``scripts/link-data.sh --template``
     builds one: ``templates/`` copied whole, less its ``t_`` template
     scenarios, which the loader reads from the code repository instead."""
-    from analysis.sim.lineage import is_template_name
+    from zabob.retirement.sim.lineage import is_template_name
 
     data_dir = tmp_path / "sim"
     shutil.copytree(repo_root / "templates", data_dir,
@@ -292,7 +292,7 @@ def local_templates(test_scenarios_dir: Path) -> Path:
     """The private data copy with the code repository's template scenarios
     copied into its own ``scenarios/``, so they're ordinary, editable
     scenarios there (a data repo's folder replaces a template whole)."""
-    from analysis.sim.lineage import TEMPLATE_SCENARIOS_DIR, is_template_name
+    from zabob.retirement.sim.lineage import TEMPLATE_SCENARIOS_DIR, is_template_name
 
     for folder in TEMPLATE_SCENARIOS_DIR.iterdir():
         if folder.is_dir() and is_template_name(folder.name):
@@ -1658,7 +1658,7 @@ def _add_varying_gift_and_retirement(append_calendar_row: Callable[..., None]) -
 def _sim(*args: str) -> None:
     from click.testing import CliRunner
 
-    from analysis.cli import main
+    from zabob.retirement.cli import main
 
     result = CliRunner().invoke(main, ["sim", *args])
     assert result.exit_code == 0, result.output
@@ -1765,7 +1765,7 @@ def code_repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> git.Repo:
     repo.git.add(A=True)
     actor = git.Actor("t", "t@t")
     repo.index.commit("init", author=actor, committer=actor)
-    from analysis.sim import freshness
+    from zabob.retirement.sim import freshness
 
     monkeypatch.setattr(freshness, "code_tree", lambda: freshness.code_tree_of(repo))
     return repo
@@ -1842,8 +1842,8 @@ def pool_batch(test_data_dir: Path, pool_scenarios: str, state_dir: Path) -> Pat
     its batch dir."""
     from click.testing import CliRunner
 
-    from analysis.cli import main
-    from analysis.sim.loader import latest_ensemble_batch
+    from zabob.retirement.cli import main
+    from zabob.retirement.sim.loader import latest_ensemble_batch
 
     result = CliRunner().invoke(
         main, ["sim", "run", pool_scenarios, "--data-dir", str(test_data_dir), "--allow-dirty-data"])
@@ -1861,7 +1861,7 @@ def fake_batch(tmp_path: Path) -> Callable[..., Path]:
     files and a batch manifest (``member_count`` defaults to ``members``;
     ``failures`` maps index to error; ``pool`` is a pool record), for code
     that reads only a batch's names and manifest. Returns the folder."""
-    from analysis.sim.ensemble import write_batch_manifest
+    from zabob.retirement.sim.ensemble import write_batch_manifest
 
     def make(scenario: str, *, members: int = 0, member_count: int | None = None,
              failures: dict[int, str] | None = None, pool: dict | None = None) -> Path:
@@ -1950,7 +1950,7 @@ def _load_and_run_batch(
 ) -> str:
     from click.testing import CliRunner
 
-    from analysis.cli import main
+    from zabob.retirement.cli import main
 
     runner = CliRunner()
     load = runner.invoke(main, [
@@ -2020,8 +2020,8 @@ def _built_batches(
         intent.mkdir(parents=True)
         runs.mkdir()
         with pytest.MonkeyPatch.context() as patch, warnings.catch_warnings():
-            patch.setattr("analysis.sim.cli._available_cpus", lambda: 1)
-            patch.setattr("analysis.sim.cli.write_current_scenario", lambda *args, **kwargs: None)
+            patch.setattr("zabob.retirement.sim.cli._available_cpus", lambda: 1)
+            patch.setattr("zabob.retirement.sim.cli.write_current_scenario", lambda *args, **kwargs: None)
             warnings.filterwarnings("error", category=RuntimeWarning, message=".*went negative.*")
             output = _load_and_run_batch(data, intent, runs, *run_args)
         if members is not None:
@@ -2036,7 +2036,7 @@ def _copy_batch(built_batches: Callable[[str], Path], name: str, state_dir: Path
     """Copy a shared batch's ``intent/`` and ``runs/`` into the test's own
     ``state_dir`` (where ``intent_dir`` and ``runs_dir`` point), returning the
     copied batch dir."""
-    from analysis.sim.loader import latest_ensemble_batch
+    from zabob.retirement.sim.loader import latest_ensemble_batch
 
     shutil.copytree(built_batches(name), state_dir, dirs_exist_ok=True)
     batch = latest_ensemble_batch(state_dir / "runs" / "retire_alice", mode=_SHARED_BATCHES[name][3])
@@ -2051,7 +2051,7 @@ def run_test_batch(
     """Load and run the private retire_alice copy as a batch, after a test
     has edited it: ``run_test_batch("--sensitivity")`` or
     ``run_test_batch("--ensemble-size", "8")`` (seed 7). Returns the batch dir."""
-    from analysis.sim.loader import latest_ensemble_batch
+    from zabob.retirement.sim.loader import latest_ensemble_batch
 
     def _run(*run_args: str) -> Path:
         output = _load_and_run_batch(test_data_dir, intent_dir, runs_dir, *run_args)
@@ -2124,8 +2124,8 @@ def fake_state(intent_dir: Path, runs_dir: Path) -> Callable[..., Path]:
     import os
     from datetime import UTC, datetime
 
-    from analysis.sim.ensemble import write_batch_manifest
-    from analysis.sim.loader import batches_dir
+    from zabob.retirement.sim.ensemble import write_batch_manifest
+    from zabob.retirement.sim.loader import batches_dir
 
     def _run_file(path: Path, status: str, warned: Sequence[str] | None = None) -> None:
         con = sqlite3.connect(path)
@@ -2175,7 +2175,7 @@ def without_template_aux(tmp_path_factory: pytest.TempPathFactory, monkeypatch: 
     """Hide the code repository's templates/aux/ (#317) from the loader, so a
     test that deletes one of the private copy's aux tables sees it missing
     instead of the template's copy filling in."""
-    monkeypatch.setattr("analysis.sim.loader.TEMPLATE_AUX_DIR", tmp_path_factory.mktemp("no_template_aux"))
+    monkeypatch.setattr("zabob.retirement.sim.loader.TEMPLATE_AUX_DIR", tmp_path_factory.mktemp("no_template_aux"))
 
 
 @pytest.fixture(scope="function")
@@ -2917,7 +2917,7 @@ def write_import_map(test_data_dir: Path) -> Callable[[str, str], Path]:
     ``write("quicken/accounts.csv", rows)`` or
     ``write("expense_accounts.csv", rows)``. The header is the file's own;
     ``rows`` is the CSV text after it."""
-    from analysis.sim.imports import mapping
+    from zabob.retirement.sim.imports import mapping
 
     headers = {
         mapping.ACCOUNTS: mapping.ACCOUNTS_HEADER,

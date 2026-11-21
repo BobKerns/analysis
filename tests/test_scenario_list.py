@@ -11,9 +11,9 @@ from pathlib import Path
 import pytest
 from click.testing import CliRunner
 
-from analysis.cli import main
-from analysis.sim.loader import write_current_scenario
-from analysis.sim.scenario import ScenarioDate, ScenarioValue, scenario_summaries
+from zabob.retirement.cli import main
+from zabob.retirement.sim.loader import write_current_scenario
+from zabob.retirement.sim.scenario import ScenarioDate, ScenarioValue, scenario_summaries
 
 # One more than the verbose table's nine columns.
 ROW_BARS = 10

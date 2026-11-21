@@ -10,7 +10,7 @@
     },
     {
       "name": "data-words",
-      "path": "./data/shared/.cspell/data-words.txt",
+      "path": "./data/private/.cspell/data-words.txt",
       "addWords": true
     }
   ],
@@ -20,7 +20,7 @@
     "state/**",
     "historical_data/*/**",
     "docs/**/*.svg",
-    "src/analysis/sim/vendor/**",
+    "src/zabob/retirement/sim/vendor/**",
     "docs/videos/*/published.toml"
   ],
   "ignoreRegExpList": ["/\\S*[\\u0250-\\u02AF\\u02C8\\u02CC\\u02D0\\u1D7B]\\S*/gu"],

@@ -22,9 +22,9 @@ _analysis_validate_repo_dir() {
     [ -n "$1" ] || return 1
     [ -d "$1" ] || return 1
     [ -f "$1/pyproject.toml" ] || return 1
-    [ -f "$1/src/analysis/cli.py" ] || return 1
-    [ -f "$1/src/analysis/amazon/cli.py" ] || return 1
-    [ -f "$1/src/analysis/sim/cli.py" ] || return 1
+    [ -f "$1/src/zabob/retirement/cli.py" ] || return 1
+    [ -f "$1/src/zabob/retirement/amazon/cli.py" ] || return 1
+    [ -f "$1/src/zabob/retirement/sim/cli.py" ] || return 1
     return 0
 }
 
@@ -47,7 +47,7 @@ if [ -f "$_ANALYSIS_POINTER_FILE" ]; then
     IFS= read -r _ANALYSIS_REMEMBERED < "$_ANALYSIS_POINTER_FILE"
 fi
 
-# The code checkout this was sourced through (<checkout>/data/shared/sim)
+# The code checkout this was sourced through (<checkout>/data/private/sim)
 # comes first (#654): several worktrees can link one data repo, and each
 # then gets its own code, whichever was activated last or made the data
 # repo. Then ANALYSIS_REPO_DIR, then the checkout remembered in .analysis.
@@ -63,9 +63,9 @@ case "$_ANALYSIS_TYPED" in
 esac
 for _analysis_spelled in "$_ANALYSIS_TYPED" "$ANALYSIS_DATA_DIR"; do
     case "$_analysis_spelled" in
-        */data/shared/sim)
-            if _analysis_validate_repo_dir "${_analysis_spelled%/data/shared/sim}"; then
-                _ANALYSIS_THROUGH="$(cd "${_analysis_spelled%/data/shared/sim}" && pwd)"
+        */data/private/sim)
+            if _analysis_validate_repo_dir "${_analysis_spelled%/data/private/sim}"; then
+                _ANALYSIS_THROUGH="$(cd "${_analysis_spelled%/data/private/sim}" && pwd)"
                 _ANALYSIS_REPO_CANDIDATE="$_ANALYSIS_THROUGH"
                 break
             fi
@@ -87,7 +87,7 @@ if ! _analysis_validate_repo_dir "$_ANALYSIS_REPO_CANDIDATE"; then
 fi
 
 if ! _analysis_validate_repo_dir "$_ANALYSIS_REPO_CANDIDATE"; then
-    _analysis_fail "invalid repo path: '$_ANALYSIS_REPO_CANDIDATE' (expected pyproject.toml and src/analysis/*/cli.py)"
+    _analysis_fail "invalid repo path: '$_ANALYSIS_REPO_CANDIDATE' (expected pyproject.toml and src/zabob/retirement/*/cli.py)"
 fi
 
 export ANALYSIS_REPO_DIR="$_ANALYSIS_REPO_CANDIDATE"
@@ -101,7 +101,7 @@ _analysis_same_dir() {
 }
 # .analysis names the one checkout the data repo is paired with: the
 # builder's hooks run that checkout's sim. Another worktree sourcing this
-# through its own data/shared uses its own code and leaves the pair alone.
+# through its own data/private uses its own code and leaves the pair alone.
 # The pair is written when .analysis names no checkout, or when this is
 # sourced by the data repo's own path with another checkout named
 # (ANALYSIS_REPO_DIR, or typed just now).
@@ -175,7 +175,7 @@ fi
 if [ -z "${ANALYSIS_USER-}" ]; then
     # The same prompt scripts/link-data.sh uses: pick a primary person by id
     # or display name.
-    ANALYSIS_USER="$(python -m analysis.sim.choose_user "$ANALYSIS_DATA_DIR")" || {
+    ANALYSIS_USER="$(python -m zabob.retirement.sim.choose_user "$ANALYSIS_DATA_DIR")" || {
         unset ANALYSIS_USER
         echo "activate-analysis: no ANALYSIS_USER chosen" >&2
         # Stop sourcing here: _analysis_fail's return only leaves the function.

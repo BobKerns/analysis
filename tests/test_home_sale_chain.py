@@ -16,12 +16,12 @@ import pandas as pd
 import pytest
 from click.testing import CliRunner
 
-from analysis.cli import main
-from analysis.sim.chain_edit import CHAIN_COLUMNS
-from analysis.sim.engine import EngineError, run_scenario
-from analysis.sim.tax_api import TaxYear
-from analysis.sim.taxes.common import capital_gains
-from analysis.sim.loader import LoadError, LoadResult
+from zabob.retirement.cli import main
+from zabob.retirement.sim.chain_edit import CHAIN_COLUMNS
+from zabob.retirement.sim.engine import EngineError, run_scenario
+from zabob.retirement.sim.tax_api import TaxYear
+from zabob.retirement.sim.taxes.common import capital_gains
+from zabob.retirement.sim.loader import LoadError, LoadResult
 
 SALE = {
     "date": "2030-06-30", "kind": "transfer_balance",

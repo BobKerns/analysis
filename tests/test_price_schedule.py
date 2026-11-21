@@ -15,9 +15,9 @@ import git
 import pytest
 from click.testing import CliRunner
 
-from analysis.sim import builder, price_schedule
-from analysis.sim.cli import sim_group_command
-from analysis.sim.prices import PriceError
+from zabob.retirement.sim import builder, price_schedule
+from zabob.retirement.sim.cli import sim_group_command
+from zabob.retirement.sim.prices import PriceError
 
 NY = price_schedule.MARKET
 
@@ -450,7 +450,7 @@ def test_install_records_whether_to_fetch_prices(
     data, _ = priced
     code = tmp_path / "code"
     (code / "data").mkdir(parents=True)
-    (code / "data" / "shared").symlink_to(data.parent)
+    (code / "data" / "private").symlink_to(data.parent)
     (data / ".analysis").write_text(f"{code}\n")
     monkeypatch.setattr(builder, "code_dir", lambda: code.resolve())
     paths = builder.BuilderPaths.for_data(data)

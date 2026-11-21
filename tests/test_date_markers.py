@@ -14,10 +14,10 @@ from pathlib import Path
 import pytest
 from click.testing import CliRunner
 
-from analysis.cli import main
-from analysis.sim.dates import RelativeDate, parse_relative_date, place_month
-from analysis.sim.ensemble import resolve_member
-from analysis.sim.loader import LoadResult
+from zabob.retirement.cli import main
+from zabob.retirement.sim.dates import RelativeDate, parse_relative_date, place_month
+from zabob.retirement.sim.ensemble import resolve_member
+from zabob.retirement.sim.loader import LoadResult
 
 from tests.test_rate_paths import _issues
 
@@ -172,7 +172,7 @@ def test_two_spellings_of_one_relative_date_are_one_row(
     """An unnamed row is keyed by its date (and its other event fields) in the
     lineage merge, so a child's ``ep_start+12m`` row overrides its parent's
     same row at ``ep_start+1y`` rather than applying a second time."""
-    from analysis.sim.loader import load_scenario
+    from zabob.retirement.sim.loader import load_scenario
 
     append_calendar_row(**_MARKER, date="2030-06")
     append_calendar_row(date="ep_start+1y", kind="set_rate", series="Asset_Checking", amount="6%")

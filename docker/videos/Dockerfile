@@ -29,7 +29,7 @@
 FROM ubuntu:24.04
 
 # Keep VHS_VERSION, TTYD_VERSION and KOKORO_RELEASE in step with
-# src/analysis/videos, and PLAYWRIGHT_VERSION with uv.lock (tests/test_videos.py
+# src/zabob/retirement/videos, and PLAYWRIGHT_VERSION with uv.lock (tests/test_videos.py
 # checks): it chooses the system libraries Chromium is given. VHS comes from Bob's
 # fork, which records terminal images (render.VHS_VERSION says why).
 ARG NODE_VERSION=22.22.2
@@ -123,4 +123,4 @@ RUN git config --system user.name "Video builder" \
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod 755 /usr/local/bin/entrypoint.sh
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
-CMD ["python", "-m", "analysis.videos", "check"]
+CMD ["python", "-m", "zabob.retirement.videos", "check"]

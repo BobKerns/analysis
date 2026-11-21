@@ -11,9 +11,9 @@ import pandas as pd
 import pytest
 from click.testing import CliRunner
 
-from analysis.cli import main
-from analysis.sim import registries, staging
-from analysis.sim.cli import _append_csv_row
+from zabob.retirement.cli import main
+from zabob.retirement.sim import registries, staging
+from zabob.retirement.sim.cli import _append_csv_row
 
 
 def _snapshot(data_dir: Path) -> dict[Path, bytes]:

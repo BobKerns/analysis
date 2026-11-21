@@ -11,9 +11,9 @@ from pathlib import Path
 import pandas as pd
 from click.testing import CliRunner
 
-from analysis.cli import main
-from analysis.sim import registries
-from analysis.sim.scenario import ScenarioValue, ensemble_settings
+from zabob.retirement.cli import main
+from zabob.retirement.sim import registries
+from zabob.retirement.sim.scenario import ScenarioValue, ensemble_settings
 
 
 def _create(data_dir: Path, group: str, *args: str) -> str:

@@ -9,7 +9,7 @@ import pytest
 from ipywidgets import widgets
 from matplotlib.figure import Figure
 
-from analysis.sim.notebook_ui import draws_widgets as dw
+from zabob.retirement.sim.notebook_ui import draws_widgets as dw
 
 
 def _quiet(monkeypatch: pytest.MonkeyPatch) -> list[object]:

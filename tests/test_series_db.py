@@ -11,13 +11,13 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from analysis.sim.ensemble import (
+from zabob.retirement.sim.ensemble import (
     EnsembleError,
     load_ensemble,
     member_pairs,
     members_balance_by_month,
 )
-from analysis.sim.series_db import (
+from zabob.retirement.sim.series_db import (
     EnsembleSeries,
     build_series_db,
     open_series,
@@ -25,7 +25,7 @@ from analysis.sim.series_db import (
     series_db_current,
     series_db_path,
 )
-from analysis.sim.types import DollarMode
+from zabob.retirement.sim.types import DollarMode
 
 
 def _every_choice(store: EnsembleSeries) -> list[tuple[str | None, DollarMode, str | None, bool]]:
@@ -141,7 +141,7 @@ def test_recipes_pair_though_their_first_succeeded_members_differ(
     """A member file records its own seed, derived from the recipe's and its
     index, so recipes are compared at an index both have succeeded, not at
     each one's first success."""
-    from analysis.sim.notebook_ui.ensemble_widgets import RecipeSeeds
+    from zabob.retirement.sim.notebook_ui.ensemble_widgets import RecipeSeeds
 
     seeded_ensemble_batch("baseline", 1)
     with closing(sqlite3.connect(seeded_ensemble_batch("child", 1) / "member_0000.sqlite3")) as con, con:
@@ -159,8 +159,8 @@ def test_controls_read_the_last_finished_batch_while_one_builds(
     (#300), so a recipe's newest batch may have no finished member yet: a
     member file whose run hasn't written its tables, under a provisional
     manifest. The batch before it stands in."""
-    from analysis.sim.ensemble import member_run_statuses
-    from analysis.sim.notebook_ui.ensemble_widgets import (
+    from zabob.retirement.sim.ensemble import member_run_statuses
+    from zabob.retirement.sim.notebook_ui.ensemble_widgets import (
         RecipeSeeds, recipe_accounts, settled_batch,
     )
 
@@ -179,7 +179,7 @@ def test_controls_read_the_last_finished_batch_while_one_builds(
 
 def test_member_statuses_still_raise_on_a_damaged_member(tmp_path: Path) -> None:
     """Only a member whose tables aren't written yet reads as running."""
-    from analysis.sim.ensemble import member_run_statuses
+    from zabob.retirement.sim.ensemble import member_run_statuses
 
     with closing(sqlite3.connect(tmp_path / "member_0000.sqlite3")) as con, con:
         con.execute("CREATE TABLE simulation_run (id INTEGER)")  # no status column
@@ -189,7 +189,7 @@ def test_member_statuses_still_raise_on_a_damaged_member(tmp_path: Path) -> None
 
 def test_a_batch_with_no_succeeded_member_gets_no_store(tmp_path: Path) -> None:
     """An empty store would be trusted, and read as an ensemble of no futures."""
-    from analysis.sim.cli import _write_series_db
+    from zabob.retirement.sim.cli import _write_series_db
 
     _write_series_db(tmp_path, [], 0)
     assert not series_db_path(tmp_path).exists()

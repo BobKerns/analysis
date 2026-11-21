@@ -10,9 +10,9 @@ from pathlib import Path
 
 import pytest
 
-from analysis.sim import locks
-from analysis.sim.loader import latest_ensemble_batch, latest_run_path
-from analysis.sim.retention import _run_items
+from zabob.retirement.sim import locks
+from zabob.retirement.sim.loader import latest_ensemble_batch, latest_run_path
+from zabob.retirement.sim.retention import _run_items
 
 NOW = datetime(2026, 10, 26, 4, 30, 0, tzinfo=UTC)
 
@@ -86,7 +86,7 @@ def test_build_lock_is_reentrant(intent_dir: Path) -> None:
 _HOLD = """
 import sys, time
 from pathlib import Path
-from analysis.sim.locks import build_lock
+from zabob.retirement.sim.locks import build_lock
 with build_lock(Path(sys.argv[1]), "base"):
     print("held", flush=True)
     time.sleep(float(sys.argv[2]))
@@ -124,11 +124,11 @@ def test_listing_ensembles_never_waits_for_their_builds(
 ) -> None:
     """Only opening a recipe's batch waits for its background build; the
     notebooks' recipe lists and controls read what is on hand."""
-    from analysis.sim import loader
-    from analysis.sim.notebook_ui.ensemble_widgets import (
+    from zabob.retirement.sim import loader
+    from zabob.retirement.sim.notebook_ui.ensemble_widgets import (
         RecipeSeeds, list_ensemble_recipes, recipe_accounts,
     )
-    from analysis.sim.notebook_ui.sensitivity_widgets import list_sensitivity_recipes
+    from zabob.retirement.sim.notebook_ui.sensitivity_widgets import list_sensitivity_recipes
 
     batch = runs_dir / "base" / "monte-carlo" / "2026-10-26T043000Z"
     batch.mkdir(parents=True)

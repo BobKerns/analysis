@@ -1,7 +1,7 @@
 """A persona strategy that stands in for a household's own (#326 tests):
 draw everything from the chain's last leaf."""
 
-from analysis.sim.strategy_api import ChainView, Context, Decision, Strategy, Take, register
+from zabob.retirement.sim.strategy_api import ChainView, Context, Decision, Strategy, Take, register
 
 from ._helpers import last
 

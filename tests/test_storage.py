@@ -2,7 +2,7 @@ import json
 import sqlite3
 from pathlib import Path
 
-from analysis.storage import JsonStateStore
+from zabob.retirement.storage import JsonStateStore
 
 
 def test_json_state_store_roundtrip(tmp_path: Path) -> None:

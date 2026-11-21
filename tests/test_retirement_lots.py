@@ -12,10 +12,10 @@ import pandas as pd
 import pytest
 from click.testing import CliRunner
 
-from analysis.cli import main
-from analysis.sim import registries
-from analysis.sim.engine import run_scenario
-from analysis.sim.loader import LoadError, LoadResult, growth_rule_name
+from zabob.retirement.cli import main
+from zabob.retirement.sim import registries
+from zabob.retirement.sim.engine import run_scenario
+from zabob.retirement.sim.loader import LoadError, LoadResult, growth_rule_name
 
 IRA = "Asset_TraditionalIRA_Alice"
 K401 = "Asset_401k_Alice"

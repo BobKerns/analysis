@@ -10,8 +10,8 @@ from typing import Any, cast
 
 import pytest
 
-from analysis.sim import strategy_api, tax_api
-from analysis.sim.tax_api import (
+from zabob.retirement.sim import strategy_api, tax_api
+from zabob.retirement.sim.tax_api import (
     Account,
     Extra,
     IncomeItem,
@@ -22,7 +22,7 @@ from analysis.sim.tax_api import (
     TaxYear,
     calculator,
 )
-from analysis.sim.taxes.state_tables import StateTablesYear
+from zabob.retirement.sim.taxes.state_tables import StateTablesYear
 
 YEAR = 2030
 SALARY = Account("Income_Salary", "income", "salary", "alice")

@@ -12,11 +12,11 @@ from click.testing import CliRunner
 from ipywidgets import widgets
 from rich.console import Console
 
-from analysis.cli import main
-from analysis.sim import chain_map
-from analysis.sim.connection import open_scenario
-from analysis.sim.chain_graph import MERMAID_SCRIPT
-from analysis.sim.notebook_ui.scenario_plots import MermaidWidget, show_chain_flow
+from zabob.retirement.cli import main
+from zabob.retirement.sim import chain_map
+from zabob.retirement.sim.connection import open_scenario
+from zabob.retirement.sim.chain_graph import MERMAID_SCRIPT
+from zabob.retirement.sim.notebook_ui.scenario_plots import MermaidWidget, show_chain_flow
 
 
 @pytest.fixture

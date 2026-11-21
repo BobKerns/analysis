@@ -11,9 +11,9 @@ from pathlib import Path
 import pytest
 from click.testing import CliRunner, Result
 
-from analysis import checkout
-from analysis.cli import main
-from analysis.sim import builder, data_repo
+from zabob.retirement import checkout
+from zabob.retirement.cli import main
+from zabob.retirement.sim import builder, data_repo
 
 
 @pytest.fixture(autouse=True)
@@ -29,7 +29,7 @@ def _git_identity(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
 
 @pytest.fixture(autouse=True)
 def code_repo(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
-    """A stand-in code worktree, so no test links the real data/shared."""
+    """A stand-in code worktree, so no test links the real data/private."""
     monkeypatch.delenv("ANALYSIS_NO_BUILDER", raising=False)
     code = tmp_path / "code"
     code.mkdir()
@@ -93,11 +93,11 @@ def test_init_leaves_os_junk_files_behind(tmp_path: Path, junk_in_templates: tup
 
 
 def test_init_asks_for_what_its_options_leave_out(code_repo: Path) -> None:
-    # No directory is asked for: the data repo is the checkout's data/shared.
+    # No directory is asked for: the data repo is the checkout's data/private.
     result = _init("--no-commit", input="alice\nAlice Example\n1960-05-01\nf\nSingle\n")
 
     assert result.exit_code == 0, result.output
-    sim = code_repo / "data" / "shared" / "sim"
+    sim = code_repo / "data" / "private" / "sim"
     assert _rows(sim / "persons.csv") == [{
         "id": "alice", "display": "Alice Example", "birthdate": "1960-05-01", "sex": "f",
         "role": "primary", "meta_json": "{}", "kind": "",
@@ -194,31 +194,31 @@ def test_init_refuses_an_id_of_more_than_one_word(tmp_path: Path) -> None:
 
 # ---------- background builds ----------
 
-def test_init_links_data_shared_and_installs_the_builder(
+def test_init_links_data_private_and_installs_the_builder(
     tmp_path: Path, code_repo: Path, installs: list[Path],
 ) -> None:
     root = tmp_path / "repo"
     result = _init(str(root), *_ALICE)
 
     assert result.exit_code == 0, result.output
-    assert (code_repo / "data" / "shared").resolve() == root.resolve()
+    assert (code_repo / "data" / "private").resolve() == root.resolve()
     assert installs == [root.resolve() / "sim"]
     assert "notified" in result.output
 
 
-def test_init_leaves_an_existing_data_shared_alone(
+def test_init_leaves_an_existing_data_private_alone(
     tmp_path: Path, code_repo: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    (code_repo / "data" / "shared").mkdir(parents=True)
+    (code_repo / "data" / "private").mkdir(parents=True)
 
     def install(data_dir: Path, branch: str | None = None) -> list[str]:  # noqa: ARG001
-        raise ValueError("data/shared doesn't lead to the data repo")
+        raise ValueError("data/private doesn't lead to the data repo")
     monkeypatch.setattr(builder, "install", install)
 
     result = _init(str(tmp_path / "repo"), *_ALICE)
 
     assert result.exit_code == 0, result.output
-    assert not (code_repo / "data" / "shared").is_symlink()
+    assert not (code_repo / "data" / "private").is_symlink()
     assert "background builds not turned on" in result.output
 
 
@@ -232,16 +232,16 @@ def test_init_without_a_builder_touches_neither_repo(
     assert installs == []
 
 
-def test_init_without_a_builder_and_no_dir_still_makes_the_checkout_s_data_shared(
+def test_init_without_a_builder_and_no_dir_still_makes_the_checkout_s_data_private(
     code_repo: Path, installs: list[Path],
 ) -> None:
     # Code and data are one to one: that is where it was asked for.
     usual = _init(*_ALICE, "--no-builder")
     assert usual.exit_code == 0, usual.output
-    assert (code_repo / "data" / "shared" / "sim" / "persons.csv").is_file() and installs == []
+    assert (code_repo / "data" / "private" / "sim" / "persons.csv").is_file() and installs == []
 
 
-def test_init_without_commit_links_data_shared_and_installs_no_builder(
+def test_init_without_commit_links_data_private_and_installs_no_builder(
     tmp_path: Path, code_repo: Path, installs: list[Path],
 ) -> None:
     root = tmp_path / "repo"
@@ -249,35 +249,35 @@ def test_init_without_commit_links_data_shared_and_installs_no_builder(
 
     assert result.exit_code == 0, result.output
     # The checkout finds the data repo; the builder needs a git repository.
-    assert (code_repo / "data" / "shared").resolve() == root.resolve() and not (root / ".git").exists()
-    assert "linked code/data/shared to repo\n" in result.output
-    assert "source code/data/shared/sim/activate-analysis" in result.output
+    assert (code_repo / "data" / "private").resolve() == root.resolve() and not (root / ".git").exists()
+    assert "linked code/data/private to repo\n" in result.output
+    assert "source code/data/private/sim/activate-analysis" in result.output
     assert installs == []
 
 
 @pytest.mark.parametrize("linked", [False, True])
-def test_init_with_no_dir_refuses_a_data_shared_that_is_there(
+def test_init_with_no_dir_refuses_a_data_private_that_is_there(
     tmp_path: Path, code_repo: Path, linked: bool,
 ) -> None:
-    shared = code_repo / "data" / "shared"
-    shared.parent.mkdir()
+    private = code_repo / "data" / "private"
+    private.parent.mkdir()
     if linked:
         (tmp_path / "elsewhere").mkdir()
-        shared.symlink_to(tmp_path / "elsewhere")
+        private.symlink_to(tmp_path / "elsewhere")
     else:
-        shared.mkdir()
+        private.mkdir()
 
     result = _init(*_ALICE)
 
     assert result.exit_code != 0
-    assert "code/data/shared is already there" in result.output
+    assert "code/data/private is already there" in result.output
     assert ("leading to elsewhere" in result.output) == linked
-    assert "source code/data/shared/sim/activate-analysis" in result.output
-    assert not (shared / "sim").exists()
+    assert "source code/data/private/sim/activate-analysis" in result.output
+    assert not (private / "sim").exists()
 
 
 def test_init_names_the_link_script_through_the_checkout(tmp_path: Path, code_repo: Path) -> None:
-    (code_repo / "data" / "shared").mkdir(parents=True)
+    (code_repo / "data" / "private").mkdir(parents=True)
 
     result = _init("repo", *_ALICE, "--no-commit")
 
@@ -335,7 +335,7 @@ def test_init_from_another_checkout_s_folder_runs_that_checkout_s_sim(
         "again=1 venv="]
     assert not (tmp_path / "other" / "docs" / "repo").exists()
 
-    # With nothing given, nothing is passed: that sim asks, and makes its own data/shared.
+    # With nothing given, nothing is passed: that sim asks, and makes its own data/private.
     assert _init().exit_code == 7
     assert (other_checkout / "argv").read_text().splitlines() == ["[init]", "again=1 venv="]
 
@@ -350,7 +350,7 @@ def test_init_started_by_another_checkout_s_sim_starts_no_third(
 
     assert result.exit_code == 0, result.output
     assert not (other_checkout / "argv").exists()
-    assert (code_repo / "data" / "shared" / "sim" / "persons.csv").is_file()
+    assert (code_repo / "data" / "private" / "sim" / "persons.csv").is_file()
 
 
 def test_init_makes_the_other_checkout_s_venv_or_says_what_is_missing(
@@ -437,8 +437,8 @@ def test_account_list_shows_each_accounts_own_growth(tmp_path: Path, monkeypatch
     """#368: a growth rule's to_account names a chain, whose ids needn't match
     the accounts'; each account shows its own lots' series (several when its
     lots differ), and an income account none."""
-    from analysis.sim.accounts import load_accounts_view
-    from analysis.sim.connection import open_scenario
+    from zabob.retirement.sim.accounts import load_accounts_view
+    from zabob.retirement.sim.connection import open_scenario
 
     monkeypatch.chdir(tmp_path)
     assert _init("retirement", *_ALICE, "--no-builder").exit_code == 0
@@ -493,7 +493,7 @@ def test_activate_takes_the_code_of_the_checkout_it_is_sourced_through(tmp_path:
     main_checkout, worktree = _checkout(tmp_path / "main"), _checkout(tmp_path / "worktree")
     for each in (main_checkout, worktree):
         (each / "data").mkdir()
-        (each / "data" / "shared").symlink_to(data)
+        (each / "data" / "private").symlink_to(data)
     # The data repo was made by, and last used with, the main checkout.
     (data / "sim" / ".analysis").write_text(f"{main_checkout}\n")
 
@@ -503,27 +503,27 @@ def test_activate_takes_the_code_of_the_checkout_it_is_sourced_through(tmp_path:
             env={"PATH": "/usr/bin:/bin", "HOME": str(tmp_path), **env}, capture_output=True, text=True, check=False)
 
     # From the worktree, though the data repo remembers the main checkout and the shell still names it.
-    there = activate("data/shared/sim/activate-analysis", worktree, ANALYSIS_REPO_DIR=str(main_checkout))
+    there = activate("data/private/sim/activate-analysis", worktree, ANALYSIS_REPO_DIR=str(main_checkout))
     assert there.stdout == f"worktree {worktree}\n", there.stderr
     assert f"using the code in {worktree}; the data repo stays paired with {main_checkout}" in there.stderr
     # The pair is the builder's: its hooks run the sim of the checkout .analysis names.
     assert (data / "sim" / ".analysis").read_text() == f"{main_checkout}\n"
-    again = activate(str(worktree / "data" / "shared" / "sim" / "activate-analysis"), tmp_path)
+    again = activate(str(worktree / "data" / "private" / "sim" / "activate-analysis"), tmp_path)
     assert again.stdout == f"worktree {worktree}\n" and "differs" not in again.stderr
     # The paired checkout itself says nothing.
-    paired = activate("data/shared/sim/activate-analysis", main_checkout)
+    paired = activate("data/private/sim/activate-analysis", main_checkout)
     assert paired.stdout == f"main {main_checkout}\n" and "using the code" not in paired.stderr
 
     # A shell that follows links on cd still sees the checkout in the path as typed.
     chased = subprocess.run(
-        ["bash", "-c", 'set -P; source data/shared/sim/activate-analysis && echo "$ACTIVATED $ANALYSIS_REPO_DIR"'],
+        ["bash", "-c", 'set -P; source data/private/sim/activate-analysis && echo "$ACTIVATED $ANALYSIS_REPO_DIR"'],
         cwd=worktree, env={"PATH": "/usr/bin:/bin", "HOME": str(tmp_path), "ANALYSIS_REPO_DIR": str(main_checkout)},
         capture_output=True, text=True, check=False)
     assert chased.stdout == f"worktree {worktree}\n", chased.stderr
 
     # A pair that names no checkout is written by whichever activates.
     (data / "sim" / ".analysis").write_text(f"{tmp_path / 'gone'}\n")
-    adopted = activate("data/shared/sim/activate-analysis", worktree)
+    adopted = activate("data/private/sim/activate-analysis", worktree)
     assert f"using the code in {worktree} (it was {tmp_path / 'gone'})" in adopted.stderr
     assert (data / "sim" / ".analysis").read_text() == f"{worktree}\n"
 
@@ -537,16 +537,16 @@ def test_activate_takes_the_code_of_the_checkout_it_is_sourced_through(tmp_path:
 
     # A copy the code has since changed is said, with how to refresh it.
     (worktree / "templates" / "activate-analysis").write_text("# newer\n")
-    stale = activate("data/shared/sim/activate-analysis", worktree)
+    stale = activate("data/private/sim/activate-analysis", worktree)
     assert f"this copy differs from {worktree}/templates/activate-analysis." in stale.stderr
     assert "If that checkout has the newest code of those using this data repo" in stale.stderr
-    assert f"cp {worktree}/templates/activate-analysis {worktree}/data/shared/sim/" in stale.stderr
+    assert f"cp {worktree}/templates/activate-analysis {worktree}/data/private/sim/" in stale.stderr
 
     # One checkout spelled two ways (under a linked folder) is the same code: nothing is said.
     (tmp_path / "linked").symlink_to(tmp_path)
     (data / "sim" / ".analysis").write_text(f"{tmp_path / 'linked' / 'worktree'}\n")
     shutil.copy(data_repo.TEMPLATES_DIR / "activate-analysis", worktree / "templates")
-    same = activate("data/shared/sim/activate-analysis", worktree)
+    same = activate("data/private/sim/activate-analysis", worktree)
     assert same.stdout == f"worktree {worktree}\n" and "using the code" not in same.stderr
 
 

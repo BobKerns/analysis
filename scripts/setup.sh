@@ -252,13 +252,13 @@ fi
 # Last, so the venv is there for the user prompt and `sim init`. Without
 # arguments, asks for the data repo's path, offering to create one there
 # (#308); a blank answer (or no terminal) builds template data instead.
-echo "Linking the data repo at data/shared..."
+echo "Linking the data repo at data/private..."
 scripts/link-data.sh "$@"
 
 # Template data (CI's) is a plain directory inside this repo, so there this
 # just sets this repo's identical values again.
 echo "Configuring merges in the data repo..."
-set_merge_config data/shared
+set_merge_config data/private
 
 # Background scenario builds (#300): on by default for a person's own
 # workspace with a linked data repo; never under CI or an agent, whose
@@ -266,10 +266,10 @@ set_merge_config data/shared
 if [ "${ANALYSIS_NO_BUILDER-}" ] || [ "${CI-}" ] || [ "${CLAUDECODE-}" ] \
         || [ "${CLAUDE_CODE_REMOTE-}" ] || [ "${AI_AGENT-}" ]; then
     echo "Skipping background builds (CI, an agent, or ANALYSIS_NO_BUILDER);"
-    echo "  turn them on with: .venv/bin/sim builder install --data-dir data/shared/sim"
-elif [ -L data/shared ]; then
+    echo "  turn them on with: .venv/bin/sim builder install --data-dir data/private/sim"
+elif [ -L data/private ]; then
     echo "Turning on background scenario builds..."
-    .venv/bin/sim builder install --data-dir data/shared/sim || \
+    .venv/bin/sim builder install --data-dir data/private/sim || \
         echo "  (not turned on; see the message above)" >&2
 fi
 
@@ -282,7 +282,7 @@ if [ "${CI-}" ] || [ "${CLAUDECODE-}" ] || [ "${CLAUDE_CODE_REMOTE-}" ] \
     :
 elif claude plugin list 2>/dev/null | grep -q 'finance-research@finance-research-local'; then
     echo "Updating the finance-research Claude plugin..."
-    .venv/bin/analysis research-plugin install --data-dir data/shared/sim || \
+    .venv/bin/analysis research-plugin install --data-dir data/private/sim || \
         echo "  (not updated; see the message above)" >&2
 elif [ -t 0 ]; then
     echo "The finance-research Claude plugin writes tear sheets on funds and"
@@ -292,7 +292,7 @@ elif [ -t 0 ]; then
     read -r answer || answer=""
     case $answer in
         [Yy]*)
-            .venv/bin/analysis research-plugin install --data-dir data/shared/sim || \
+            .venv/bin/analysis research-plugin install --data-dir data/private/sim || \
                 echo "  (not installed; see the message above)" >&2
             ;;
         *)

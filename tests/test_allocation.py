@@ -10,16 +10,16 @@ from click.testing import CliRunner
 
 matplotlib.use("Agg")
 
-from analysis.cli import main
-from analysis.sim.allocation import (
+from zabob.retirement.cli import main
+from zabob.retirement.sim.allocation import (
     UNCLASSIFIED, asset_classes_present, lot_classes, portfolio_allocation,
 )
-from analysis.sim.allocation_charts import allocation_figure, allocation_pie_figure
-from analysis.sim.connection import RunConnection, ScenarioConnection
-from analysis.sim.loader import LoadError
-from analysis.sim.notebook_ui.allocation_widgets import allocation_view, portfolio_allocation_widget
-from analysis.sim.notebook_ui.accounts_plots import account_history_widget
-from analysis.sim.notebook_ui.holdings_widgets import account_holdings_widget, symbol_holders_widget
+from zabob.retirement.sim.allocation_charts import allocation_figure, allocation_pie_figure
+from zabob.retirement.sim.connection import RunConnection, ScenarioConnection
+from zabob.retirement.sim.loader import LoadError
+from zabob.retirement.sim.notebook_ui.allocation_widgets import allocation_view, portfolio_allocation_widget
+from zabob.retirement.sim.notebook_ui.accounts_plots import account_history_widget
+from zabob.retirement.sim.notebook_ui.holdings_widgets import account_holdings_widget, symbol_holders_widget
 
 ALLOCATIONS = (
     "symbol,as_of,asset_class,weight\n"
@@ -50,7 +50,7 @@ def test_lots_are_split_by_their_symbols_weights(
 
 
 def lot_total(source) -> float:
-    from analysis.sim.holdings import lots_frame
+    from zabob.retirement.sim.holdings import lots_frame
     lots = lots_frame(source)
     return lots[lots["kind"] == "asset"]["balance"].sum()
 
@@ -235,7 +235,7 @@ def test_widgets_return_their_box_without_displaying_it(
     """``Connections.show`` displays what a widget function returns, so displaying it
     as well puts the widget on the page twice."""
     from ipywidgets import widgets
-    from analysis.sim.notebook_ui import accounts_plots, allocation_widgets, holdings_widgets
+    from zabob.retirement.sim.notebook_ui import accounts_plots, allocation_widgets, holdings_widgets
 
     shown: list[object] = []
     for module in (accounts_plots, allocation_widgets, holdings_widgets):

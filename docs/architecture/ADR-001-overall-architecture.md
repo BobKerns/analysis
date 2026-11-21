@@ -5,7 +5,7 @@
 - **Status:** Accepted
 - **Date:** 2026-05-17
 - **Amended:** see [Amendments](#amendments) at the end.
-- **Scope:** New top-level subsystem `src/analysis/sim/`, sibling to the existing `amazon/` subsystem. Shares utility code (logging, sqlite helpers) but not data.
+- **Scope:** New top-level subsystem `src/zabob/retirement/sim/`, sibling to the existing `amazon/` subsystem. Shares utility code (logging, sqlite helpers) but not data.
 
 ## Context
 
@@ -117,7 +117,7 @@ The data repo provides a sourceable `activate` script (venv-style) that sets:
 ### Code organization
 
 ```text
-src/analysis/sim/
+src/zabob/retirement/sim/
     __init__.py
     model.py          # Person, Account, AccountModel, ScheduledTransaction dataclasses
     calendar.py       # Calendar, CalendarEvent
@@ -134,7 +134,7 @@ src/analysis/sim/
 tests/sim/...
 ```
 
-The existing `analysis.storage` module contains item-import schemas specific to Amazon CSVs; generic sqlite helpers (connection setup, normalization utilities) will be extracted into a sibling module if shared use justifies it. Until then, `sim/storage.py` defines its own DDL and connection.
+The existing `zabob.retirement.storage` module contains item-import schemas specific to Amazon CSVs; generic sqlite helpers (connection setup, normalization utilities) will be extracted into a sibling module if shared use justifies it. Until then, `sim/storage.py` defines its own DDL and connection.
 
 ### CLI surface (v1)
 

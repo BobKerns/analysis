@@ -27,7 +27,7 @@ here, and on this machine when it isn't (saying so); `--docker` or `--local`
 chooses. The result is `out/videos/00-pilot.en.mp4`, with its captions
 (`00-pilot.en.srt`) and thumbnail (`00-pilot.en.jpg`) beside it. A native
 build needs `analysis video setup` once first (voice model, VHS, ttyd).
-`python -m analysis.videos` is the same command run only on this machine
+`python -m zabob.retirement.videos` is the same command run only on this machine
 (the container runs it), and `scripts/videos/docker.sh` starts the
 container; both work on their own too.
 
@@ -43,7 +43,7 @@ container; both work on their own too.
 | `docs/videos/theme/templates/*.html` | Slide templates (Jinja2): `title` opens every video, `card` for breaks and endings, `figure` for a picture a command made, `window` for a screen the tapes can't record |
 | `docs/videos/youtube.toml` | The channel's settings and the wording around each description |
 | `docs/videos/assets/*.svg` | Reusable characters and props: Alice, Bill, their home |
-| `src/analysis/videos/` | The builder |
+| `src/zabob/retirement/videos/` | The builder |
 | `scripts/videos/tts_kokoro.py` | The narration worker (runs in its own environment) |
 
 `00-pilot` exists to prove the pipeline. Real videos are numbered in the
@@ -118,7 +118,7 @@ file, the theme's terminal settings, and a hidden setup that:
   `ANALYSIS_DATA_DIR` at it, so every recording starts from the same state;
 - puts this checkout's `sim`/`analysis` on `PATH`;
 - sets `ANALYSIS_NO_BUILDER=1`, so a recorded `sim init` (video 2) doesn't
-  link this checkout's `data/shared` or turn on background builds;
+  link this checkout's `data/private` or turn on background builds;
 - sets the prompt (`alice@home $`, from the theme).
 
 Each tape starts from the same state, so a tape can't rely on an earlier

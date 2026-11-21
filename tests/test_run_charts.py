@@ -11,11 +11,11 @@ import click
 import pytest
 from click.testing import CliRunner
 
-from analysis.cli import main
-from analysis.sim import reports, run_charts
-from analysis.sim.allocation_charts import allocation_drift_figure
-from analysis.sim.connection import RunConnection
-from analysis.sim.types import DollarMode
+from zabob.retirement.cli import main
+from zabob.retirement.sim import reports, run_charts
+from zabob.retirement.sim.allocation_charts import allocation_drift_figure
+from zabob.retirement.sim.connection import RunConnection
+from zabob.retirement.sim.types import DollarMode
 
 BROKERAGE = "Asset_Brokerage_Joint"
 
@@ -118,7 +118,7 @@ def test_chart_with_nothing_to_draw_still_says_so(
 def test_output_before_an_error_is_still_shown_with_a_chart(
     report_run_file: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from analysis.sim import cli
+    from zabob.retirement.sim import cli
 
     def broken(*_args: object, **_kwargs: object) -> None:
         raise click.ClickException("no chart today")
@@ -265,7 +265,7 @@ def test_tax_figure_shows_a_negative_effective_rate() -> None:
 
 
 def test_groups_get_the_same_colors_in_every_chart() -> None:
-    from analysis.sim.plotting import group_colors
+    from zabob.retirement.sim.plotting import group_colors
 
     names = [f"Asset_{i}" for i in range(12)]
     assert run_charts._group_colors(names) == group_colors(12)
@@ -316,7 +316,7 @@ def test_a_plain_report_does_not_read_the_deaths(
 def test_pre_tax_net_worth_without_a_chart_opens_no_run_connection(
     report_run_file: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from analysis.sim import cli as cli_module
+    from zabob.retirement.sim import cli as cli_module
 
     def refuse(*_args: object, **_kwargs: object) -> None:
         raise AssertionError("a RunConnection was opened")

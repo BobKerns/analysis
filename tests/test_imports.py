@@ -11,9 +11,9 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from analysis.sim.imports import budget as budgets
-from analysis.sim.imports import flows, holdings, mapping, profiles, quicken, sources, transactions
-from analysis.sim.imports.forms import ORIGIN, Budget, BudgetLine, Flows, Holding, Snapshot
+from zabob.retirement.sim.imports import budget as budgets
+from zabob.retirement.sim.imports import flows, holdings, mapping, profiles, quicken, sources, transactions
+from zabob.retirement.sim.imports.forms import ORIGIN, Budget, BudgetLine, Flows, Holding, Snapshot
 
 # ---------- the Quicken source ----------
 

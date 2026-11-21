@@ -13,8 +13,8 @@ from pathlib import Path
 import pytest
 from click.testing import CliRunner
 
-from analysis import research_plugin as rp
-from analysis.sim import registries
+from zabob.retirement import research_plugin as rp
+from zabob.retirement.sim import registries
 
 HOUSEHOLD = rp.ResearchConfig(languages=("en", "ja"), tax_state="CA")
 # Japanese script (kana and CJK ideographs): it belongs only in overlays.

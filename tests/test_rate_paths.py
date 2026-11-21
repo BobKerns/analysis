@@ -17,11 +17,11 @@ import pandas as pd
 import pytest
 from click.testing import CliRunner, Result
 
-from analysis.cli import main
-from analysis.sim.correlation import standard_normal, tail_scale
-from analysis.sim.distributions import path_rng, path_tail_rng
-from analysis.sim.ensemble import process_path, resolve_member
-from analysis.sim.loader import LoadError, LoadResult
+from zabob.retirement.cli import main
+from zabob.retirement.sim.correlation import standard_normal, tail_scale
+from zabob.retirement.sim.distributions import path_rng, path_tail_rng
+from zabob.retirement.sim.ensemble import process_path, resolve_member
+from zabob.retirement.sim.loader import LoadError, LoadResult
 
 from tests.test_correlation import _factor
 
@@ -420,8 +420,8 @@ def test_an_ensemble_with_a_process_row_runs_and_reports_it(
     append_calendar_row: Callable[..., None], test_data_dir: Path,
     intent_dir: Path, runs_dir: Path,
 ) -> None:
-    from analysis.sim import sensitivity
-    from analysis.sim.loader import latest_ensemble_batch
+    from zabob.retirement.sim import sensitivity
+    from zabob.retirement.sim.loader import latest_ensemble_batch
 
     _process_rate(append_calendar_row, "stock_path")
     runner = CliRunner()

@@ -20,9 +20,9 @@ from typing import Any
 import pandas as pd
 import pytest
 
-from analysis.sim.loader import LoadError
-from analysis.sim.taxes.state_tables import StateTablesYear
-from analysis.sim.tax_api import (
+from zabob.retirement.sim.loader import LoadError
+from zabob.retirement.sim.taxes.state_tables import StateTablesYear
+from zabob.retirement.sim.tax_api import (
     Account, Extra, IncomeItem, Mortgage, Residence, Return, SpendingItem, TaxPaid, TaxYear, calculator,
 )
 
@@ -715,7 +715,7 @@ def test_a_year_to_date_row_into_two_home_mortgages_interest_is_refused(
 def test_the_tags_a_rule_kind_implies_are_the_scenarios() -> None:
     """A calculator's Tag param may name tax:mortgage_interest when only a
     home mortgage's rule carries it, and tax:medical when only IRMAA does."""
-    from analysis.sim.loader import _scenario_tags
+    from zabob.retirement.sim.loader import _scenario_tags
     accounts = [{"name": "Liability_Mortgage", "subkind": "mortgage"},
                 {"name": "Liability_Car", "subkind": "other_liability"}]
     rules = [{"amount_rule_kind": "mortgage_payment", "to_account": "Liability_Mortgage"},
@@ -851,7 +851,7 @@ def test_a_state_refund_never_comes_off_the_state_tax_paid(ledger_con: sqlite3.C
     nor a payment. What went into the state's own account that year (#586)
     is what was paid; the federal account's payments are the federal
     tax's."""
-    from analysis.sim.engine import _taxes_paid
+    from zabob.retirement.sim.engine import _taxes_paid
     checking, state, federal = 1, 2, 3
     con = ledger_con
     con.executemany("INSERT INTO account(id, name, kind, subkind) VALUES (?, ?, ?, ?)", [
@@ -943,7 +943,7 @@ def _record_balance(con: sqlite3.Connection, posted: str, months: Sequence[int],
 
 
 def _months_of(con: sqlite3.Connection, interest: int) -> list[Mortgage]:
-    from analysis.sim.engine import _implied_rules, _mortgage_months
+    from zabob.retirement.sim.engine import _implied_rules, _mortgage_months
     return _mortgage_months(con, 2026, {}, lambda aid: Account(f"#{aid}", "expense", "", None),
                             [interest], *_implied_rules(con))
 
@@ -1037,7 +1037,7 @@ def test_a_year_to_date_row_carries_its_mortgage_rules_tags(ledger_con: sqlite3.
     """A rental's pre-start interest, a year_to_date.csv row into its
     rule's interest account, is the rental's as the rule's own interest
     is: tagged tax:rental, never home mortgage interest."""
-    from analysis.sim.engine import _tax_ledger
+    from zabob.retirement.sim.engine import _tax_ledger
     con = ledger_con
     _mortgage_ledger(con)
     con.execute("UPDATE scheduled_transaction SET interest_account = 'Expense_Interest_Mortgage'")

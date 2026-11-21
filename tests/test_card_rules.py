@@ -11,7 +11,7 @@ import sqlite3
 
 import pytest
 
-from analysis.sim.loader import LoadError, LoadResult
+from zabob.retirement.sim.loader import LoadError, LoadResult
 
 CARD, INTEREST = "Liability_Card", "Expense_Interest_Card"
 

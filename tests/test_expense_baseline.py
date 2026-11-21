@@ -4,7 +4,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from analysis.expenses.baseline import (
+from zabob.retirement.expenses.baseline import (
     BaselineResult,
     occasional_payments,
     BASELINE_GENERATED_TAG,
@@ -13,13 +13,13 @@ from analysis.expenses.baseline import (
     build_scheduled_baseline_rows,
     replace_generated_scheduled_rows,
 )
-from analysis.sim.imports.mapping import (
+from zabob.retirement.sim.imports.mapping import (
     load_category_map,
     load_category_splits,
     load_excluded_payees,
     load_expense_accounts,
 )
-from analysis.sim.imports.quicken import read_transactions
+from zabob.retirement.sim.imports.quicken import read_transactions
 
 
 def _write_export(path: Path) -> None:

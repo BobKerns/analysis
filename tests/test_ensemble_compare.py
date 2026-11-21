@@ -12,9 +12,9 @@ import pytest
 from contextlib import closing
 from click.testing import CliRunner
 
-from analysis.cli import main
-from analysis.sim.connection import RunConnection
-from analysis.sim.ensemble import (
+from zabob.retirement.cli import main
+from zabob.retirement.sim.connection import RunConnection
+from zabob.retirement.sim.ensemble import (
     comparison_deltas,
     load_ensemble,
     member_pairs,
@@ -26,7 +26,7 @@ from analysis.sim.ensemble import (
     risk_summary,
     tail_means,
 )
-from analysis.sim.types import DollarMode
+from zabob.retirement.sim.types import DollarMode
 
 MONTHS = pd.date_range("2027-01-31", periods=3, freq="ME")
 
@@ -278,7 +278,7 @@ def test_sim_ensemble_compare_graph_draws_every_panel_the_options_ask_for(
     the dollars --dollars asks for; with no image terminal, as a PNG file."""
     import tempfile
 
-    from analysis.sim import ensemble_plots
+    from zabob.retirement.sim import ensemble_plots
 
     figures: list = []
     real_figure = ensemble_plots.ensemble_compare_grid_figure
@@ -323,7 +323,7 @@ def test_sim_ensemble_compare_graph_of_a_one_sided_account_is_its_fan_chart(
 def test_sim_ensemble_graph_shows_in_an_image_terminal(
     seeded_ensemble_batch: Callable[..., Path], runs_dir: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from analysis.sim import chain_graph
+    from zabob.retirement.sim import chain_graph
 
     monkeypatch.setattr(chain_graph, "terminal_protocol", lambda: "kitty")
     monkeypatch.setattr(chain_graph, "cell_size", lambda: (10.0, 24.0))
@@ -352,7 +352,7 @@ def test_sim_ensemble_graph_options_are_checked_before_loading(
 
 
 def test_figure_dpi_matches_the_terminal_text_height() -> None:
-    from analysis.sim.cli import _figure_dpi
+    from zabob.retirement.sim.cli import _figure_dpi
 
     # 10pt text in a 24px cell's 20px line: 20px per 10pt is 144 dpi.
     assert _figure_dpi((10.0, 24.0)) == pytest.approx(144.0)
@@ -397,8 +397,8 @@ def test_sim_ensemble_compare_with_several_variants_prints_the_notebooks_two_tab
     assert [row.split()[1] for row in lines[tail_at + 2:tail_at + 5]] == [
         "baseline", "child", "other"]
     # The same tables as the notebook's widget.
-    from analysis.sim.ensemble_tables import RecipeTables
-    from analysis.sim.series_db import open_series
+    from zabob.retirement.sim.ensemble_tables import RecipeTables
+    from zabob.retirement.sim.series_db import open_series
 
     tables = RecipeTables(
         {name: open_series(runs_dir / name / "monte-carlo" / "2026-01-01T000000Z")

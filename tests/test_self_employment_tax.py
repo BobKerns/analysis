@@ -14,10 +14,10 @@ from typing import Any
 
 import pytest
 
-from analysis.sim.tax_api import (
+from zabob.retirement.sim.tax_api import (
     Account, Extra, IncomeItem, Person, Residence, Return, TaxError, TaxYear, calculator,
 )
-from analysis.sim.taxes import common
+from zabob.retirement.sim.taxes import common
 
 YEAR = 2030
 MICROS = 1_000_000

@@ -12,9 +12,9 @@ import pandas as pd
 import pytest
 from click.testing import CliRunner
 
-from analysis.cli import main
-from analysis.sim import drift
-from analysis.sim.series_db import open_series
+from zabob.retirement.cli import main
+from zabob.retirement.sim import drift
+from zabob.retirement.sim.series_db import open_series
 
 PORTFOLIO = "portfolio:invest"
 
@@ -198,8 +198,8 @@ def test_sim_ensemble_drift_reports_by_year(
 def test_the_drift_widget_draws_a_run(
     run_strategy_scenario: Callable[[str], Path], capsys: pytest.CaptureFixture[str],
 ) -> None:
-    from analysis.sim.connection import RunConnection
-    from analysis.sim.notebook_ui.allocation_widgets import allocation_drift_widget
+    from zabob.retirement.sim.connection import RunConnection
+    from zabob.retirement.sim.notebook_ui.allocation_widgets import allocation_drift_widget
 
     rc = RunConnection(run_strategy_scenario("alice_rebalance"))
     try:
@@ -218,7 +218,7 @@ def test_the_ensemble_drift_widget_draws_a_batch(
     strategy_ensemble_batch: Path, strategy_scenarios: Path, runs_dir: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    from analysis.sim.notebook_ui.ensemble_widgets import ensemble_drift_widget
+    from zabob.retirement.sim.notebook_ui.ensemble_widgets import ensemble_drift_widget
 
     box = ensemble_drift_widget(data_dir=strategy_scenarios, runs_dir=runs_dir, default="alice_rebalance")
     targets, portfolio, measure = box.children[1].children[:3]
@@ -257,9 +257,9 @@ def test_sim_compare_puts_a_strategy_on_and_off_side_by_side(strategy_scenarios:
 def test_the_strategy_compare_widget_overlays_the_runs(
     run_strategy_scenario: Callable[[str], Path], runs_dir: Path, capsys: pytest.CaptureFixture[str],
 ) -> None:
-    from analysis.sim.connection import RunConnection
-    from analysis.sim.notebook_ui.compare_plots import rules_and_events_widget, strategy_compare_widget
-    from analysis.sim.notebook_ui.pickers import MultiScenarioConnections
+    from zabob.retirement.sim.connection import RunConnection
+    from zabob.retirement.sim.notebook_ui.compare_plots import rules_and_events_widget, strategy_compare_widget
+    from zabob.retirement.sim.notebook_ui.pickers import MultiScenarioConnections
 
     on = run_strategy_scenario("alice_rebalance")
     (runs_dir / "on.sqlite3").write_bytes(on.read_bytes())

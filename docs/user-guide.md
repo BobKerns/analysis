@@ -9,7 +9,7 @@
 This guide shows how to make common changes to a Zabob Retirement scenario, step by step, with
 real examples, and how to look at what a run produced. It assumes you already
 have a data repo. If you don't, start one with `sim init` in the code checkout
-(it is made at `data/shared`; `sim init DIR` puts it elsewhere and links it there). It asks who you
+(it is made at `data/private`; `sim init DIR` puts it elsewhere and links it there). It asks who you
 are and builds it from the code repository's templates ([templates/README.md](../templates/README.md)).
 The one-line installer ([SETUP.md](SETUP.md)) does that for you.
 
@@ -1811,8 +1811,8 @@ a year can afford, while their own code decides which trips fit, taken whole:
 ```python
 from dataclasses import dataclass
 
-from analysis.sim.strategies import Guardrail
-from analysis.sim.strategy_api import Context, Decision, RuleView, Spend, register
+from zabob.retirement.sim.strategies import Guardrail
+from zabob.retirement.sim.strategy_api import Context, Decision, RuleView, Spend, register
 
 
 @register

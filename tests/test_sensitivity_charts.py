@@ -8,10 +8,10 @@ from pathlib import Path
 import pytest
 from click.testing import CliRunner
 
-from analysis.cli import main
-from analysis.sim import sensitivity
-from analysis.sim import sensitivity_charts as sc
-from analysis.sim.types import DollarMode
+from zabob.retirement.cli import main
+from zabob.retirement.sim import sensitivity
+from zabob.retirement.sim import sensitivity_charts as sc
+from zabob.retirement.sim.types import DollarMode
 
 
 def _sensitivity(runs_dir: Path, *args: str):
@@ -128,7 +128,7 @@ def test_row_refusals(oat_batch: Path, runs_dir: Path, args: tuple[str, ...], me
 def _drop_members(batch: Path, row: str, quantiles: set[float]) -> None:
     """Remove the run files of ``row``'s members at ``quantiles``, as if
     they had failed before writing one."""
-    from analysis.sim.ensemble import load_ensemble
+    from zabob.retirement.sim.ensemble import load_ensemble
 
     connections = load_ensemble(batch)
     try:
@@ -170,7 +170,7 @@ def test_row_completes_over_the_rows_the_batch_varied(
     line = f"ensemble sensitivity retire_alice --runs-dir {runs_dir} --row "
     env = {"_SIM_COMPLETE": "bash_complete", "COMP_WORDS": f"sim {line}",
            "COMP_CWORD": str(len(line.split()) + 1), "ANALYSIS_DATA_DIR": str(test_data_dir)}
-    from analysis.sim.cli import sim_group_command
+    from zabob.retirement.sim.cli import sim_group_command
 
     result = CliRunner().invoke(sim_group_command, [], prog_name="sim", env=env)
     assert result.exit_code == 0, result.output
@@ -207,7 +207,7 @@ def test_rows_fitting_fill_the_height_given() -> None:
 
 
 def test_top_without_n_fills_the_terminal_else_draws_the_default() -> None:
-    from analysis.sim import cli
+    from zabob.retirement.sim import cli
 
     drawn: list[tuple[int | None, float]] = []
 

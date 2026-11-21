@@ -1,14 +1,16 @@
 {
     "folders": [
         {
-            "path": "."
+            "path": ".",
+            "name": "zabob-retirement"
         },
         {
-            "path": "./data/shared"
+            "path": "./data/private",
+            "name": "private"
         }
     ],
     "settings": {
-        "cSpell.configFile": "${workspaceFolder:retirement}/cspell.json",
+        "cSpell.configFile": "${workspaceFolder:zabob-retirement}/cspell.json",
         "cSpell.import": ["./cspell.json"],
         "explorerExclude.backup": {},
         "explorerExcludeManager.backup": {},

@@ -1,12 +1,12 @@
-"""The data repo user prompt (``analysis.sim.choose_user``) and the template it runs on."""
+"""The data repo user prompt (``zabob.retirement.sim.choose_user``) and the template it runs on."""
 
 from __future__ import annotations
 
 import io
 from pathlib import Path
 
-from analysis.sim.choose_user import choose, match_person, primary_persons
-from analysis.sim.loader import load_scenario
+from zabob.retirement.sim.choose_user import choose, match_person, primary_persons
+from zabob.retirement.sim.loader import load_scenario
 
 PERSONS = [("alice", "Alice (fake)"), ("bill", "Bill (fake)")]
 

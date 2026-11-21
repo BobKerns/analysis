@@ -16,9 +16,9 @@ import git
 import pytest
 from click.testing import CliRunner
 
-from analysis.cli import main
-from analysis.sim import builder, prices, research, research_schedule, symbols
-from analysis.sim.research_schedule import RunReport
+from zabob.retirement.cli import main
+from zabob.retirement.sim import builder, prices, research, research_schedule, symbols
+from zabob.retirement.sim.research_schedule import RunReport
 
 NY = research_schedule.MARKET
 # A Tuesday, 07:00 in New York: past the day's 06:07.

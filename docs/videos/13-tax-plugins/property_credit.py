@@ -5,8 +5,8 @@ of federal AGI."""
 
 from dataclasses import dataclass
 
-from analysis.sim.tax_api import Dollars, Tag, percent, register
-from analysis.sim.taxes.state_tables import StateTables, StateTablesYear
+from zabob.retirement.sim.tax_api import Dollars, Tag, percent, register
+from zabob.retirement.sim.taxes.state_tables import StateTables, StateTablesYear
 
 API_VERSION = 4
 

@@ -5,7 +5,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from analysis.sim import measures
+from zabob.retirement.sim import measures
 
 # Three years of months: 2030 from June (a partial first year), 2031, 2032.
 YEARS = np.array([2030] * 7 + [2031] * 12 + [2032] * 12)

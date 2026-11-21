@@ -173,7 +173,7 @@ approved), you could add and run cells in an open notebook directly.
 
 | Symptom | Fix |
 | --- | --- |
-| `analysis: no data repo found` from `env.sh` | The main checkout has no `data/shared`; ask the user where their data repo is |
+| `analysis: no data repo found` from `env.sh` | The main checkout has no `data/private`; ask the user where their data repo is |
 | A command sits silent | It's waiting for input: rerun with `</dev/null` and name what it asked for |
 | `waiting for the background build of X` | Expected for a stale scenario; let it finish (Ctrl-C would open the old run) |
 | `show: the kitty backend is UNTESTED and failed` | Tell the user; ask whether to use `--fallback` |

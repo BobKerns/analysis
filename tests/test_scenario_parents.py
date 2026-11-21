@@ -9,12 +9,12 @@ from pathlib import Path
 import pytest
 from click.testing import CliRunner
 
-from analysis.cli import main
-from analysis.sim import scenario as sc
-from analysis.sim.cli import _parents_cell
-from analysis.sim.lineage import MIXIN_BASE, MIXIN_ONLY_DESCRIPTION, is_mixin_only, load_order, read_parents
-from analysis.sim.loader import load_scenario
-from analysis.sim.scenario_guide import walk_parents
+from zabob.retirement.cli import main
+from zabob.retirement.sim import scenario as sc
+from zabob.retirement.sim.cli import _parents_cell
+from zabob.retirement.sim.lineage import MIXIN_BASE, MIXIN_ONLY_DESCRIPTION, is_mixin_only, load_order, read_parents
+from zabob.retirement.sim.loader import load_scenario
+from zabob.retirement.sim.scenario_guide import walk_parents
 
 
 def _sim(data_dir: Path, *args: str, input: str | None = None):
@@ -215,7 +215,7 @@ def test_create_scenario_api(test_data_dir: Path, parent: str | None) -> None:
 
 
 def test_mix_ins_without_a_parent_are_refused(test_data_dir: Path) -> None:
-    from analysis.sim.loader import LoadError
+    from zabob.retirement.sim.loader import LoadError
     with pytest.raises(LoadError, match="need a parent"):
         sc.create_scenario(test_data_dir, "api", None, mixins=["base"])
 

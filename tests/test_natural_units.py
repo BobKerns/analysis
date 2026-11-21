@@ -10,9 +10,9 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from analysis.sim import units
-from analysis.sim.cli import _calendar_row_label
-from analysis.sim.loader import LoadError, LoadResult, calendar_row_key
+from zabob.retirement.sim import units
+from zabob.retirement.sim.cli import _calendar_row_label
+from zabob.retirement.sim.loader import LoadError, LoadResult, calendar_row_key
 
 
 def _issues(load: Callable[[], LoadResult]) -> list[str]:

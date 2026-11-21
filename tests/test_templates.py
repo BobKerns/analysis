@@ -12,12 +12,12 @@ from pathlib import Path
 import pytest
 from click.testing import CliRunner, Result
 
-from analysis.cli import main
-from analysis.sim import names
-from analysis.sim.dates import place_month
-from analysis.sim.ensemble import process_path, resolve_member
-from analysis.sim.lineage import TEMPLATE_SCENARIOS_DIR, load_order, scenario_dir
-from analysis.sim.loader import list_scenario_names, load_scenario
+from zabob.retirement.cli import main
+from zabob.retirement.sim import names
+from zabob.retirement.sim.dates import place_month
+from zabob.retirement.sim.ensemble import process_path, resolve_member
+from zabob.retirement.sim.lineage import TEMPLATE_SCENARIOS_DIR, load_order, scenario_dir
+from zabob.retirement.sim.loader import list_scenario_names, load_scenario
 
 EPISODES = ["t_great_inflation", "t_financial_crisis", "t_pandemic_spike"]
 COMPOUND_EPISODES = ["t_crisis_then_spike"]

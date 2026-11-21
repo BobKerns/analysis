@@ -15,9 +15,9 @@ import pandas as pd
 import pytest
 from click.testing import CliRunner
 
-from analysis.cli import main
-from analysis.sim.engine import EngineError, run_scenario
-from analysis.sim.loader import LoadError, LoadResult
+from zabob.retirement.cli import main
+from zabob.retirement.sim.engine import EngineError, run_scenario
+from zabob.retirement.sim.loader import LoadError, LoadResult
 
 
 def _swap(append_calendar_row: Callable[..., None], date: str, aux_kind: str,

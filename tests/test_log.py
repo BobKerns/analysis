@@ -1,13 +1,13 @@
 import json
 import logging
 
-from analysis.log import JsonLineFormatter
+from zabob.retirement.log import JsonLineFormatter
 
 
 def test_json_line_formatter_includes_extra_fields() -> None:
     formatter = JsonLineFormatter()
     record = logging.LogRecord(
-        name="analysis.test",
+        name="zabob.retirement.test",
         level=logging.INFO,
         pathname="",
         lineno=0,
@@ -30,7 +30,7 @@ def test_json_line_formatter_includes_extra_fields() -> None:
 def test_json_line_formatter_standard_fields_not_duplicated() -> None:
     formatter = JsonLineFormatter()
     record = logging.LogRecord(
-        name="analysis.test",
+        name="zabob.retirement.test",
         level=logging.WARNING,
         pathname="",
         lineno=0,

@@ -14,8 +14,8 @@ from pathlib import Path
 import pytest
 from click.testing import CliRunner
 
-from analysis.cli import main
-from analysis.sim.loader import LoadError, load_scenario
+from zabob.retirement.cli import main
+from zabob.retirement.sim.loader import LoadError, load_scenario
 
 ROOT = "retire_alice"
 

@@ -9,7 +9,7 @@ To read a formatted `.md` file:
 Every notebook view or widget should have a terminal equivalent where one makes sense:
 it needs no kernel or browser, works over SSH and in scripts, and is what to suggest on a
 machine too small for a notebook. Every so often (say after each batch of notebook work),
-walk the notebooks and `analysis.sim.notebook_ui`, check each view against `analysis sim
+walk the notebooks and `zabob.retirement.sim.notebook_ui`, check each view against `analysis sim
 --help`, and add the missing command or note why there isn't one. Charts count too: a
 notebook chart wants a `--chart`/`--chart-file` on its terminal equivalent, with the
 plot in a widget-free module both share (as `ensemble_plots.py` and `compare_charts.py`

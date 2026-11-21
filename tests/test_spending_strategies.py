@@ -21,9 +21,9 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from analysis.sim import reports
-from analysis.sim.loader import LoadError, load_scenario
-from analysis.sim.strategy_api import StrategyError
+from zabob.retirement.sim import reports
+from zabob.retirement.sim.loader import LoadError, load_scenario
+from zabob.retirement.sim.strategy_api import StrategyError
 
 SCENARIO = "alice_spending"
 FLEX = "strategies/flex.csv"
@@ -100,7 +100,7 @@ def _load_errors(data_dir: Path, intent_dir: Path) -> str:
 def _cli(data_dir: Path, *args: str, input: str | None = None):  # noqa: A002 -- CliRunner's name
     from click.testing import CliRunner
 
-    from analysis.cli import main
+    from zabob.retirement.cli import main
 
     return CliRunner().invoke(main, ["sim", *args, "--data-dir", str(data_dir)], input=input,
                               terminal_width=200)
@@ -245,7 +245,7 @@ def test_ceiling_floor_holds_real_change_within_its_limits(
 # ---------- the context ----------
 
 _PROBE = '''
-from analysis.sim.strategy_api import Decision, Spend, Strategy, register
+from zabob.retirement.sim.strategy_api import Decision, Spend, Strategy, register
 
 @register
 class Probe(Strategy):
@@ -510,7 +510,7 @@ def test_unspent_budget_counts_only_for_rules_into_expenses(
     _rewrite(strategy_csv(SCENARIO, "scheduled.csv"), "gifts", to_account="Asset_Savings")
     _strategy(strategy_csv, "threshold", minimum="900000.00")
     run = run_strategy_scenario(SCENARIO)
-    from analysis.sim.connection import RunConnection
+    from zabob.retirement.sim.connection import RunConnection
 
     rc = RunConnection(run)
     try:

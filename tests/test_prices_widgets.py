@@ -11,8 +11,8 @@ import numpy as np
 
 matplotlib.use("Agg")
 
-from analysis.sim.connection import ScenarioConnection
-from analysis.sim.notebook_ui.prices_widgets import (
+from zabob.retirement.sim.connection import ScenarioConnection
+from zabob.retirement.sim.notebook_ui.prices_widgets import (
     price_check_view,
     price_check_widget,
     price_history_figure,
@@ -20,7 +20,7 @@ from analysis.sim.notebook_ui.prices_widgets import (
     symbol_table_view,
     symbol_table_widget,
 )
-from analysis.sim import prices
+from zabob.retirement.sim import prices
 
 def test_check_view_puts_the_flagged_lots_first(
     priced_lots: None, test_data_dir: Path, load_test_copy,

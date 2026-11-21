@@ -10,10 +10,10 @@ import pandas as pd
 import pytest
 from click.testing import CliRunner
 
-from analysis.cli import main
-from analysis.sim import sensitivity
-from analysis.sim.types import DollarMode
-from analysis.sim.loader import LoadResult
+from zabob.retirement.cli import main
+from zabob.retirement.sim import sensitivity
+from zabob.retirement.sim.types import DollarMode
+from zabob.retirement.sim.loader import LoadResult
 
 # --- pure functions over synthetic deltas ----------------------------------
 
@@ -266,7 +266,7 @@ def test_cpi_attribution_carries_opening_balance_row_for_inflation(inflation_bat
 
 
 def test_oat_attribution_unknown_row(oat_batch: Path) -> None:
-    from analysis.sim.ensemble import EnsembleError
+    from zabob.retirement.sim.ensemble import EnsembleError
 
     with pytest.raises(EnsembleError, match="nope"):
         sensitivity.oat_attribution(oat_batch, "nope")
@@ -357,7 +357,7 @@ def test_required_members_and_interval() -> None:
 
 
 def test_draws_frame_excludes_member_zero(mc_batch: Path) -> None:
-    from analysis.sim.ensemble import load_ensemble
+    from zabob.retirement.sim.ensemble import load_ensemble
 
     connections = load_ensemble(mc_batch)
     try:
@@ -377,8 +377,8 @@ def test_mc_report_holds_few_member_files_open(
     used to open a file per member and run out (#448). With a budget of two
     the 8-member report still reads every member, reopening as it goes, and
     matches the report read with them all open."""
-    from analysis.sim.connection import HandleBudget
-    from analysis.sim.ensemble import load_ensemble
+    from zabob.retirement.sim.connection import HandleBudget
+    from zabob.retirement.sim.ensemble import load_ensemble
 
     expected = sensitivity.mc_report(mc_batch).table
     monkeypatch.setattr(HandleBudget, "DEFAULT_LIMIT", 2)
@@ -543,7 +543,7 @@ def test_factor_rows_carry_rho_and_no_status() -> None:
 def test_score_correlations_check_links_and_implied_pairs() -> None:
     import numpy as np
 
-    from analysis.sim.correlation import Link, resolve_scores
+    from zabob.retirement.sim.correlation import Link, resolve_scores
 
     links = {"a": Link("f", 0.8), "b": Link("f", 0.5)}
     rng = np.random.default_rng(11)
@@ -564,7 +564,7 @@ def test_score_correlations_check_links_and_implied_pairs() -> None:
 
 
 def test_score_correlations_skip_uncorrelated_pairs() -> None:
-    from analysis.sim.correlation import Link
+    from zabob.retirement.sim.correlation import Link
 
     scores = pd.DataFrame({"a": [0.1, 0.2, 0.3, 0.4], "c": [0.4, 0.1, 0.3, 0.2]})
     pairs = sensitivity.score_correlations(scores, {"a": Link("f", 0.8)}, ["a", "c"])
@@ -636,8 +636,8 @@ def test_cumulative_flows_exclude_both_ytd_kinds(
     counting them would put pre-simulation history into attribution."""
     import sqlite3
 
-    from analysis.sim.connection import RunConnection
-    from analysis.sim.engine import run_scenario
+    from zabob.retirement.sim.connection import RunConnection
+    from zabob.retirement.sim.engine import run_scenario
 
     scheduled = retire_alice_csv("scheduled.csv")
     df = pd.read_csv(scheduled, dtype=str, keep_default_na=False)
@@ -786,7 +786,7 @@ def test_parameters_describes_shape_and_moments(
         "--runs-dir", str(runs_dir), "--allow-dirty-data",
     ])
     assert run.exit_code == 0, run.output
-    from analysis.sim.ensemble import latest_ensemble_batch
+    from zabob.retirement.sim.ensemble import latest_ensemble_batch
 
     batch = latest_ensemble_batch(runs_dir / "retire_alice")
     assert batch is not None

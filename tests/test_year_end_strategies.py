@@ -18,11 +18,11 @@ from pathlib import Path
 import pytest
 from click.testing import CliRunner
 
-from analysis.sim import engine, reports
-from analysis.cli import main
-from analysis.sim.connection import RunConnection
-from analysis.sim.loader import LoadError
-from analysis.sim.strategy_api import StrategyError
+from zabob.retirement.sim import engine, reports
+from zabob.retirement.cli import main
+from zabob.retirement.sim.connection import RunConnection
+from zabob.retirement.sim.loader import LoadError
+from zabob.retirement.sim.strategy_api import StrategyError
 
 SCENARIO = "alice_year_end"
 BROKERAGE = "Asset_Brokerage_Joint"
@@ -217,7 +217,7 @@ def test_gift_waits_for_a_surplus(run_strategy_scenario, strategy_csv) -> None:
 
 ESTIMATE = '''
 from dataclasses import dataclass
-from analysis.sim.strategy_api import Decision, Strategy, register
+from zabob.retirement.sim.strategy_api import Decision, Strategy, register
 
 
 @register
@@ -267,7 +267,7 @@ def test_irmaa_floors_are_empty_without_the_table() -> None:
 
 CONVERT = '''
 from dataclasses import dataclass
-from analysis.sim.strategy_api import Decision, LotRef, Strategy, Transfer, register
+from zabob.retirement.sim.strategy_api import Decision, LotRef, Strategy, Transfer, register
 
 
 @register
@@ -298,7 +298,7 @@ def test_transfer_to_roth_is_a_taxed_conversion(run_strategy_scenario, strategy_
 
 BAD = '''
 from dataclasses import dataclass
-from analysis.sim.strategy_api import Decision, LotRef, Realize, Strategy, Take, Transfer, register
+from zabob.retirement.sim.strategy_api import Decision, LotRef, Realize, Strategy, Take, Transfer, register
 
 
 @register
@@ -404,8 +404,8 @@ def test_explain_and_gains_report_show_the_harvest(run_strategy_scenario) -> Non
 def test_a_cash_gifts_tax_cap_counts_a_loss_as_no_gain() -> None:
     # ctx.tax.estimate doesn't net losses or limit them to $3,000, so a loss
     # counted against the gain could let a cash gift exceed max_tax.
-    from analysis.sim.strategies.year_end import _gains
-    from analysis.sim.strategy_api import LotRef, LotView
+    from zabob.retirement.sim.strategies.year_end import _gains
+    from zabob.retirement.sim.strategy_api import LotRef, LotView
 
     def lot(name: str, basis: int) -> LotView:
         return LotView(LotRef(name, "default"), "asset", "brokerage", None, "taxable", "joint",

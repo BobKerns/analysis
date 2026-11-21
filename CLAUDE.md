@@ -35,14 +35,14 @@ git -c filter.nbstripout.clean=cat -c filter.nbstripout.smudge=cat \
     -c filter.nbstripout.required=false \
     worktree add --no-track -b <branch> ../analysis-worktrees/<flattened-branch> origin/main
 cd ../analysis-worktrees/<flattened-branch> && env -u VIRTUAL_ENV uv sync && npm ci
-# data/shared: the main checkout's data repo, or template data where it has none
+# data/private: the main checkout's data repo, or template data where it has none
 main=$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")
-if [ -e "$main/data/shared" ]; then ln -s "$(cd "$main/data/shared" && pwd -P)" data/shared
+if [ -e "$main/data/private" ]; then ln -s "$(cd "$main/data/private" && pwd -P)" data/private
 else scripts/link-data.sh --template; fi
 ```
 
 After `uv sync` the filter works normally; `npm ci` installs the pinned
-`cspell`/`markdownlint` for the spelling and markdown gates, and `data/shared`
+`cspell`/`markdownlint` for the spelling and markdown gates, and `data/private`
 gives cspell the data repo's word list (`.cspell/data-words.txt`), without which
 it fails. Run commands there with
 `env -u VIRTUAL_ENV uv run ...`, since an editor terminal's `VIRTUAL_ENV` may

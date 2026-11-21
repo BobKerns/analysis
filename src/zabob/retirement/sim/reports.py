@@ -1,0 +1,798 @@
+"""Result reports for the terminal (#187): an account's balance history, and
+income, expenses, gains and tax by year, read from one run.
+
+The same numbers as ``accounts.ipynb`` and ``net_worth.ipynb``: every frame is
+built from :class:`~zabob.retirement.sim.connection.RunConnection`'s derived data, in
+nominal or CPI-constant dollars. The ``render_*`` functions turn a frame into a
+``rich`` table; the ``sim account history`` and ``sim report`` commands print
+them.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Callable, Collection, Mapping
+from datetime import date
+
+import numpy as np
+import pandas as pd
+
+from zabob.retirement.frames import index_years
+from zabob.retirement.sim.accounts import CASHFLOW_KINDS
+from zabob.retirement.sim.connection import (
+    EXPENSE_SUBKIND_TO_CATEGORY,
+    NON_CASH_EXPENSE_ACCOUNTS,
+    RunConnection,
+    event_month,
+    year_end_values,
+)
+from zabob.retirement.sim.flow_events import (
+    INCOME_REPORT_CATEGORIES,
+    UNTAGGED,
+    FlowSide,
+    spending_by_month,
+)
+from zabob.retirement.sim.flow_events import event_groups as _groups
+from zabob.retirement.sim.flow_events import flow_events as _flow_events
+from zabob.retirement.sim.flow_events import group_order as _group_order
+from zabob.retirement.sim.flow_events import is_cash as _is_cash
+from zabob.retirement.sim.types import DollarMode
+
+__all__ = [
+    "CASH_FLOW", "CASH_INCOME", "DEFERRED_TAX_CHANGE", "ECONOMIC_INCOME", "FlowSide",
+    "INCOME_REPORT_CATEGORIES", "NET_WORTH_CHANGE", "NET_WORTH_COLUMNS", "UNTAGGED",
+    "account_history", "flows_by_year", "flows_for_year", "net_worth_change_by_year",
+    "gains_by_year", "tax_by_year", "tax_reconciliation",
+    "render_report_table", "spending_by_month",
+]
+
+CASH_INCOME = "cash_income"
+"""The income report's column of income received into cash accounts (#248)."""
+
+CASH_FLOW = "cash_flow"
+"""The income report's column of cash income plus withdrawals into cash (#248)."""
+
+def _cpi(rc: RunConnection, frame, mode: DollarMode, *, annual: bool = False):
+    """``frame`` in ``mode`` dollars: month-indexed, or year-indexed with
+    ``annual`` (each year's year-end CPI)."""
+    if mode != DollarMode.CPI_CONSTANT:
+        return frame
+    return rc.to_cpi_constant_annual(frame) if annual else rc.to_cpi_constant(frame)
+
+
+def account_history(
+    rc: RunConnection, account: str, *, lot: str | None = None,
+    start: str | None = None, end: str | None = None, yearly: bool = False,
+    mode: DollarMode = DollarMode.NOMINAL,
+) -> pd.DataFrame:
+    """One account's (or one lot's) month-end balance, and its change since the
+    month (or year) before, indexed by month end (or by year with ``yearly``).
+
+    A lot of an asset account adds its cost basis, unrealized gain and
+    quantity where the run tracks them; an account-wide basis or quantity
+    would mix unlike lots, so the account itself shows only its balance.
+    Income and expense balances are cumulative totals, so their change is
+    the period's flow. ``start``/``end`` are month-end dates, inclusive.
+
+    Raises ``KeyError`` for an account or lot the run doesn't have.
+    """
+    kinds = rc.account_kinds()
+    if account not in kinds.index:
+        raise KeyError(f"unknown account in run: {account!r}")
+    kind = kinds[account]
+    if lot is None:
+        balance = rc.account_balance(account, mode)
+    else:
+        lots = rc.lots_by_account(single=True).get(account, [])
+        if lot not in lots:
+            known = f" (lots: {', '.join(lots)})" if lots else ""
+            raise KeyError(f"unknown lot {lot!r} of account {account!r}{known}")
+        balance = rc.lot_balance(account, lot, mode)
+    frame = pd.DataFrame({"balance": balance})
+    if kind in CASHFLOW_KINDS:
+        frame["change"] = balance.diff().fillna(balance)
+    else:
+        frame["change"] = balance.diff()
+    if lot is not None and kind == "asset":
+        label = f"{account}/{lot}"
+        for measure in ("cost_basis", "quantity"):
+            pivot = (rc.cpi_lot_balance_pivot(measure) if mode == DollarMode.CPI_CONSTANT
+                     else rc.lot_balance_pivot(measure))
+            if label in pivot.columns and pivot[label].notna().any():
+                frame[measure] = pivot[label].reindex(frame.index)
+        if "cost_basis" in frame.columns:
+            frame.insert(list(frame.columns).index("cost_basis") + 1, "unrealized",
+                         frame["balance"] - frame["cost_basis"])
+    if start is not None:
+        frame = frame[frame.index >= pd.Timestamp(start)]
+    if end is not None:
+        frame = frame[frame.index <= pd.Timestamp(end)]
+    if yearly:
+        changes = frame["change"].groupby(index_years(frame)).sum(min_count=1)
+        frame = year_end_values(frame)
+        frame["change"] = changes
+        frame.index.name = "year"
+    else:
+        frame.index = pd.DatetimeIndex(frame.index).strftime("%Y-%m")
+        frame.index.name = "month"
+    return frame
+
+
+def without_empty_groups(frame: pd.DataFrame, keep: Collection[str] = ()) -> pd.DataFrame:
+    """``frame`` less each column with nothing in any year (no business, no
+    inheritance), which only widens a table; a column in ``keep`` stays
+    whatever it holds. `sim report income|expenses` and the notebooks' flow
+    tables drop the same columns through this, so they show the same groups."""
+    empty = [c for c in frame.columns
+             if c not in keep and frame[c].fillna(0).round(2).eq(0).all()]
+    return frame.drop(columns=empty)
+
+
+def flows_by_year(
+    rc: RunConnection, side: FlowSide, *, by: str = "category",
+    mode: DollarMode = DollarMode.NOMINAL, untagged: bool = False, after_tax: bool = True,
+    story: bool = True,
+) -> pd.DataFrame:
+    """Year x group income (or expense) totals in dollars, plus a ``total`` column
+    and, for income, ``cash_income``: the part of the total that was paid
+    into a cash account (paychecks, Social Security, interest into checking),
+    leaving out paper growth and money deferred into retirement accounts;
+    and ``cash_flow``, that plus what was withdrawn into cash from other
+    assets (sales, IRA and 401k withdrawals). Neither is part of ``total``.
+
+    ``by`` is ``category`` (the notebooks' buckets, keeping ``other``),
+    ``account``, or ``tag:ROLE`` (each event's tag in ROLE, from its rule or
+    else its account). Each event counts in the year of its own date. CPI-constant
+    dollars convert each month's flow before summing the year, as the
+    notebooks do.
+
+    By tag, flows with no tag in ROLE are left out, of ``total`` and
+    ``cash_income`` too, since they don't belong to anything the tag
+    measures; ``cash_flow`` is dropped, as its withdrawals carry no tag.
+    ``untagged=True`` keeps them as an ``(untagged)`` group, counted in every
+    total.
+
+    Income that tells the whole story (not just the tagged part) names its
+    total ``economic_income`` and follows it, before the cash columns, with
+    :func:`net_worth_change_by_year`'s columns down to ``Δnet_worth``,
+    after tax unless ``after_tax=False``; ``story=False`` leaves those out,
+    for a caller that shows only the groups (the slow part is the after-tax
+    net worth they need).
+    """
+    events = _flow_events(rc, side)
+    events["group"] = _groups(rc, events, side, by)
+    tagged_only = by.startswith("tag:") and not untagged
+    months = pd.Index(events["month"].unique()).sort_values()
+    if tagged_only:
+        events = events[events["group"] != UNTAGGED]
+    # Keep every year with flows, so a year with none tagged reads as zero.
+    # Cents until the years are summed, so a nominal year's total is exact.
+    monthly = events.groupby(["month", "group"])["amount"].sum().unstack("group", fill_value=0)
+    monthly = monthly.reindex(monthly.index.union(months), fill_value=0)
+    cash_columns = []
+    if side == "income":
+        cash_columns.append(CASH_INCOME)
+        cash = events[events["cash"]].groupby("month")["amount"].sum()
+        monthly = monthly.reindex(monthly.index.union(cash.index), fill_value=0)
+        monthly[CASH_INCOME] = cash.reindex(monthly.index, fill_value=0)
+        if not tagged_only:
+            cash_columns.append(CASH_FLOW)
+            withdrawn = _withdrawals(rc)
+            monthly = monthly.reindex(monthly.index.union(withdrawn.index), fill_value=0)
+            monthly[CASH_FLOW] = (monthly[CASH_INCOME]
+                                  + withdrawn.reindex(monthly.index, fill_value=0))
+    monthly = _cpi(rc, monthly, mode)
+    yearly = monthly.groupby(index_years(monthly)).sum() / 100
+    yearly.index.name = "year"
+    cash_totals = yearly[cash_columns]
+    yearly = yearly.drop(columns=cash_columns)
+    yearly = yearly.reindex(columns=_group_order(side, by, yearly.sum()), fill_value=0)
+    yearly.columns.name = None
+    yearly["total"] = yearly.sum(axis=1)
+    if side == "income" and not tagged_only:
+        # The whole story (#249): the total is economic income, carried on
+        # down to the change in net worth.
+        yearly = yearly.rename(columns={"total": ECONOMIC_INCOME})
+        if story:
+            yearly = yearly.join(net_worth_change_by_year(
+                rc, yearly[ECONOMIC_INCOME], mode=mode, after_tax=after_tax))
+    return yearly.join(cash_totals)
+
+
+def _withdrawals(rc: RunConnection) -> pd.Series:
+    """Monthly cents moved into cash accounts out of other assets: sales and
+    withdrawals from brokerage, retirement and other holdings. Not moves
+    between cash accounts, loan proceeds, or money put back."""
+    events = rc.items("transfer_event", from_kind="asset", to_kind="asset")
+    events = events[_is_cash(events, "to") & ~_is_cash(events, "from")]
+    return events.groupby(event_month(events))["amount"].sum()
+
+
+ECONOMIC_INCOME = "economic_income"
+"""The income report's total when it tells the whole story (#249): income plus
+paper gains, net of losses, i.e. Haig-Simons income before tax."""
+
+DEFERRED_TAX_CHANGE = "Δdeferred_tax"
+"""The income report's change in tax still owed on what has grown (#249)."""
+
+NET_WORTH_CHANGE = "Δnet_worth"
+"""The income report's change in net worth over the year (#249)."""
+
+NET_WORTH_COLUMNS = [
+    "tax", "tax_paid", DEFERRED_TAX_CHANGE, "after_tax_income",
+    "spending", "inflation", NET_WORTH_CHANGE,
+]
+"""The income report's columns from economic income down to the change in
+net worth (#249), in order. A report shows only those its mode has: ``tax``
+and ``Δdeferred_tax`` after tax, ``tax_paid`` before it, ``inflation`` in
+CPI-constant dollars."""
+
+
+GIFTS_AND_BEQUESTS = "gifts_and_bequests"
+"""The income report's line for money given away (#274): not spending."""
+
+
+def net_worth_change_by_year(
+    rc: RunConnection, economic_income: pd.Series, *,
+    mode: DollarMode = DollarMode.NOMINAL, after_tax: bool = True,
+) -> pd.DataFrame:
+    """Year by year, how ``economic_income`` (the income report's total, in
+    ``mode`` dollars) becomes the change in net worth (#249)::
+
+        economic_income - tax - Δdeferred_tax = after_tax_income
+        after_tax_income - spending - gifts_and_bequests - inflation = Δnet_worth
+
+    This is Haig-Simons accounting: income is what the year added before
+    spending, gains counted as they accrue and tax as it is owed. After tax
+    (the default, like ``sim networth``), ``tax`` is the year's federal and
+    state liability, whenever it is paid (in a year no tax rule computes, what
+    was paid), and ``Δdeferred_tax`` the
+    change in the tax still owed on traditional balances and unrealized
+    gains; net worth is after-tax net worth (#251). Before tax, the tax line
+    is ``tax_paid`` (what was paid in the year, mostly last year's balance
+    and this year's withholding), there is no deferred line, and net worth is
+    the sum of the balances.
+
+    ``spending`` is every expense but income tax, depreciation and business
+    expenses: a vehicle's lost value is a loss in economic income, like a
+    market drop, and a business's costs come off its income there.
+    ``gifts_and_bequests`` is what went into a ``gift`` expense account,
+    which includes everyone outside the household's own account (#274): a
+    gift, or a bequest at a death. It leaves net worth, but it isn't the
+    household's own spending. ``inflation``, in
+    CPI-constant dollars only, is what inflation took from the real value of
+    what was held: each month's flows are deflated as they happen, while net
+    worth loses value just by sitting still.
+
+    ``Δnet_worth`` is measured from net worth itself, so each row adds
+    up only because every change in net worth is a flow on it. The first
+    year runs from its Jan 1, worked back from the opening balances and the
+    year-to-date rows dated before the scenario starts. After tax, that
+    opening takes the deferred and unpaid tax of the first month's end:
+    the run figures no deferred tax before its first step. Years before that
+    (a prior year's carried-forward record) have no row.
+    """
+    expenses = rc.expense_events().copy()
+    expenses["month"] = event_month(expenses)
+    is_depreciation = expenses["to_name"].isin(NON_CASH_EXPENSE_ACCOUNTS)
+    category = expenses["to_subkind"].map(EXPENSE_SUBKIND_TO_CATEGORY)
+    expenses["line"] = "spending"
+    expenses.loc[category == "taxes", "line"] = "tax_paid"
+    expenses.loc[category == "gifts", "line"] = GIFTS_AND_BEQUESTS
+    # Both are already in economic income, as losses (see _flow_events).
+    expenses.loc[category == "business", "line"] = "economic_income"
+    expenses.loc[is_depreciation, "line"] = "economic_income"
+    monthly = (expenses.groupby(["month", "line"])["amount"].sum()
+               .unstack("line", fill_value=0)
+               .reindex(columns=["tax_paid", "spending", GIFTS_AND_BEQUESTS], fill_value=0) / 100)
+    worth = rc.after_tax_net_worth_frame() if after_tax else rc.net_worth_frame()
+    nw = worth["nominal"].astype(float)
+    if nw.empty:
+        # An empty scenario (no accounts) has no net worth to follow.
+        return pd.DataFrame(index=economic_income.index, columns=[NET_WORTH_CHANGE],
+                            dtype=float)
+    first_month = nw.index.min()
+    first_year = first_month.year
+
+    # Net worth before the first step: its month end less what that step
+    # posted, back to Jan 1 of the first year (a year-to-date row dated
+    # before the start posts in the first step). A prior year's record
+    # (income to income, dated an earlier Dec 31) moves no money.
+    first_posted = rc.items("transfer_event")
+    first_posted = first_posted[pd.to_datetime(first_posted["month"]) == first_month]
+    in_year = pd.to_datetime(first_posted["date"]).dt.year == first_year
+    posted_ids = set(first_posted.loc[in_year, "id"])
+    income_rows = rc.items("transfer_event", from_kind="income")
+    income_first = income_rows[income_rows["id"].isin(posted_ids)]["amount"].sum()
+    returned = rc.items("transfer_event", to_kind="income")
+    returned = returned[(returned["from_kind"] != "income") & returned["id"].isin(posted_ids)]
+    spent_first = expenses[expenses["id"].isin(posted_ids)]["amount"].sum()
+    opening = nw.iloc[0] - (income_first - returned["amount"].sum() - spent_first) / 100
+    year_end = year_end_values(nw)
+    if mode == DollarMode.CPI_CONSTANT:
+        monthly = rc.to_cpi_constant(monthly)
+        real = rc.to_cpi_constant(nw)
+        opening = opening * float(rc.to_cpi_constant(pd.Series([1.0], index=[first_month])).iloc[0])
+        year_end = year_end_values(real)
+    years = year_end.index
+    frame = monthly.groupby(index_years(monthly)).sum().reindex(years, fill_value=0)
+    frame.index.name = "year"
+    starts = year_end.shift(1)
+    starts.iloc[0] = opening
+    change = year_end - starts
+
+    income = economic_income.reindex(years).fillna(0)
+    columns: dict[str, pd.Series] = {}
+    if after_tax:
+        # A year no tax rule computes (a scenario without one) owes what it
+        # paid: there is no liability to accrue instead.
+        liability = _cpi(rc, rc.tax_liability_by_year().reindex(years), mode, annual=True)
+        liability = liability.fillna(frame["tax_paid"])
+        deferred = worth["deferred_tax"].astype(float)
+        if mode == DollarMode.CPI_CONSTANT:
+            deferred = rc.to_cpi_constant(deferred)
+        deferred_end = year_end_values(deferred)
+        deferred_start = deferred_end.shift(1)
+        deferred_start.iloc[0] = deferred.iloc[0]
+        columns["tax"] = liability
+        columns[DEFERRED_TAX_CHANGE] = deferred_end - deferred_start
+        columns["after_tax_income"] = income - columns["tax"] - columns[DEFERRED_TAX_CHANGE]
+        kept = columns["after_tax_income"]
+    else:
+        columns["tax_paid"] = frame["tax_paid"]
+        kept = income - frame["tax_paid"]
+    columns["spending"] = frame["spending"]
+    if frame[GIFTS_AND_BEQUESTS].ne(0).any():
+        # A line most households never have, so only when there is one.
+        columns[GIFTS_AND_BEQUESTS] = frame[GIFTS_AND_BEQUESTS]
+    if mode == DollarMode.CPI_CONSTANT:
+        columns["inflation"] = kept - frame["spending"] - frame[GIFTS_AND_BEQUESTS] - change
+    columns[NET_WORTH_CHANGE] = change
+    return pd.DataFrame(columns, index=years).astype(float)
+
+
+FILLED = "filled:"
+"""Prefix of a spending report's per-group fulfillment column."""
+
+
+def spending_by_year(
+    rc: RunConnection, *, by: str = "category", mode: DollarMode = DollarMode.CPI_CONSTANT,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Year x group spending, delivered and budgeted (#387), in dollars.
+
+    Delivered is what ``sim report expenses`` counts. Budgeted adds back what
+    spending strategies left unspent of the rules they own (or takes off
+    what they added), from the run's recorded baseline; a run without one
+    has budgeted equal to delivered. ``by`` groups as the expense report
+    does (``category``, ``account`` or ``tag:ROLE``, untagged flows kept)."""
+    def yearly(monthly: pd.DataFrame) -> pd.DataFrame:
+        if monthly.empty:
+            return monthly
+        monthly = _cpi(rc, monthly, mode)
+        out = monthly.groupby(index_years(monthly)).sum()
+        out.index.name = "year"
+        return out
+
+    delivered, budgeted = spending_by_month(rc, by=by)
+    return yearly(delivered), yearly(budgeted)
+
+
+def redirected_share(delivered: pd.Series, budgeted: pd.Series) -> float:
+    """½ Σ |delivered share − budgeted share| over the groups: the share of
+    spending that went somewhere other than the plan's mix (total variation
+    distance). 0 when either is empty."""
+    d, b = delivered.clip(lower=0), budgeted.clip(lower=0)
+    if d.sum() <= 0 or b.sum() <= 0:
+        return 0.0
+    return float((d / d.sum() - b / b.sum()).abs().sum() / 2)
+
+
+def cosine_similarity(delivered: pd.Series, budgeted: pd.Series) -> float:
+    """The cosine of the angle between the two spending mixes; 1 is the same
+    shape. Near 1 for most real mixes and led by the largest groups, so it is
+    shown only beside the share redirected."""
+    norm = float((delivered ** 2).sum() ** 0.5 * (budgeted ** 2).sum() ** 0.5)
+    return float((delivered * budgeted).sum()) / norm if norm else 1.0
+
+
+def spending_report(
+    delivered: pd.DataFrame, budgeted: pd.DataFrame,
+) -> tuple[pd.DataFrame, dict[str, float]]:
+    """The level and shape of spending against the plan, by year: budgeted,
+    delivered, difference and ``of_plan`` (level, the headline), then
+    ``redirected`` (shape) and a ``filled:<group>`` column (delivered over
+    budgeted) for each group a strategy changed. And the run's summary:
+    ``rms`` (RMS of the yearly differences), ``redirected_mean``,
+    ``redirected_worst`` and its ``redirected_worst_year``, ``cosine_mean``
+    and ``of_plan`` over the whole run."""
+    total_d, total_b = delivered.sum(axis=1), budgeted.sum(axis=1)
+    frame = pd.DataFrame({
+        "budgeted": total_b, "delivered": total_d, "difference": total_d - total_b,
+        "of_plan": (total_d / total_b.where(total_b != 0)).fillna(1.0),
+    })
+    frame["redirected"] = [redirected_share(delivered.loc[y], budgeted.loc[y]) for y in frame.index]
+    changed = [c for c in budgeted.columns if round(float((budgeted[c] - delivered[c]).abs().sum()), 2)]
+    for c in changed:
+        frame[f"{FILLED}{c}"] = (delivered[c] / budgeted[c].where(budgeted[c] != 0)).fillna(1.0)
+    cosines = [cosine_similarity(delivered.loc[y], budgeted.loc[y]) for y in frame.index]
+    worst = frame["redirected"].idxmax() if len(frame) else None
+    summary = {
+        "rms": float((frame["difference"] ** 2).mean() ** 0.5) if len(frame) else 0.0,
+        "of_plan": float(total_d.sum() / total_b.sum()) if total_b.sum() else 1.0,
+        "redirected_mean": float(frame["redirected"].mean()) if len(frame) else 0.0,
+        "redirected_worst": float(frame["redirected"].max()) if len(frame) else 0.0,
+        "redirected_worst_year": float(worst) if worst is not None else float("nan"),
+        "cosine_mean": float(sum(cosines) / len(cosines)) if cosines else 1.0,
+    }
+    for c in changed:
+        summary[f"{FILLED}{c}"] = float(delivered[c].sum() / budgeted[c].sum()) if budgeted[c].sum() else 1.0
+    return frame, summary
+
+
+# A member-year's spending counts as cut when it is below plan by more
+# than half a cent: a strategy's factor is applied to cents, so any whole
+# cent short is a cut, however small beside the year's budget.
+_CUT_TOLERANCE = 0.005
+
+
+def _cut(delivered: pd.DataFrame, budgeted: pd.DataFrame) -> pd.DataFrame:
+    """True where a member-year's delivered spending is below its plan."""
+    return (budgeted - delivered) > _CUT_TOLERANCE
+
+
+def while_alive(frame: pd.DataFrame, ends: Mapping[str, date]) -> pd.DataFrame:
+    """``frame`` (a column per member, by year) with each member's years
+    after its household's final month blanked (NaN), and the years no
+    member covers dropped (#377). A household that has ended spends
+    nothing, which would read as a cut and as the worst of all years.
+    ``ends`` is stem -> that final month (``EnsembleSeries.household_ends``).
+    The final month's year stays: see ``partial_last_years``."""
+    if not ends or frame.empty:
+        return frame
+    out = frame.copy()
+    for stem, end in ends.items():
+        if stem in out.columns:
+            out.loc[out.index > end.year, stem] = np.nan
+    return out.dropna(how="all")
+
+
+def partial_last_years(ends: Mapping[str, date]) -> dict[str, int]:
+    """Stem -> the year of its household's final month, for the households
+    that end before December: they spent part of that year, so it counts
+    toward cuts but not toward dollar spreads or a worst year, as a run's
+    partial first year doesn't (``whole_years``)."""
+    return {stem: end.year for stem, end in ends.items() if end.month != 12}
+
+
+def without_years(frame: pd.DataFrame, years: Mapping[str, int] | None) -> pd.DataFrame:
+    """``frame`` (a column per member, by year) with each member's year in
+    ``years`` blanked (``partial_last_years``)."""
+    if not years:
+        return frame
+    out = frame.copy()
+    for stem, year in years.items():
+        if stem in out.columns:
+            out.loc[out.index == year, stem] = np.nan
+    return out
+
+
+def ensemble_spending_table(
+    delivered: pd.DataFrame, budgeted: pd.DataFrame, partial: Mapping[str, int] | None = None,
+) -> pd.DataFrame:
+    """An ensemble's spending against the plan by year (#408). ``delivered``
+    and ``budgeted`` are a column per member, by year
+    (``EnsembleSeries.spending``). Per year, across members: delivered
+    spending's 5th, 50th and 95th percentiles and the mean of its worst 5%
+    and 20% (``cvar05``, ``cvar20``, as for net worth), the median budget,
+    ``members``, how many members' households are alive that year (late
+    rows rest on fewer),
+    the median ``of_plan`` (delivered over budgeted), and ``cut``, the
+    share of members spending below their plan. A member blanked by
+    ``while_alive`` counts in none of them that year; one in ``partial``
+    (``partial_last_years``) counts in ``of_plan`` and ``cut`` that year but
+    not in the dollar columns."""
+    from zabob.retirement.sim.ensemble import tail_means
+
+    if delivered.empty:
+        return pd.DataFrame()
+    of_plan = (delivered / budgeted.where(budgeted != 0)).fillna(1.0)
+    dollars, plan = without_years(delivered, partial), without_years(budgeted, partial)
+    out = pd.DataFrame({
+        "members": delivered.notna().sum(axis=1),
+        "p5": dollars.quantile(0.05, axis=1),
+        "median": dollars.median(axis=1),
+        "p95": dollars.quantile(0.95, axis=1),
+    })
+    out = out.join(tail_means(dollars))
+    out["budgeted"] = plan.median(axis=1)
+    out["of_plan"] = of_plan.where(delivered.notna()).median(axis=1)
+    out["cut"] = _cut(delivered, budgeted).where(delivered.notna()).mean(axis=1)
+    return out
+
+
+def whole_years(months: pd.DatetimeIndex) -> list[int]:
+    """The years ``months`` (a run's) covers all twelve months of. A run
+    starting in May spends only part of its first year, which would always
+    look like its worst."""
+    ones = pd.Series(1, index=months)
+    counts = ones.groupby(index_years(ones)).sum()
+    return [int(year) for year, n in counts.items() if n == 12]
+
+
+def ensemble_spending_summary(
+    delivered: pd.DataFrame, budgeted: pd.DataFrame, years: Collection[int] | None = None,
+    partial: Mapping[str, int] | None = None,
+) -> dict[str, float]:
+    """Over the whole run, per member and then across members (#408): each
+    member's worst year of delivered spending among ``years`` (whole years:
+    see ``whole_years``; default every year), as its median and the mean of
+    the worst 5% and 20% of members' worst years; its whole-run
+    ``of_plan``, its share of years cut, and the share of members ever cut.
+    A member's year in ``partial`` (``partial_last_years``) is never its
+    worst, but counts toward its cuts."""
+    from zabob.retirement.sim.ensemble import TAIL_LEVELS, tail_means
+
+    # A member whose household ended before any year counted has nothing to
+    # say; leave it out of every figure alike.
+    delivered = delivered.dropna(axis=1, how="all")
+    budgeted = budgeted.reindex(columns=delivered.columns)
+    if delivered.empty:
+        return {}
+    whole_only = without_years(delivered, partial)
+    counted = whole_only if years is None else whole_only.loc[whole_only.index.isin(list(years))]
+    worst = (counted if not counted.empty else whole_only).min(axis=0)
+    worst = worst.where(worst.notna(), delivered.min(axis=0))  # no whole year: its partial ones
+    years_cut = _cut(delivered, budgeted).where(delivered.notna()).mean(axis=0)
+    whole = delivered.sum(axis=0) / budgeted.sum(axis=0).where(budgeted.sum(axis=0) != 0)
+    tails = tail_means(worst.dropna().to_frame().T).iloc[0]
+    return {
+        "worst_year_median": float(worst.median()),
+        **{f"worst_year_cvar{q * 100:02g}": float(tails[f"cvar{q * 100:02g}"]) for q in TAIL_LEVELS},
+        "of_plan_median": float(whole.fillna(1.0).median()),
+        "of_plan_worst": float(whole.fillna(1.0).min()),
+        "years_cut_mean": float(years_cut.mean()),
+        "members_ever_cut": float((years_cut > 0).mean()),
+    }
+
+
+def flows_for_year(
+    rc: RunConnection, side: FlowSide, year: int, *, by: str = "category",
+    mode: DollarMode = DollarMode.NOMINAL, untagged: bool = False,
+) -> pd.DataFrame:
+    """One year of ``flows_by_year`` turned on its side: a row per group with
+    its ``amount`` and ``share`` of the year's total (0-1), and a total row.
+    Accounts and tags are ordered by that year's amounts, and those with none
+    that year are left out; categories keep their fixed rows. ``untagged`` is
+    as for ``flows_by_year``.
+
+    Raises ``KeyError`` for a year the run doesn't cover.
+    """
+    yearly = flows_by_year(rc, side, by=by, mode=mode, untagged=untagged)
+    yearly = yearly.rename(columns={ECONOMIC_INCOME: "total"})
+    if year not in yearly.index:
+        years = f"{yearly.index.min()}-{yearly.index.max()}" if len(yearly) else "none"
+        raise KeyError(f"the run has no {side} in {year} (years: {years})")
+    amounts = yearly.loc[year].drop([CASH_INCOME, CASH_FLOW, *NET_WORTH_COLUMNS], errors="ignore")
+    total = amounts.pop("total")
+    if by != "category":
+        # This year's own order, and only the groups with money in it.
+        amounts = amounts[amounts != 0]
+        amounts = amounts.loc[_group_order(side, by, amounts)]
+    amounts["total"] = total
+    frame = pd.DataFrame({"amount": amounts})
+    frame["share"] = amounts / total if total else float("nan")
+    frame.index.name = by.removeprefix("tag:")
+    return frame
+
+
+def gains_by_year(rc: RunConnection, mode: DollarMode = DollarMode.NOMINAL) -> pd.DataFrame:
+    """``RunConnection.gains_by_category``: realized (taxable and non-taxable)
+    vs. unrealized gains by year, with that year's expenses and how far
+    realized gains cover them."""
+    return _cpi(rc, rc.gains_by_category(), mode, annual=True)
+
+
+def _tax_buckets(rc: RunConnection, buckets: list[str]) -> pd.DataFrame:
+    summary = rc.items("tax_year_summary")
+    summary = summary[summary["bucket"].isin(buckets)]
+    return (summary.pivot_table(index="year", columns="bucket", values="amount", aggfunc="sum")
+            .reindex(columns=buckets) / 100)
+
+
+def tax_by_year(rc: RunConnection, mode: DollarMode = DollarMode.NOMINAL) -> pd.DataFrame:
+    """Federal and state tax by year, with the income each was figured on.
+
+    For each of federal (``fed_``) and state (``state_``): ``agi``, the
+    larger of the standard and itemized ``deduction``, ``income`` (the taxable
+    income its brackets taxed), and ``tax``. Federal AGI is Form 1040 line
+    11, except that a carried loss comes off taxable income instead; half
+    the self-employment tax comes off it, as the law adjusts it. ``fed_se_tax``, shown
+    only when some year has any, is the self-employment tax and Additional
+    Medicare Tax on a business's profit (#623), which ``fed_tax`` includes.
+    ``fed_exempt_interest``, shown only when some year has any, is the
+    municipal bond interest it leaves out (#265, line 2a). State AGI leaves
+    out Social Security and, in ``state_exclusion`` (shown only when some
+    year has one), the state's retirement income exclusions (#486). The
+    state columns appear only when the run computes state tax. A local
+    income tax (#487), its own jurisdiction (#508) paid into its own
+    account (#586), is ``local_tax``, shown only when some year has one. A
+    run that charges IRMAA (#253) adds ``fed_magi`` and
+    ``irmaa_tier``, the tier that year's MAGI set for the premiums two years
+    later (0 below the first), blank for a year whose premiums the run ends
+    before charging. ``effective_rate`` is total tax over federal AGI. Liability
+    belongs to the tax year the income was earned in, whatever year it is
+    paid or refunded. CPI-constant dollars use each year's year-end CPI, as
+    the notebook does; the rate is the same in either.
+    """
+    both = _tax_buckets(rc, [*_TAX_COLUMNS, "federal_tax_exempt_interest",
+                             "federal_se_tax", "federal_additional_medicare_tax"])
+    frame = both[list(_TAX_COLUMNS)].rename(columns=_TAX_COLUMNS)
+    # Self-employment tax (#623), only when some year has it: part of
+    # fed_tax, shown beside it.
+    se_tax = both["federal_se_tax"].fillna(0) + both["federal_additional_medicare_tax"].fillna(0)
+    if se_tax.ne(0).any():
+        frame.insert(frame.columns.get_loc("fed_tax"), "fed_se_tax", se_tax)
+    # Municipal bond interest (#265), only when some year has it: federal
+    # AGI leaves it out, though Social Security taxation and MAGI count it.
+    exempt = both["federal_tax_exempt_interest"]
+    if exempt.fillna(0).ne(0).any():
+        frame.insert(frame.columns.get_loc("fed_agi"), "fed_exempt_interest", exempt.fillna(0))
+    if frame["state_tax"].isna().all():
+        frame = frame.drop(columns=[c for c in frame.columns if c.startswith("state_")])
+    else:
+        # A state retirement income exclusion (#486), only when some year has
+        # one: it is what state AGI already left out.
+        extra = _tax_buckets(
+            rc, ["state_retirement_exclusion", "local_tax"]).reindex(frame.index)
+        excluded = extra["state_retirement_exclusion"]
+        if excluded.fillna(0).ne(0).any():
+            frame.insert(frame.columns.get_loc("state_agi"), "state_exclusion", excluded)
+        # A local income tax (#487) is its own jurisdiction (#508), paid
+        # into its own account (#586); shown only when some year has one.
+        local = extra["local_tax"]
+        if local.fillna(0).ne(0).any():
+            frame.insert(frame.columns.get_loc("state_tax") + 1, "local_tax", local)
+    # A scenario may compute federal tax and not state tax: a blank is "not
+    # computed", so the total is blank only when neither is.
+    taxes = [c for c in ("fed_tax", "state_tax", "local_tax") if c in frame.columns]
+    frame["total_tax"] = frame[taxes].sum(axis=1, min_count=1)
+    # A business (#231) adds its federal Schedule C result, the expenses a
+    # hobby couldn't deduct, and the loss carried forward or ended at a
+    # death (#277): each only when some year has one, since most scenarios
+    # have none of them.
+    business = _tax_buckets(rc, list(_BUSINESS_COLUMNS)).rename(columns=_BUSINESS_COLUMNS)
+    business = business.reindex(frame.index)
+    frame = frame.join(business.loc[:, business.fillna(0).ne(0).any()])
+    irmaa = _tax_buckets(rc, ["federal_magi", "federal_irmaa_tier"]).reindex(frame.index)
+    charged = irmaa["federal_irmaa_tier"].notna().any()
+    if charged:
+        frame.insert(frame.columns.get_loc("fed_agi") + 1, "fed_magi", irmaa["federal_magi"])
+    frame.index.name = "year"
+    frame = _cpi(rc, frame, mode, annual=True)
+    if charged:
+        # A tier number, not money: _tax_buckets' /100 undone, and after the
+        # CPI conversion so it isn't deflated.
+        frame.insert(frame.columns.get_loc("fed_magi") + 1, "irmaa_tier",
+                     irmaa["federal_irmaa_tier"] * 100)
+    agi = frame["fed_agi"].where(frame["fed_agi"] > 0)
+    frame.insert(frame.columns.get_loc("total_tax") + 1, "effective_rate",
+                 frame["total_tax"] / agi)
+    return frame
+
+
+_NOT_MONEY_LINES = frozenset({"irmaa_tier", "separate_return"})
+"""Return lines that count something other than money (#253): an IRMAA
+tier, and whether spouses filed separately on one return (#580)."""
+
+
+def tax_return(rc: RunConnection, jurisdiction: str,
+               mode: DollarMode = DollarMode.NOMINAL) -> pd.DataFrame:
+    """Every line of one jurisdiction's returns (#510): a row per year, a
+    column per line its calculator wrote (``tax_year_summary``'s
+    ``<jurisdiction>_<line>``), in dollars; a household calculator's own
+    lines included. Empty when the run computed none."""
+    summary = rc.items("tax_year_summary")
+    prefix = f"{jurisdiction}_"
+    summary = summary[summary["bucket"].str.startswith(prefix)]
+    if summary.empty:
+        return pd.DataFrame()
+    frame = (summary.assign(line=summary["bucket"].str.removeprefix(prefix))
+             .pivot_table(index="year", columns="line", values="amount", aggfunc="sum"))
+    counts = [c for c in frame.columns if c in _NOT_MONEY_LINES]
+    money = _cpi(rc, frame.drop(columns=counts) / 100, mode, annual=True)
+    frame = money.join(frame[counts]) if counts else money
+    frame.index.name = "year"
+    return frame
+
+
+_SCOPE_PREFIX = {"federal": "fed", "state": "state"}
+"""Column prefixes: ``fed`` keeps the wide tax tables narrower."""
+
+_TAX_COLUMNS = {
+    f"{scope}_{bucket}": f"{_SCOPE_PREFIX[scope]}_{column}"
+    for scope in ("federal", "state")
+    for bucket, column in (
+        ("agi", "agi"),
+        ("deduction", "deduction"),
+        ("taxable_income", "income"),
+        ("tax", "tax"),
+    )
+}
+
+
+_BUSINESS_COLUMNS = {
+    "federal_business_net": "business_net",
+    "federal_hobby_disallowed": "hobby_disallowed",
+    "federal_nol_carryover": "nol_carryover",
+    # The decedent's share of the NOL, ended at a death (#277).
+    "federal_nol_lapsed": "nol_lapsed",
+}
+
+
+_RECONCILIATION_COLUMNS = {
+    "federal_tax": "fed_liability",
+    "federal_tax_paid": "fed_paid",
+    "federal_tax_due": "fed_due",
+    "federal_tax_overpaid": "fed_refund",
+    "state_tax": "state_liability",
+    "state_tax_paid": "state_paid",
+    "state_tax_due": "state_due",
+    "state_tax_overpaid": "state_refund",
+    "local_tax": "local_liability",
+    "local_tax_paid": "local_paid",
+    "local_tax_due": "local_due",
+    "local_tax_overpaid": "local_refund",
+}
+
+
+def tax_reconciliation(rc: RunConnection, mode: DollarMode = DollarMode.NOMINAL) -> pd.DataFrame:
+    """Each tax year's liability, what was withheld or paid during it, and the
+    balance due or refunded at the following April's reconciliation. The
+    state columns appear only when the run computes state tax, as in
+    :func:`tax_by_year`, and the local ones only when it computes a local
+    tax (#508)."""
+    frame = _tax_buckets(rc, list(_RECONCILIATION_COLUMNS)).rename(columns=_RECONCILIATION_COLUMNS)
+    for scope in ("state", "local"):
+        if frame[f"{scope}_liability"].isna().all():
+            frame = frame.drop(columns=[c for c in frame.columns if c.startswith(f"{scope}_")])
+    return _cpi(rc, frame.fillna(0), mode, annual=True)
+
+
+_PERCENT_COLUMNS = frozenset({"share", "effective_rate", "of_plan", "redirected"})
+
+
+def _cell(value: float, column: str) -> str:
+    if pd.isna(value):
+        return ""
+    if column in _PERCENT_COLUMNS or column.startswith(FILLED):
+        return f"{value:.1%}"
+    if column == "irmaa_tier":
+        return f"{value:.0f}"
+    if column == "quantity":
+        return f"{value:,.6f}".rstrip("0").rstrip(".") or "0"
+    return f"-${-value:,.0f}" if round(value) < 0 else f"${value:,.0f}"
+
+
+def render_report_table(frame: pd.DataFrame, title: str | None = None, *,
+                        total_row: bool = False,
+                        cell_style: Callable[[str, float], str | None] | None = None):
+    """A ``rich`` table of a report frame: its index first, then its columns,
+    money in whole dollars, ``share`` and ``effective_rate`` as percents and ``quantity`` in shares.
+    ``total_row`` bolds the last row (a column sum the caller appended).
+    ``cell_style(column, value)`` gives a cell's ``rich`` style, if any."""
+    from rich.table import Table
+    from rich.text import Text
+
+    def cell(value: float, column: str) -> str | Text:
+        text = _cell(value, column)
+        style = cell_style(column, value) if cell_style is not None and text else None
+        return Text(text, style=style) if style else text
+
+    table = Table(title=title, header_style="bold")
+    table.add_column(str(frame.index.name or ""), justify="left", no_wrap=True)
+    for column in frame.columns:
+        table.add_column(str(column), justify="right", no_wrap=True)
+    last = len(frame) - 1
+    for position, (label, row) in enumerate(frame.iterrows()):
+        table.add_row(str(label), *(cell(float(row[c]), str(c)) for c in frame.columns),
+                      style="bold" if total_row and position == last else None)
+    return table

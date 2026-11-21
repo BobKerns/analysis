@@ -13,10 +13,10 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from ipywidgets import widgets
 
-from analysis.sim import sensitivity
-from analysis.sim import sensitivity_charts as sc
-from analysis.sim.notebook_ui import sensitivity_widgets as sw
-from analysis.sim.notebook_ui.pickers import (
+from zabob.retirement.sim import sensitivity
+from zabob.retirement.sim import sensitivity_charts as sc
+from zabob.retirement.sim.notebook_ui import sensitivity_widgets as sw
+from zabob.retirement.sim.notebook_ui.pickers import (
     AttributionPicker,
     CorrelationMeasurePicker,
     DeltaScalePicker,
@@ -24,7 +24,7 @@ from analysis.sim.notebook_ui.pickers import (
     ParameterPicker,
     ReportYearPicker,
 )
-from analysis.sim.types import AttributionAxis, DeltaScale, DollarMode, HeatmapValue
+from zabob.retirement.sim.types import AttributionAxis, DeltaScale, DollarMode, HeatmapValue
 
 # --- pickers -------------------------------------------------------------------
 

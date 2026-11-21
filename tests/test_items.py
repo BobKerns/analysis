@@ -6,8 +6,8 @@ from pathlib import Path
 
 from click.testing import CliRunner
 
-from analysis.cli import main
-from analysis.sim.connection import RunConnection
+from zabob.retirement.cli import main
+from zabob.retirement.sim.connection import RunConnection
 
 
 def _items(runfile: Path, *args: str):

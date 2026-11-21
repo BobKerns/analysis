@@ -121,7 +121,7 @@ jobs:
                       docs/*|.cspell/*|.vscode/*|.cursor/*|.serena/*) ;;
                       .github/copilot-instructions.md) ;;
                       cspell.json|.markdownlint.json|.markdownlintignore) ;;
-                      analysis.code-workspace|LICENSE) ;;
+                      zabob-retirement.code-workspace|LICENSE) ;;
                       # Markdown elsewhere (a scenario's README.md) is data.
                       */*) needed=true ;;
                       *.md) ;;
@@ -146,7 +146,7 @@ jobs:
           uv python install
           uv sync --locked --group dev
 
-      # The same data/shared layout a developer has, from templates/.
+      # The same data/private layout a developer has, from templates/.
       - name: Template data repo
         if: steps.changes.outputs.needed == 'true'
         run: scripts/link-data.sh --template
@@ -178,7 +178,7 @@ jobs:
 
       - run: npm ci --no-audit --no-fund
 
-      # CI has no data repo, so this builds data/shared from templates/,
+      # CI has no data repo, so this builds data/private from templates/,
       # including the empty dictionary cspell.json loads. Tracked files never
       # use the data repo's names, so nothing here needs its words.
       - name: Template data repo

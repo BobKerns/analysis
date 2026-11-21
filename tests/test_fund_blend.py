@@ -11,10 +11,10 @@ from typing import Any
 
 import pytest
 
-from analysis.sim.lineage import TEMPLATE_SCENARIOS_DIR
+from zabob.retirement.sim.lineage import TEMPLATE_SCENARIOS_DIR
 
-from analysis.sim.engine import _amount_percent_of_balance, _blend_slices_at, run_scenario
-from analysis.sim.loader import LoadResult, growth_rule_name
+from zabob.retirement.sim.engine import _amount_percent_of_balance, _blend_slices_at, run_scenario
+from zabob.retirement.sim.loader import LoadResult, growth_rule_name
 
 BROKERAGE = "Asset_Brokerage_Joint"
 FUND_RULE = growth_rule_name(BROKERAGE, "fund")

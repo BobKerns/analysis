@@ -155,7 +155,7 @@ an issue to close, or a row you write yourself.
 | U.S. Virgin Islands | Federal rule | Economic Development Commission incentives |
 
 ## Directory Structure
-- `src/analysis/` — Core package code
+- `src/zabob/retirement/` — Core package code
 - `notebooks/` — Jupyter notebooks for exploratory analysis
 - `data/` — User input data (ignored in git)
 - `docs/` — Documentation, including `architecture/` and `guides/`
@@ -178,7 +178,7 @@ In a clone, run the setup script (idempotent — safe to re-run):
 See [docs/SETUP.md](./docs/SETUP.md) for what it does and the manual steps.
 
 ## Usage
-- CLI tools: `python -m analysis ...`
+- CLI tools: `python -m zabob.retirement ...`
 - Notebooks: Open and run notebooks in `notebooks/`
 - Videos: the guide videos linked above are made from
   [docs/videos/README.md](./docs/videos/README.md) (Docker needed).
@@ -198,7 +198,7 @@ All examples below use the short scripts (`amazon ...`, `sim ...`). You can also
 Notebook helper API (same logic as CLI):
 
 ```python
-from analysis.amazon.notebook import load_categorization_state, run_amazon_categorization
+from zabob.retirement.amazon.notebook import load_categorization_state, run_amazon_categorization
 
 result, annotated, summary = run_amazon_categorization("data/amazon_2026_01.csv")
 categories, mapping = load_categorization_state("state")

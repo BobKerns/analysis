@@ -18,14 +18,14 @@ import pandas as pd
 import pytest
 from click.testing import CliRunner, Result
 
-from analysis.cli import main
-from analysis.expenses.baseline import Occasional
-from analysis.sim import cli
-from analysis.sim.imports import holdings as import_holdings
-from analysis.sim.imports import ofx as import_ofx
-from analysis.sim.imports import sources as import_sources
-from analysis.sim.imports import mapping as import_mapping
-from analysis.sim.imports import yearly as import_yearly
+from zabob.retirement.cli import main
+from zabob.retirement.expenses.baseline import Occasional
+from zabob.retirement.sim import cli
+from zabob.retirement.sim.imports import holdings as import_holdings
+from zabob.retirement.sim.imports import ofx as import_ofx
+from zabob.retirement.sim.imports import sources as import_sources
+from zabob.retirement.sim.imports import mapping as import_mapping
+from zabob.retirement.sim.imports import yearly as import_yearly
 
 
 MapWriter = Callable[[str, str], Path]

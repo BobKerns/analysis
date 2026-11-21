@@ -10,7 +10,7 @@ import pandas as pd
 import pytest
 from click.testing import CliRunner, Result
 
-from analysis.cli import main
+from zabob.retirement.cli import main
 
 BROKERAGE = "Asset_Brokerage_Joint"
 

@@ -1,4 +1,4 @@
-"""Tests for analysis.sim.notebook_ui.pickers."""
+"""Tests for zabob.retirement.sim.notebook_ui.pickers."""
 
 from __future__ import annotations
 
@@ -15,11 +15,11 @@ from pathlib import Path
 import pandas as pd
 from click.testing import CliRunner
 
-from analysis.cli import main
-from analysis.sim import notebook_ui
-from analysis.sim.connection import RunConnection, ScenarioConnection
-from analysis.sim.loader import last_good_run_path, latest_run_path, read_run_status
-from analysis.sim.notebook_ui.pickers import (
+from zabob.retirement.cli import main
+from zabob.retirement.sim import notebook_ui
+from zabob.retirement.sim.connection import RunConnection, ScenarioConnection
+from zabob.retirement.sim.loader import last_good_run_path, latest_run_path, read_run_status
+from zabob.retirement.sim.notebook_ui.pickers import (
     Connections,
     MultiScenarioConnections,
     TimeRangePicker,

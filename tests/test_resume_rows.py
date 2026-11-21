@@ -13,11 +13,11 @@ import pandas as pd
 import pytest
 from click.testing import CliRunner
 
-from analysis.cli import main
-from analysis.sim import cli
-from analysis.sim.engine import EngineError, run_scenario
-from analysis.sim.ensemble import EnsembleError, process_path, resolve_member
-from analysis.sim.loader import LoadError, load_scenario
+from zabob.retirement.cli import main
+from zabob.retirement.sim import cli
+from zabob.retirement.sim.engine import EngineError, run_scenario
+from zabob.retirement.sim.ensemble import EnsembleError, process_path, resolve_member
+from zabob.retirement.sim.loader import LoadError, load_scenario
 
 INFLATION = '"{""aux_kind"": ""inflation""}"'
 # Past the template base's end, so a resumed path has years to show.

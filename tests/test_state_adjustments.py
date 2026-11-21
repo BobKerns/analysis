@@ -14,9 +14,9 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from analysis.sim.loader import LoadError, LoadResult
-from analysis.sim.tax_api import Account, IncomeItem, Person, TaxYear
-from analysis.sim.taxes.common import StateAdjustment, state_adjustments
+from zabob.retirement.sim.loader import LoadError, LoadResult
+from zabob.retirement.sim.tax_api import Account, IncomeItem, Person, TaxYear
+from zabob.retirement.sim.taxes.common import StateAdjustment, state_adjustments
 
 HEADER = ("effective_date,name,step,base,tag,rate,amount,per_person,min_age,filing_status,"
           "income_limit,phaseout,phaseout_rate,less_ss,refundable\n")

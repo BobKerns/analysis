@@ -5,8 +5,8 @@ from unittest.mock import patch
 
 from click.testing import CliRunner
 
-from analysis.cli import main
-from analysis.jupyter.config import (
+from zabob.retirement.cli import main
+from zabob.retirement.jupyter.config import (
     McpConfigError,
     ensure_jupyter_mcp_config,
     find_repo_root,
@@ -51,7 +51,7 @@ def test_find_repo_root_falls_back_outside_git(tmp_path: Path) -> None:
 
     from git import InvalidGitRepositoryError
 
-    with patch("analysis.jupyter.config.Repo", side_effect=InvalidGitRepositoryError):
+    with patch("zabob.retirement.jupyter.config.Repo", side_effect=InvalidGitRepositoryError):
         root = find_repo_root(outside_git)
 
     assert root == outside_git.resolve()
@@ -66,9 +66,9 @@ def test_cli_jupyter_generates_config_and_execs_jupyter_lab(tmp_path: Path) -> N
 
     runner = CliRunner()
     with (
-        patch("analysis.jupyter.cli.find_repo_root", return_value=tmp_path),
-        patch("analysis.jupyter.cli.shutil.which", return_value="/usr/bin/jupyter"),
-        patch("analysis.jupyter.cli._exec_jupyter_lab", side_effect=fake_exec),
+        patch("zabob.retirement.jupyter.cli.find_repo_root", return_value=tmp_path),
+        patch("zabob.retirement.jupyter.cli.shutil.which", return_value="/usr/bin/jupyter"),
+        patch("zabob.retirement.jupyter.cli._exec_jupyter_lab", side_effect=fake_exec),
     ):
         result = runner.invoke(main, ["jupyter", "--no-browser"])
 
@@ -92,8 +92,8 @@ def test_cli_jupyter_generates_config_and_execs_jupyter_lab(tmp_path: Path) -> N
 def test_cli_jupyter_reports_missing_jupyter_binary(tmp_path: Path) -> None:
     runner = CliRunner()
     with (
-        patch("analysis.jupyter.cli.find_repo_root", return_value=tmp_path),
-        patch("analysis.jupyter.cli.shutil.which", return_value=None),
+        patch("zabob.retirement.jupyter.cli.find_repo_root", return_value=tmp_path),
+        patch("zabob.retirement.jupyter.cli.shutil.which", return_value=None),
     ):
         result = runner.invoke(main, ["jupyter"])
 

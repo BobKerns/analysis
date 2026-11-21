@@ -19,10 +19,10 @@ import pandas as pd
 import pytest
 from click.testing import CliRunner
 
-from analysis.cli import main
-from analysis.sim import chain_edit, engine, registries, rename, reports
-from analysis.sim.connection import open_run, open_scenario
-from analysis.sim.loader import LoadError, LoadResult
+from zabob.retirement.cli import main
+from zabob.retirement.sim import chain_edit, engine, registries, rename, reports
+from zabob.retirement.sim.connection import open_run, open_scenario
+from zabob.retirement.sim.loader import LoadError, LoadResult
 
 ALICE_DIES = "alice,70,,,,,,"  # born 1965-03-15: final month 2035-03
 BILL_DIES = "bill,72,,,,,,"  # born 1967-08-20: final month 2039-08

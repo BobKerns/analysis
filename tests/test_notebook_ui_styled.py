@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from IPython.core.formatters import DisplayFormatter
 
-from analysis.sim.notebook_ui.pickers import warning_html
-from analysis.sim.notebook_ui.styled import StyledMarkdown, styled_html
+from zabob.retirement.sim.notebook_ui.pickers import warning_html
+from zabob.retirement.sim.notebook_ui.styled import StyledMarkdown, styled_html
 
 
 def test_styled_markdown_renders_inline_code_inside_the_styled_wrapper() -> None:

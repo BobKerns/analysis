@@ -1,7 +1,7 @@
 #!/usr/bin/env -S uv run --script
 # /// script
 # requires-python = ">=3.14"
-# dependencies = ["analysis", "click", "numpy", "pandas", "scipy"]
+# dependencies = ["zabob-retirement", "click", "numpy", "pandas", "scipy"]
 #
 # [tool.uv.sources]
 # analysis = { path = "..", editable = true }
@@ -38,9 +38,9 @@ import numpy as np
 import pandas as pd
 from scipy import stats
 
-from analysis.frames import index_years
-from analysis.historical.calibration import Fetcher
-from analysis.historical.charts import load_history
+from zabob.retirement.frames import index_years
+from zabob.retirement.historical.calibration import Fetcher
+from zabob.retirement.historical.charts import load_history
 
 LOG2E = 1 / math.log(2)
 HISTORICAL_DATA = Path(__file__).resolve().parents[1] / "historical_data"
