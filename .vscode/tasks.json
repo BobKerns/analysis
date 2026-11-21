@@ -6,7 +6,7 @@
         {
             "label": "Jupyter",
             "type": "shell",
-            "command": "source data/shared/sim/activate-analysis &&./.venv/bin/python -m zabob.retirement jupyter",
+            "command": "source data/private/sim/activate-analysis &&./.venv/bin/python -m zabob.retirement jupyter",
             "options": {
                 "cwd": "${workspaceFolder}",
             },
@@ -15,7 +15,7 @@
         {
             "label": "Fetch Prices",
             "type": "shell",
-            "command": "source data/shared/sim/activate-analysis && ./.venv/bin/python -m zabob.retirement sim prices fetch || exit 0",
+            "command": "source data/private/sim/activate-analysis && ./.venv/bin/python -m zabob.retirement sim prices fetch || exit 0",
             "options": {
                 "cwd": "${workspaceFolder}"
             },
@@ -24,7 +24,7 @@
         {
             "label": "Run  All Scenarios",
             "type": "shell",
-            "command": "source data/shared/sim/activate-analysis && ./.venv/bin/python -m zabob.retirement sim all --allow-dirty-data || exit 0",
+            "command": "source data/private/sim/activate-analysis && ./.venv/bin/python -m zabob.retirement sim all --allow-dirty-data || exit 0",
             "options": {
                 "cwd": "${workspaceFolder}"
             },

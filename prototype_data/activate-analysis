@@ -47,7 +47,7 @@ if [ -f "$_ANALYSIS_POINTER_FILE" ]; then
     IFS= read -r _ANALYSIS_REMEMBERED < "$_ANALYSIS_POINTER_FILE"
 fi
 
-# The code checkout this was sourced through (<checkout>/data/shared/sim)
+# The code checkout this was sourced through (<checkout>/data/private/sim)
 # comes first (#654): several worktrees can link one data repo, and each
 # then gets its own code, whichever was activated last or made the data
 # repo. Then ANALYSIS_REPO_DIR, then the checkout remembered in .analysis.
@@ -63,9 +63,9 @@ case "$_ANALYSIS_TYPED" in
 esac
 for _analysis_spelled in "$_ANALYSIS_TYPED" "$ANALYSIS_DATA_DIR"; do
     case "$_analysis_spelled" in
-        */data/shared/sim)
-            if _analysis_validate_repo_dir "${_analysis_spelled%/data/shared/sim}"; then
-                _ANALYSIS_THROUGH="$(cd "${_analysis_spelled%/data/shared/sim}" && pwd)"
+        */data/private/sim)
+            if _analysis_validate_repo_dir "${_analysis_spelled%/data/private/sim}"; then
+                _ANALYSIS_THROUGH="$(cd "${_analysis_spelled%/data/private/sim}" && pwd)"
                 _ANALYSIS_REPO_CANDIDATE="$_ANALYSIS_THROUGH"
                 break
             fi
@@ -101,7 +101,7 @@ _analysis_same_dir() {
 }
 # .analysis names the one checkout the data repo is paired with: the
 # builder's hooks run that checkout's sim. Another worktree sourcing this
-# through its own data/shared uses its own code and leaves the pair alone.
+# through its own data/private uses its own code and leaves the pair alone.
 # The pair is written when .analysis names no checkout, or when this is
 # sourced by the data repo's own path with another checkout named
 # (ANALYSIS_REPO_DIR, or typed just now).

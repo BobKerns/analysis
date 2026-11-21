@@ -502,7 +502,7 @@ def find_data_dir(data_dir: Path | str | None = None) -> Path:
     ----------
     data_dir : Path | str | None, optional
         The base directory for the data repository. If None, defaults to
-        the current repo's data/shared/sim or the value of the
+        the current repo's data/private/sim or the value of the
         $ANALYSIS_DATA_DIR environment variable.
 
     Returns
@@ -521,7 +521,7 @@ def _checkout_data_dir() -> Path:
     directory (a notebook runs in notebooks/). One function so the tests
     can point it away from a developer's real data repo."""
     repo = Path.cwd().parent if Path.cwd().name == "notebooks" else Path.cwd()
-    return repo / "data" / "shared" / "sim"
+    return repo / "data" / "private" / "sim"
 
 
 def find_state_dir(*,
@@ -539,7 +539,7 @@ def find_state_dir(*,
         $ANALYSIS_STATE_DIR environment variable or the repo's data/state directory.
     data_dir : Path | str | None, optional
         The base directory for the data repository. If None, defaults to
-        the current repo's data/shared/sim or the value of the
+        the current repo's data/private/sim or the value of the
         $ANALYSIS_DATA_DIR environment variable.
     default_state_dir : Path | None, optional
         The default state directory to use if the environment variable is not set.
@@ -568,7 +568,7 @@ def find_runs_dir(data_dir: Path | str | None = None,
     ----------
     data_dir : Path | str | None, optional
         The base directory for the data repository. If None, defaults to
-        the current repo's data/shared/sim or the value of the
+        the current repo's data/private/sim or the value of the
         $ANALYSIS_DATA_DIR environment variable.
     state_dir : Path | None, optional
     runs_dir : Path | str | None, optional
@@ -604,7 +604,7 @@ def scenario_picker(
     ----------
     data_dir : Path | str | None, optional
         The base directory for the data repository. Defaults to the current
-        repo's data/shared/sim.
+        repo's data/private/sim.
     default : str | None, optional
         The default scenario to select. If None, resolves using
         $ANALYSIS_SCENARIO, .current_scenario, or "base".
@@ -904,7 +904,7 @@ def multi_scenario_picker(
     ----------
     data_dir : Path | str | None, optional
         The base directory for the data repository. Defaults to the current
-        repo's data/shared/sim.
+        repo's data/private/sim.
     default_baseline : str | None, optional
         The default baseline scenario to select. If None, resolves using
         $ANALYSIS_SCENARIO, .current_scenario, or "current".

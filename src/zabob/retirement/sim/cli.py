@@ -244,7 +244,7 @@ def _shown(path: Path, *, resolve: bool = True) -> str:
     the part that matters.
 
     Without ``resolve`` it is shown through a link and not as what the link
-    leads to: data/shared is how a checkout names its data repo, wherever
+    leads to: data/private is how a checkout names its data repo, wherever
     that is."""
     full = Path(path).expanduser()
     bases = ((Path.cwd(), ""), (Path.home(), "~/"))
@@ -5197,10 +5197,10 @@ def init_command(
     out: you (the operator, its first primary person) and the household's
     filing status.
 
-    With no DIR, the usual step, the data repo is made at data/shared of the
+    With no DIR, the usual step, the data repo is made at data/private of the
     code checkout you are in (or, outside any, the one this sim belongs
-    to). With DIR it is made there, and data/shared is linked to it: a
-    checkout's data repo is always found at its data/shared (#654).
+    to). With DIR it is made there, and data/private is linked to it: a
+    checkout's data repo is always found at its data/private (#654).
 
     Run with another checkout's sim (a venv left active from another
     worktree), it runs the sim init of the checkout you are in instead,
@@ -5216,14 +5216,14 @@ def init_command(
 
     Then it turns on background builds (ADR-004 §12), as `sim builder
     install` does, installing the data repo's git hooks. --no-builder
-    installs no hooks and links no DIR to data/shared, for scripts and
+    installs no hooks and links no DIR to data/private, for scripts and
     tests; so does ANALYSIS_NO_BUILDER set in the environment, as for
-    setup.sh. With no DIR the data repo is still made at data/shared,
+    setup.sh. With no DIR the data repo is still made at data/private,
     which is where one was asked for.
     --no-commit skips the builder, which needs a git repository.
 
     Refuses a DIR that already holds a data repo, and with no DIR a
-    data/shared that is already there.
+    data/private that is already there.
     """
     from zabob.retirement.checkout import checkout_of
     from zabob.retirement.sim import data_repo
@@ -5231,7 +5231,7 @@ def init_command(
     # The variable setup.sh honors too: a recording (the setup video, #374)
     # shows `sim init DIR` as typed, so it can't pass --no-builder, and must
     # not link or hook anything in the checkout it records from. (With no
-    # DIR the data repo is the checkout's data/shared whatever this says:
+    # DIR the data repo is the checkout's data/private whatever this says:
     # code and data are one to one, and that is where it was asked for.)
     no_builder = no_builder or bool(os.environ.get("ANALYSIS_NO_BUILDER"))
     # The checkout this is run in is the one the data repo is for (#654):
@@ -5247,16 +5247,16 @@ def init_command(
                 ("--filing-status", filing_status)) if value is not None for arg in (option, value)),
             *(["--no-commit"] if no_commit else []), *(["--no-builder"] if no_builder else [])])
     code = data_repo.CODE_REPO_DIR
-    shared = code / "data" / "shared"
+    private = code / "data" / "private"
     if directory is None:
-        # The usual step: the data repo is the checkout's own data/shared.
-        if os.path.lexists(shared):
+        # The usual step: the data repo is the checkout's own data/private.
+        if os.path.lexists(private):
             raise click.ClickException(
-                f"{_shown(shared, resolve=False)} is already there"
-                + (f", leading to {_shown(shared.resolve())}" if shared.is_symlink() else "")
-                + f". To use it: source {_shown(shared / 'sim' / 'activate-analysis', resolve=False)}. For a new data "
+                f"{_shown(private, resolve=False)} is already there"
+                + (f", leading to {_shown(private.resolve())}" if private.is_symlink() else "")
+                + f". To use it: source {_shown(private / 'sim' / 'activate-analysis', resolve=False)}. For a new data "
                 "repo elsewhere, give its DIR; to start over here, remove it first.")
-        directory = shared
+        directory = private
     root = directory.expanduser().resolve()
     if data_repo.is_data_repo(root):
         raise click.ClickException(f"{root} already holds a data repo")
@@ -5285,27 +5285,27 @@ def init_command(
         click.echo("  committed the new files")
     click.echo(f"checking {data_repo.START_SCENARIO}: ", nl=False)
     _check_scenario(sim, data_repo.START_SCENARIO, unused=False)
-    # The data repo is always found at the checkout's data/shared, so one
+    # The data repo is always found at the checkout's data/private, so one
     # made elsewhere is linked there. Not for a script or a recording
     # (--no-builder), which must leave the checkout it runs from alone.
-    linked = os.path.lexists(shared) and shared.resolve() == root
+    linked = os.path.lexists(private) and private.resolve() == root
     if not no_builder and not linked:
-        if not os.path.lexists(shared):
-            shared.parent.mkdir(exist_ok=True)
-            shared.symlink_to(root)
+        if not os.path.lexists(private):
+            private.parent.mkdir(exist_ok=True)
+            private.symlink_to(root)
             linked = True
-            click.echo(f"linked {_shown(shared, resolve=False)} to {_shown(root)}")
+            click.echo(f"linked {_shown(private, resolve=False)} to {_shown(root)}")
         else:
             # The script links the checkout it is in and works from there,
             # so it is named through the checkout and DIR in full.
             click.echo(
-                f"  warning: {_shown(shared, resolve=False)} is already there and was left alone, so this "
+                f"  warning: {_shown(private, resolve=False)} is already there and was left alone, so this "
                 "checkout still uses "
-                f"{_shown(shared.resolve())}. To use the new data repo, remove it and run: "
+                f"{_shown(private.resolve())}. To use the new data repo, remove it and run: "
                 f"{_shown(code / 'scripts' / 'link-data.sh')} {root}", err=True)
     if not no_builder and not no_commit and not failed:
         _init_builder(sim)
-    activate = _shown(shared / "sim" / "activate-analysis", resolve=False) if linked \
+    activate = _shown(private / "sim" / "activate-analysis", resolve=False) if linked \
         else _shown(sim / "activate-analysis")
     # Set apart and in bold: without it no later command finds the data
     # repo, and after the lines above it was easy to miss.
@@ -5356,12 +5356,12 @@ def _init_builder(sim: Path) -> None:
     since the data repo itself is ready."""
     from zabob.retirement.sim import builder, data_repo
 
-    shared = data_repo.CODE_REPO_DIR / "data" / "shared"
+    private = data_repo.CODE_REPO_DIR / "data" / "private"
     try:
         done = builder.install(sim)
     except (ValueError, OSError, subprocess.CalledProcessError) as exc:
         click.echo(f"  warning: background builds not turned on: {exc}", err=True)
-        click.echo(f"  once {shared} leads to {sim.parent}: sim builder install --data-dir {sim}",
+        click.echo(f"  once {private} leads to {sim.parent}: sim builder install --data-dir {sim}",
                    err=True)
         return
     for line in done:

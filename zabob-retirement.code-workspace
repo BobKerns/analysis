@@ -5,7 +5,7 @@
             "name": "zabob-retirement"
         },
         {
-            "path": "./data/shared",
+            "path": "./data/private",
             "name": "private"
         }
     ],

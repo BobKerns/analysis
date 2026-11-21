@@ -328,15 +328,15 @@ def code_dir() -> Path | None:
 
 def pair_problems(code: Path | None, data_dir: Path) -> list[str]:
     """Why ``code`` and ``data_dir`` aren't a 1:1 workspace pair: the code
-    worktree's ``data/shared`` must be the data repo holding ``data_dir``,
+    worktree's ``data/private`` must be the data repo holding ``data_dir``,
     and ``data_dir/.analysis`` must name the code worktree."""
     if code is None:
         return ["the code isn't running from a git worktree"]
     problems = []
     data_dir = data_dir.resolve()
-    shared = code / "data" / "shared"
-    if not shared.exists() or shared.resolve() != data_dir.parent:
-        problems.append(f"{shared} doesn't lead to {data_dir.parent}")
+    private = code / "data" / "private"
+    if not private.exists() or private.resolve() != data_dir.parent:
+        problems.append(f"{private} doesn't lead to {data_dir.parent}")
     pointer = data_dir / ".analysis"
     try:
         named = Path(pointer.read_text().strip()).resolve()

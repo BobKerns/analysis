@@ -52,7 +52,7 @@ def pair(tmp_path: Path, data_repo_sim: Path,
     data_dir, data_repo = data_repo_sim, data_repo_sim.parent
     code = tmp_path / "code"
     (code / "data").mkdir(parents=True, exist_ok=True)
-    (code / "data" / "shared").symlink_to(data_repo)
+    (code / "data" / "private").symlink_to(data_repo)
     (data_dir / ".analysis").write_text(f"{code}\n")
     monkeypatch.setattr(builder, "code_dir", lambda: code.resolve())
     return code.resolve(), data_dir.resolve()

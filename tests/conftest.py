@@ -98,7 +98,7 @@ def _no_ambient_analysis_env(
     for name in _ANALYSIS_ENV_VARS:
         monkeypatch.delenv(name, raising=False)
     # Without $ANALYSIS_DATA_DIR the notebook widgets fall back to the
-    # checkout's data/shared/sim: on a dev machine, the real data repo,
+    # checkout's data/private/sim: on a dev machine, the real data repo,
     # whose disabled scenarios once hid a test's recipe (#401).
     monkeypatch.setattr(
         "zabob.retirement.sim.notebook_ui.pickers._checkout_data_dir",

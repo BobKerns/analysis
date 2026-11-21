@@ -328,7 +328,7 @@ def test_install_records_whether_to_roll_and_when(
     data = data_repo_sim
     code = tmp_path / "code"
     (code / "data").mkdir(parents=True)
-    (code / "data" / "shared").symlink_to(data.parent)
+    (code / "data" / "private").symlink_to(data.parent)
     (data / ".analysis").write_text(f"{code}\n")
     monkeypatch.setattr(builder, "code_dir", lambda: code.resolve())
     paths = builder.BuilderPaths.for_data(data)

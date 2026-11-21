@@ -466,7 +466,7 @@ def _sandbox(data: Path, theme: Theme, root: Path) -> Path:
                 f"export ANALYSIS_DATA_DIR={root / 'data'}",
                 f"export PATH={Path(sys.executable).parent}:$PATH",
                 *(f"export {k}={v}" for k, v in _GIT_ENV.items()),
-                # A recorded `sim init` mustn't link this checkout's data/shared
+                # A recorded `sim init` mustn't link this checkout's data/private
                 # or start background builds.
                 "export ANALYSIS_NO_BUILDER=1",
                 # `sim chain show --graph` draws with the slides' Chromium, and

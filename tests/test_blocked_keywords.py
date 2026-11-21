@@ -246,10 +246,10 @@ def test_the_private_list_file_is_read_from_the_data_repo(
     assert "notes.txt:1" in result.stderr
 
 
-def test_the_private_list_file_is_found_through_data_shared(scratch_repo: Path) -> None:
-    shared = scratch_repo / "data" / "shared"
-    shared.mkdir(parents=True)
-    (shared / "blocked-keywords.txt").write_text(f"{PRIVATE}\n", encoding="utf-8")
+def test_the_private_list_file_is_found_through_data_private(scratch_repo: Path) -> None:
+    private = scratch_repo / "data" / "private"
+    private.mkdir(parents=True)
+    (private / "blocked-keywords.txt").write_text(f"{PRIVATE}\n", encoding="utf-8")
     _stage(scratch_repo, "notes.txt", f"{PRIVATE}\n")
 
     assert _check(scratch_repo, "--staged").returncode == 1

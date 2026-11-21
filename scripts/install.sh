@@ -150,7 +150,7 @@ main() {
     get_code
 
     set --
-    if [ -e "$code/data/shared" ] || [ -L "$code/data/shared" ]; then
+    if [ -e "$code/data/private" ] || [ -L "$code/data/private" ]; then
         : # linked already; link-data.sh says so and leaves it alone
     else
         data=$(full_path "${data:-$(ask "Where is your data, or where should it go?" \
@@ -180,16 +180,16 @@ main() {
     if [ "$yes" ]; then input=/dev/null; else input=$tty; fi
     (cd "$code" && scripts/setup.sh "$@" <"$input")
 
-    shared=$(cd "$code/data/shared" 2>/dev/null && pwd -P) || shared="$code/data/shared"
-    if [ "$branch" != main ] && [ -f "$shared/state/builder/config.json" ]; then
+    private=$(cd "$code/data/private" 2>/dev/null && pwd -P) || private="$code/data/private"
+    if [ "$branch" != main ] && [ -f "$private/state/builder/config.json" ]; then
         # setup.sh turned background builds on, for main; they build only
         # from code matching the branch they record.
-        "$code/.venv/bin/sim" builder install "$branch" --data-dir "$shared/sim" || true
+        "$code/.venv/bin/sim" builder install "$branch" --data-dir "$private/sim" || true
     fi
     say ""
     say "Installed. Open a new terminal window, then:"
     # Through the checkout's link, so the code activated is this checkout's.
-    say "    source $code/data/shared/sim/activate-analysis"
+    say "    source $code/data/private/sim/activate-analysis"
     say "    sim run"
     say "To update later, run the same install line again."
 }

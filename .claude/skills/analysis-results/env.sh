@@ -11,16 +11,16 @@
 
 _ar_main="$(git worktree list --porcelain 2>/dev/null | sed -n '1s/^worktree //p')"
 if [ -z "${ANALYSIS_DATA_DIR-}" ]; then
-    if [ -n "$_ar_main" ] && [ -f "$_ar_main/data/shared/sim/activate-analysis" ]; then
+    if [ -n "$_ar_main" ] && [ -f "$_ar_main/data/private/sim/activate-analysis" ]; then
         unset VIRTUAL_ENV
         # shellcheck disable=SC1091
-        . "$_ar_main/data/shared/sim/activate-analysis" </dev/null >/dev/null 2>&1
+        . "$_ar_main/data/private/sim/activate-analysis" </dev/null >/dev/null 2>&1
     fi
 fi
 if [ -n "${ANALYSIS_DATA_DIR-}" ]; then
     export ANALYSIS_KEEP_SCENARIO=1
     echo "analysis: data $ANALYSIS_DATA_DIR, user ${ANALYSIS_USER-?}, code ${ANALYSIS_REPO_DIR-?}"
 else
-    echo "analysis: no data repo found (expected $_ar_main/data/shared/sim/activate-analysis)" >&2
+    echo "analysis: no data repo found (expected $_ar_main/data/private/sim/activate-analysis)" >&2
 fi
 unset _ar_main

@@ -118,7 +118,7 @@ file, the theme's terminal settings, and a hidden setup that:
   `ANALYSIS_DATA_DIR` at it, so every recording starts from the same state;
 - puts this checkout's `sim`/`analysis` on `PATH`;
 - sets `ANALYSIS_NO_BUILDER=1`, so a recorded `sim init` (video 2) doesn't
-  link this checkout's `data/shared` or turn on background builds;
+  link this checkout's `data/private` or turn on background builds;
 - sets the prompt (`alice@home $`, from the theme).
 
 Each tape starts from the same state, so a tape can't rely on an earlier

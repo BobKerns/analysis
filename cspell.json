@@ -10,7 +10,7 @@
     },
     {
       "name": "data-words",
-      "path": "./data/shared/.cspell/data-words.txt",
+      "path": "./data/private/.cspell/data-words.txt",
       "addWords": true
     }
   ],
