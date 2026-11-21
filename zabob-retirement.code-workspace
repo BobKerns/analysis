@@ -6,7 +6,7 @@
         },
         {
             "path": "./data/shared",
-            "name": "shared"
+            "name": "private"
         }
     ],
     "settings": {
