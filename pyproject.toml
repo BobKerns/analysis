@@ -1,7 +1,7 @@
 [project]
-name = "analysis"
+name = "zabob-retirement"
 version = "0.1.0"
-description = "Personal finance analysis and planning tools"
+description = "Zabob Retirement: a retirement simulator for your future, with scenario comparison and Monte Carlo ensembles"
 readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [

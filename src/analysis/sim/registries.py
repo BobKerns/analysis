@@ -276,6 +276,24 @@ RETIREMENT_SUBKIND = "retirement"
 # such as `joint`, or someone who only appears (an ancestor, an heir).
 PERSON_ROLES: frozenset[str] = frozenset({"primary", "secondary"})
 
+# persons.csv `kind` (#274): set, on a row with no role, it marks someone
+# outside the household (an heir, a trust, a charity), and says which for
+# reports; the engine treats the three alike. Blank is someone in the
+# household: a member, or a stand-in such as `joint` or a custodial account's
+# owner. A household member (PERSON_ROLES) may say `person`, nothing else.
+PERSON_KINDS: tuple[str, ...] = ("person", "trust", "charity")
+
+# The account the loader gives each outside party (#274): an expense account
+# of this subkind, named by the party's id and owned by them, so a gift or a
+# bequest lands somewhere and leaves net worth as any expense does.
+OUTSIDE_ACCOUNT_KIND, OUTSIDE_ACCOUNT_SUBKIND = "expense", "gift"
+
+# The character of money that reaches an outside party's account in a death's
+# sweep (#274): not income or a sale to the household, whatever the lot it
+# left (an heir is taxed on an inherited IRA on their own return). The engine
+# alone writes it; no CSV may.
+BEQUEST = "bequest"
+
 # A `retirement` account's lot subkinds (#217) and the tax treatment each
 # gives its lot. One IRA is either Roth or traditional, but a 401k can hold
 # both, so the distinction lives on the lot; the account's own tax_treatment
@@ -400,7 +418,7 @@ SUBKIND_ASSET_CLASS: dict[str, AssetClass] = {
 # Canonical accounts.csv column order (ADR-003 §4.2).
 ACCOUNTS_CSV_HEADER: tuple[str, ...] = (
     "name", "kind", "subkind", "owner", "tax_treatment", "series",
-    "tax_character", "opened", "closed", "meta_json", "tags",
+    "tax_character", "opened", "closed", "meta_json", "tags", "beneficiary",
 )
 
 # A named chain's role, which is the subdirectory of chains/ its file lives in
@@ -1276,7 +1294,7 @@ FILING_STATUSES: tuple[str, ...] = ("MFJ", "Single", "MFS")
 
 # ADR-003 §4.1 and §4.9.
 PERSONS_CSV_HEADER: tuple[str, ...] = (
-    "id", "display", "birthdate", "sex", "role", "meta_json",
+    "id", "display", "birthdate", "sex", "role", "meta_json", "kind",
 )
 # #222: persons.csv `sex`, which picks a life table's column. Optional (an
 # older persons.csv has no such column), but required of a person with a

@@ -12,7 +12,7 @@ next = "03-base-scenario"
 summary = """
 Alice gets the simulator running on her own computer, and starts a folder \
 for her household's data. Setup guide, with the one-line installer: \
-https://github.com/BobKerns/analysis/blob/main/docs/SETUP.md
+https://github.com/BobKerns/zabob-retirement/blob/main/docs/SETUP.md
 
 On Windows, set up WSL first: https://youtu.be/yHr90VdoHGQ"""
 contents = [
@@ -60,7 +60,7 @@ and every run she makes can be repeated exactly.
 ```tape
 Set FontSize 27
 Sleep 500ms
-Type "curl -fsSL https://raw.githubusercontent.com/BobKerns/analysis/main/scripts/install.sh | sh"
+Type "curl -fsSL https://raw.githubusercontent.com/BobKerns/zabob-retirement/main/scripts/install.sh | sh"
 Sleep 21s
 ```
 

@@ -167,7 +167,7 @@ It commits the bundle it keeps, and any weights it writes, in the data repo
 (`--no-commit` doesn't).
 
 The background builder runs the same skill unattended once a day
-([#640](https://github.com/BobKerns/analysis/issues/640)): from 06:07 New
+([#640](https://github.com/BobKerns/zabob-retirement/issues/640)): from 06:07 New
 York time, on the symbol whose research is oldest once it is over a month
 old, in a worktree of its own, committed on the `builder/research` branch
 and merged into `main` when that is checked out and clean. It writes a

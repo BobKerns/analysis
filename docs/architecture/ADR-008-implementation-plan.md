@@ -4,7 +4,7 @@
 
 **Status: implemented.** Phase 0 (`8f77956`): schema, the `latent_factor` kind, validation, load warnings. Phase 1 (`6c2fe37`): `correlation.py` and `value_at`. Phase 2 (`912c27e`): `resolve_member` integration and provenance. Phase 3: CLI authoring, the parameters table, and docs.
 
-**Beyond the plan:** factors are left out of the Monte Carlo correlation report's inputs, and the report notes a correlated batch, since its per-row numbers assumed independence until the follow-up, [#38](https://github.com/BobKerns/analysis/issues/38), made it rank and pin correlated rows by SRRC.
+**Beyond the plan:** factors are left out of the Monte Carlo correlation report's inputs, and the report notes a correlated batch, since its per-row numbers assumed independence until the follow-up, [#38](https://github.com/BobKerns/zabob-retirement/issues/38), made it rank and pin correlated rows by SRRC.
 
 Companion to [ADR-008](ADR-008-correlated-parameters.md). Each phase ends with a green suite. As in ADR-006 and ADR-007, `run_scenario` changes only to treat `latent_factor` as inert. Tests reuse `tests/conftest.py`'s fixtures (`append_calendar_row`, `load_test_copy`, the batch fixtures).
 
@@ -57,7 +57,7 @@ Companion to [ADR-008](ADR-008-correlated-parameters.md). Each phase ends with a
 3. Docs: ADR-006 §2 and §3 brief "Amended by #30" notes and column rows; ADR-003 §4.8 columns and the `latent_factor` kind; ADR-002 DDL; `docs/guides/ensembles.md` "Correlated parameters" section, covering choosing ρ, factors, and the product rule; the sensitivity notebook's parameters text.
 4. File the two follow-up sub-issues on #30: the correlation-aware Monte Carlo report, and OAT factor perturbation.
 
-## Follow-up — Student-t copula ([#68](https://github.com/BobKerns/analysis/issues/68))
+## Follow-up — Student-t copula ([#68](https://github.com/BobKerns/zabob-retirement/issues/68))
 
 1. `schema.py`: `calendar_event.vary_tail_dependence REAL`; `SCHEMA_VERSION` 31 → 32. ADR-002 DDL and ADR-003 §4.8 to match; the column in the calendar header.
 2. `correlation.py`: `tail_scale(ν, rng)` (`sqrt(ν/W)`, `W` by inverse χ² CDF from one `rng.random()`), `probability(z, ν)` and `score_at(q, ν)` (the t CDF and its inverse, or Φ when `ν` is blank), `tree_root`, and `expected_kendall_tau` / `rho_from_kendall_tau`. `distributions.py`: `tail_rng(seed, member, root)`, a stream no `member_rng` key can equal.
@@ -67,7 +67,7 @@ Companion to [ADR-008](ADR-008-correlated-parameters.md). Each phase ends with a
 6. CLI and guided entry: `--vary-tail-dependence` on every `add`; the guide asks a root factor for it.
 7. Tests (`tests/test_tail_dependence.py`): marginals stay uniform under any `ν`; joint-tail frequency rises as `ν` falls; Kendall τ follows `(2/π)·asin(ρ)` under t; a t tree's scores are its Gaussian scores times one `S` from the root's tail stream, and rows outside it draw as before; member 0 and OAT; loader and CLI rejections.
 
-## Follow-up — yearly process shocks ([#115](https://github.com/BobKerns/analysis/issues/115))
+## Follow-up — yearly process shocks ([#115](https://github.com/BobKerns/zabob-retirement/issues/115))
 
 1. `distributions.py`: `path_rng(seed, member, name, year)` and `path_tail_rng(seed, member, root, year)`, streams no level stream can equal.
 2. `ensemble.py`: for each tree holding a process row, each calendar year any of its process rows has a step gets a score per node, through the tree from that year's noise, times that year's `S` in a t tree; a lone process row draws its own. Member 0 and OAT members set them all to 0.
@@ -78,4 +78,4 @@ Companion to [ADR-008](ADR-008-correlated-parameters.md). Each phase ends with a
 
 - **Choosing ρ:** authors may over-specify precision. The guide recommends coarse values and explains the product rule for siblings.
 - **A child's ρ is relative to its parent, not to other rows.** Authors who think in pairwise correlations may be surprised that siblings correlate at the product. The parameters table should show each pair's implied correlation, or at least each row's tree, to make this visible.
-- **The Monte Carlo report's per-row ρ is misleading for correlated inputs.** The report should note when a batch has correlated rows. [#38](https://github.com/BobKerns/analysis/issues/38) has since made it rank and pin them by SRRC.
+- **The Monte Carlo report's per-row ρ is misleading for correlated inputs.** The report should note when a batch has correlated rows. [#38](https://github.com/BobKerns/zabob-retirement/issues/38) has since made it rank and pin them by SRRC.

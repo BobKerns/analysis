@@ -136,7 +136,7 @@ def _rename_in_chains(scenario_dir: Path, columns: tuple[str, ...], old: str, ne
 # ---------- accounts ----------
 
 ACCOUNT_COLUMNS: dict[str, tuple[str, ...]] = {
-    "accounts.csv": ("name",),
+    "accounts.csv": ("name", "beneficiary"),
     "account_lots.csv": ("account_name", "refill_chain", "overflow_chain"),
     "scheduled.csv": ("from_account", "to_account", "interest_account"),
     "calendar.csv": ("account_1", "account_2"),
@@ -231,6 +231,8 @@ def rename_account(scenario_dir: Path, old: str, new: str) -> list[str]:
                  if chain_edit.rename_cells(path, chain_edit.TAX_FILE_COLUMNS, old, new))]
     if _rename_subject_account(scenario_dir / "scheduled.csv", old, new) and "scheduled.csv" not in changed:
         changed.append("scheduled.csv")
+    if chain_edit.rename_estate(scenario_dir, old, new) and "scenario.csv" not in changed:
+        changed.append("scenario.csv")
     return changed
 
 

@@ -57,7 +57,7 @@ Instead, each row is perturbed to **quantiles of its own distribution** (p10 and
 
 ### 2. OAT generation reuses `resolve_member`
 
-`resolve_member` today resolves each `vary_*` row to `central()` (member 0) or to a draw from `member_rng` (members 1+). It gains one optional argument, `overrides: dict[str, float] | None`, mapping a row name to a **quantile in [0, 1]**. For a row named in `overrides`, the value is that quantile of the row's distribution (§3); every other row resolves exactly as member 0's does. A `date_marker` is the parameter for every row dated from it ([#281](https://github.com/BobKerns/analysis/issues/281)): overriding it moves them all, and those rows are not parameters of their own unless they vary too. Nothing else in `resolve_member` changes: dates before amounts, ramp expansion (ADR-006 §4, applied to the perturbed target), `ensemble_manifest`/`ensemble_draw` provenance, and the `one_off_transfer` positivity check.
+`resolve_member` today resolves each `vary_*` row to `central()` (member 0) or to a draw from `member_rng` (members 1+). It gains one optional argument, `overrides: dict[str, float] | None`, mapping a row name to a **quantile in [0, 1]**. For a row named in `overrides`, the value is that quantile of the row's distribution (§3); every other row resolves exactly as member 0's does. A `date_marker` is the parameter for every row dated from it ([#281](https://github.com/BobKerns/zabob-retirement/issues/281)): overriding it moves them all, and those rows are not parameters of their own unless they vary too. Nothing else in `resolve_member` changes: dates before amounts, ramp expansion (ADR-006 §4, applied to the perturbed target), `ensemble_manifest`/`ensemble_draw` provenance, and the `one_off_transfer` positivity check.
 
 An OAT batch for rows `r1 … rk` and quantiles `q1 … qm` is:
 
@@ -261,16 +261,16 @@ For a `monte_carlo` batch the same notebook shows each row's measure at the `Rep
 
 Each entry changed this ADR's design. The sections it names were rewritten in place to describe the current design; git history has the earlier text.
 
-- [#31](https://github.com/BobKerns/analysis/issues/31): `truncated_normal` quantiles follow its new sinh-arcsinh shape, `triangular` added, and the base case is every family's median (§3); the parameters view shows shape and implied moments (§9).
-- [#42](https://github.com/BobKerns/analysis/issues/42): `--jobs` now defaults to one worker per available CPU, not 1 (§8).
-- [#39](https://github.com/BobKerns/analysis/issues/39): an OAT batch also perturbs [ADR-008](ADR-008-correlated-parameters.md) latent factors, each moving its whole family to their conditional medians, and reports them labeled as factors (§2, §5, §6.1, §7, §9).
-- [#38](https://github.com/BobKerns/analysis/issues/38): a Monte Carlo batch with [ADR-008](ADR-008-correlated-parameters.md) correlated rows is ranked and pinned by SRRC with its own interval, reports PRCC, a line per latent factor, and the correlations its normal scores achieved (§6.2, §9).
-- [#68](https://github.com/BobKerns/analysis/issues/68): the achieved correlations are read through Kendall's τ, and rows sharing a Student-t copula tree make a batch correlated (§6.2).
-- [#221](https://github.com/BobKerns/analysis/issues/221): a varying lifespan is swept as `lifespan:<person>`, centered on its authored age (§2).
-- [#222](https://github.com/BobKerns/analysis/issues/222): a `life_table` lifespan's parameters row gives its 1st to 99th percentile ages and its set-forward (§2).
-- [#281](https://github.com/BobKerns/analysis/issues/281): a `date_marker` is swept as one parameter, moving the rows dated from it (§2).
-- [#292](https://github.com/BobKerns/analysis/issues/292) ([ADR-009](ADR-009-pooled-ensembles.md)): sensitivity is refused on a pool, run on its components instead (§7).
-- [#329](https://github.com/BobKerns/analysis/issues/329): `sim ensemble sensitivity` draws the notebook's charts (`--chart`) and shows one row (`--row`); the views move to `sim/sensitivity_charts.py` (§7, §9).
-- [#438](https://github.com/BobKerns/analysis/issues/438): PRCC gets a 95% interval, and the notebook's correlation chart can plot ρ, SRRC or PRCC (`CorrelationMeasurePicker`) (§6.2, §9).
-- [#452](https://github.com/BobKerns/analysis/issues/452): `--top [N]` draws an overview's most important rows, or as many as fill the terminal (§7).
-- [#454](https://github.com/BobKerns/analysis/issues/454): each mode's batches in a folder of their own; the background builder makes an ensemble's sensitivity batch after its Monte Carlo batch, and `sim ensemble sensitivity` offers every ensemble and makes a missing batch ([ADR-004](ADR-004-reproducibility-and-activation.md) §12) (§5).
+- [#31](https://github.com/BobKerns/zabob-retirement/issues/31): `truncated_normal` quantiles follow its new sinh-arcsinh shape, `triangular` added, and the base case is every family's median (§3); the parameters view shows shape and implied moments (§9).
+- [#42](https://github.com/BobKerns/zabob-retirement/issues/42): `--jobs` now defaults to one worker per available CPU, not 1 (§8).
+- [#39](https://github.com/BobKerns/zabob-retirement/issues/39): an OAT batch also perturbs [ADR-008](ADR-008-correlated-parameters.md) latent factors, each moving its whole family to their conditional medians, and reports them labeled as factors (§2, §5, §6.1, §7, §9).
+- [#38](https://github.com/BobKerns/zabob-retirement/issues/38): a Monte Carlo batch with [ADR-008](ADR-008-correlated-parameters.md) correlated rows is ranked and pinned by SRRC with its own interval, reports PRCC, a line per latent factor, and the correlations its normal scores achieved (§6.2, §9).
+- [#68](https://github.com/BobKerns/zabob-retirement/issues/68): the achieved correlations are read through Kendall's τ, and rows sharing a Student-t copula tree make a batch correlated (§6.2).
+- [#221](https://github.com/BobKerns/zabob-retirement/issues/221): a varying lifespan is swept as `lifespan:<person>`, centered on its authored age (§2).
+- [#222](https://github.com/BobKerns/zabob-retirement/issues/222): a `life_table` lifespan's parameters row gives its 1st to 99th percentile ages and its set-forward (§2).
+- [#281](https://github.com/BobKerns/zabob-retirement/issues/281): a `date_marker` is swept as one parameter, moving the rows dated from it (§2).
+- [#292](https://github.com/BobKerns/zabob-retirement/issues/292) ([ADR-009](ADR-009-pooled-ensembles.md)): sensitivity is refused on a pool, run on its components instead (§7).
+- [#329](https://github.com/BobKerns/zabob-retirement/issues/329): `sim ensemble sensitivity` draws the notebook's charts (`--chart`) and shows one row (`--row`); the views move to `sim/sensitivity_charts.py` (§7, §9).
+- [#438](https://github.com/BobKerns/zabob-retirement/issues/438): PRCC gets a 95% interval, and the notebook's correlation chart can plot ρ, SRRC or PRCC (`CorrelationMeasurePicker`) (§6.2, §9).
+- [#452](https://github.com/BobKerns/zabob-retirement/issues/452): `--top [N]` draws an overview's most important rows, or as many as fill the terminal (§7).
+- [#454](https://github.com/BobKerns/zabob-retirement/issues/454): each mode's batches in a folder of their own; the background builder makes an ensemble's sensitivity batch after its Monte Carlo batch, and `sim ensemble sensitivity` offers every ensemble and makes a missing batch ([ADR-004](ADR-004-reproducibility-and-activation.md) §12) (§5).

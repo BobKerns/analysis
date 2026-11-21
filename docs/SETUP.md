@@ -1,6 +1,6 @@
 ![Zabob Retirement](assets/brand/banner.jpg)
 
-# Setup
+# Setting up Zabob Retirement
 
 > To read a formatted `.md` file:
 > - In Jupyter: right-click on it and select `Open With / Markdown Preview`
@@ -13,7 +13,7 @@ If you don't have the code yet, or don't use git, paste this into a terminal
 first):
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/BobKerns/analysis/main/scripts/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/BobKerns/zabob-retirement/main/scripts/install.sh | sh
 ```
 
 It installs git if it's missing (on macOS, Apple's command-line tools: finish

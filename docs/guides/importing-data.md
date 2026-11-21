@@ -777,7 +777,7 @@ The scenario does not work out payroll tax (Social Security and Medicare).
 Enter the pay stub's amounts for them as an expense rule of their own, taken
 from the gross pay with the other deductions. A business's profit is another
 matter: the federal return works out its self-employment tax
-([#623](https://github.com/BobKerns/analysis/issues/623)), since it depends on
+([#623](https://github.com/BobKerns/zabob-retirement/issues/623)), since it depends on
 a profit the run works out. It counts each spouse's gross wages (`ordinary`
 income out of their own `salary` account) toward their Social Security wage
 base, so gross pay matters there too.

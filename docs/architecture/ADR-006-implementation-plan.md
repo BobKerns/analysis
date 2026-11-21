@@ -58,7 +58,7 @@ Done. Exit: `sim run <recipe>` is the whole user-facing entry point for generati
 
 Done. Exit: mean/median/SD/range are one command or one notebook cell away for any ensemble that's been run.
 
-## Follow-up — year-by-year process paths ([#115](https://github.com/BobKerns/analysis/issues/115))
+## Follow-up — year-by-year process paths ([#115](https://github.com/BobKerns/zabob-retirement/issues/115))
 
 1. `schema.py`: `calendar_event.vary_process TEXT`, `vary_persistence REAL`, `vary_innovation_sd INTEGER`; `SCHEMA_VERSION` 32 → 33. ADR-002 DDL and ADR-003 §4.8 to match; the columns in the calendar header; `registries.VARY_PROCESSES = {"ar1"}`.
 2. `loader.py`: the §2 checks on a process row, including a level whose lower bound stays above −100%.

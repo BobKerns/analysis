@@ -116,7 +116,7 @@ state/
 | `load_warning` | ✓ | ✓ (snapshot) |
 | `intent_manifest` (one row) | ✓ | — |
 | `simulation_run` (one row) | — | ✓ |
-| `simulation_step`, `lot_state`, `transfer_event`, `capital_loss`, `hsa_gain`, `basis_step_up`, `mortgage_balance`, `applied_calendar_event`, `tax_year_summary`, `inflation_index_state`, `strategy_decision`, `breach_event`, `spending_baseline` | — | ✓ |
+| `simulation_step`, `lot_state`, `transfer_event`, `capital_loss`, `hsa_gain`, `basis_step_up`, `inheritance`, `mortgage_balance`, `applied_calendar_event`, `tax_year_summary`, `inflation_index_state`, `strategy_decision`, `breach_event`, `spending_baseline` | — | ✓ |
 | `schema_overview` (planned; not yet created) | ✓ | ✓ |
 | Views (`account_state`, `net_worth`, etc.) | — (intent-only views permitted, none defined in v1) | ✓ |
 
@@ -124,7 +124,7 @@ The snapshot in a run file is byte-comparable to the corresponding intent file's
 
 ### Intent layer DDL
 
-The DDL in this section and the next four is copied from `src/analysis/sim/schema.py` (`SCHEMA_VERSION` 69) and must be kept identical to it; the code is authoritative. These tables exist in both intent files and (as snapshot) run files. Not in the DDL: `tag`, `account_tag`, `scheduled_transaction_tag` and `calendar_event_tag` are a generic labelling facility (role/name pairs) that no loader writes yet.
+The DDL in this section and the next four is copied from `src/analysis/sim/schema.py` (`SCHEMA_VERSION` 70) and must be kept identical to it; the code is authoritative. These tables exist in both intent files and (as snapshot) run files. Not in the DDL: `tag`, `account_tag`, `scheduled_transaction_tag` and `calendar_event_tag` are a generic labelling facility (role/name pairs) that no loader writes yet.
 
 ```sql
 CREATE TABLE person (
@@ -133,7 +133,10 @@ CREATE TABLE person (
     birthdate   TEXT NOT NULL,
     sex         TEXT,  -- 'f' or 'm', or NULL; a life_table lifespan needs it
     role        TEXT,
-    meta_json   TEXT NOT NULL DEFAULT '{}'
+    meta_json   TEXT NOT NULL DEFAULT '{}',
+    -- #274: set on someone with no role, outside the household (an heir, a
+    -- trust, a charity), who gets an account of their own; NULL in it.
+    kind        TEXT CHECK (kind IN ('person','trust','charity'))
 );
 
 -- Names for the symbols lots hold (data repo securities.csv); shared reference
@@ -293,6 +296,10 @@ CREATE TABLE account (
     opened          TEXT,
     closed          TEXT,
     meta_json       TEXT NOT NULL DEFAULT '{}',
+    -- #274: the household member (or joint) who takes the account over at
+    -- its owner's death, no money moving: accounts.csv beneficiary naming a
+    -- person. A beneficiary chain is per lot (account_lot).
+    beneficiary_owner TEXT REFERENCES person(id),
     CHECK (
         (kind = 'asset' AND subkind IN ('cash','brokerage_taxable',
             'retirement','hsa','real_estate','vehicle','other_asset','business'))
@@ -400,6 +407,9 @@ CREATE TABLE account_lot (
     refill_amount_cents     INTEGER,
     maximum_balance_cents   INTEGER,
     overflow_chain_id       INTEGER REFERENCES chain(id),
+    -- #274: where the lot goes at its owner's death (accounts.csv
+    -- beneficiary, matched to this lot); NULL when the account names none.
+    beneficiary_chain_id    INTEGER REFERENCES chain(id),
     UNIQUE (account_id, lot)
 );
 
@@ -820,7 +830,7 @@ CREATE TABLE transfer_event (
     tax_character   TEXT NOT NULL,
     reason_kind     TEXT NOT NULL CHECK (reason_kind IN
                         ('rule','initial','ytd','ytd_rule','refill','overflow','strategy',
-                         'tax')),
+                         'tax','inheritance')),
     reason_id       INTEGER,
     -- The event this leg derives from: a multi-leg rule's primary leg, a
     -- withdrawal's basis leg for its gain leg, or, for a reason_kind='refill'
@@ -952,6 +962,27 @@ CREATE TABLE basis_step_up (
     rule            TEXT NOT NULL
 );
 
+-- #274: what each death did with an account: a lot swept into its
+-- beneficiary chain (lot_id and beneficiary_chain_id set; its legs are
+-- transfer_events with reason_kind 'inheritance' and this row's id), or the
+-- account passing to a household member with no money moving (owner set),
+-- which holds from the month after `date`. rule: 'designated' (the
+-- account's beneficiary), 'estate' (scenario meta_json estate) or 'spouse'.
+CREATE TABLE inheritance (
+    id                   INTEGER PRIMARY KEY,
+    step_id              INTEGER NOT NULL REFERENCES simulation_step(id),
+    date                 TEXT NOT NULL,
+    decedent             TEXT NOT NULL,
+    account_id           INTEGER NOT NULL REFERENCES account(id),
+    lot_id               INTEGER REFERENCES account_lot(id),
+    beneficiary_chain_id INTEGER REFERENCES chain(id),
+    owner                TEXT,
+    balance              INTEGER NOT NULL,
+    placed               INTEGER NOT NULL DEFAULT 0,
+    rule                 TEXT NOT NULL CHECK (rule IN ('designated','estate','spouse')),
+    CHECK ((owner IS NULL) = (lot_id IS NOT NULL))
+);
+
 -- #542: the balance each month's interest of a mortgage_payment rule was
 -- figured on, for the mortgage debt limit: one row per rule and month the
 -- interest covers. A ytd_amount catch-up posts several months' interest
@@ -1036,8 +1067,9 @@ Seeded rows (the loader inserts the subset relevant to that file kind; tables no
 | `lot_state` | Per-lot balance, cost basis and quantity at the end of one step; long-narrow for pivoting. `account_state` is a view summing it by account. |
 | `transfer_event` | Atomic ledger entry: every dollar movement is exactly one row, tagged with tax character and reason. |
 | `capital_loss` | Basis a sale through a chain's basis step could not recover: a capital loss with no money moving, which the tax scan nets, limits and carries forward. |
-| `hsa_gain` | An HSA withdrawal's gain over the lot's basis, a loss negative ([#497](https://github.com/BobKerns/analysis/issues/497)): what a state that doesn't recognize HSAs taxes, with no money of its own, so the federal return never sees it. |
-| `mortgage_balance` | The balance a home mortgage's interest was figured on, by rule and month ([#542](https://github.com/BobKerns/analysis/issues/542)): the base of the itemized deduction's mortgage debt limit. A `ytd_amount` catch-up, posted at once, has a row for each month it replays. No money of its own. |
+| `hsa_gain` | An HSA withdrawal's gain over the lot's basis, a loss negative ([#497](https://github.com/BobKerns/zabob-retirement/issues/497)): what a state that doesn't recognize HSAs taxes, with no money of its own, so the federal return never sees it. |
+| `mortgage_balance` | The balance a home mortgage's interest was figured on, by rule and month ([#542](https://github.com/BobKerns/zabob-retirement/issues/542)): the base of the itemized deduction's mortgage debt limit. A `ytd_amount` catch-up, posted at once, has a row for each month it replays. No money of its own. |
+| `inheritance` | What a death did with an account ([ADR-003](ADR-003-registries-and-csv-schemas.md) §4.9): a lot swept into its beneficiary chain (with what it placed; its legs are `transfer_event`s with `reason_kind` `inheritance`, and those reaching someone outside the household have the `bequest` character), or the account passing to another household member, no money moving, its new `owner` holding from the month after. `rule` is `designated`, `estate` or `spouse`. |
 | `basis_step_up` | A lot's cost basis reset at a death to its balance, whole or half ([ADR-003](ADR-003-registries-and-csv-schemas.md) §4.9): whose death, the balance, the basis before and after, and the `rule` that decided it (`owner`, `inherited`, `joint_half`, `community_property`, `last_survivor`). No money moves. |
 | `applied_calendar_event` | Junction table: which calendar events fired in which step. |
 | `tax_year_summary` | Cache and audit trail for the retrospective tax scan, by (year, bucket). |
@@ -1116,8 +1148,13 @@ SELECT month, kind, subkind,
 FROM balance_by_account
 GROUP BY month, kind, subkind;
 
+-- An account's owner is its accounts.csv owner until a death passes it to
+-- another household member (#274, `inheritance`), from the month after.
 CREATE VIEW balance_by_owner AS
-SELECT s.month, a.owner,
+SELECT s.month,
+       COALESCE((SELECT i.owner FROM inheritance i
+                 WHERE i.account_id = a.id AND i.owner IS NOT NULL AND i.date < s.month
+                 ORDER BY i.date DESC, i.id DESC LIMIT 1), a.owner) AS owner,
        SUM(CASE WHEN a.kind = 'asset' THEN st.balance
                 WHEN a.kind = 'liability' THEN -st.balance
                 ELSE 0 END) AS balance
@@ -1125,7 +1162,7 @@ FROM simulation_step s
 JOIN account_state st ON st.step_id = s.id
 JOIN account a        ON a.id = st.account_id
 WHERE a.kind IN ('asset','liability')
-GROUP BY s.month, a.owner;
+GROUP BY 1, 2;
 
 CREATE VIEW flow_by_account AS
 SELECT CAST(substr(date, 1, 4) AS INTEGER) AS year,
@@ -1209,48 +1246,49 @@ Each entry changed this ADR's design. The sections it names were rewritten in pl
 - [ADR-005](ADR-005-lots-and-per-lot-state.md) (lots): `account_model_member` is one row per lot, `lot_state` replaces the `account_state` table (now a view), `transfer_event` and `chain` reference lots, `security` is added, and the reserved `holding`/`lot` tables are removed.
 - [ADR-006](ADR-006-ensemble-scenarios.md) (ensemble scenarios): `calendar_event` gains `name` and the `vary_*` columns; new tables `ensemble_manifest`, `ensemble_draw`.
 - [ADR-007](ADR-007-sensitivity-analysis.md) (sensitivity analysis): `ensemble_manifest.mode`, `ensemble_draw.quantile`.
-- [#59](https://github.com/BobKerns/analysis/issues/59): `scenario_tree_id` covers mix-in scenarios' folders too, and `scenario` records `parents_json` and `load_order_json` in place of the never-populated `parent_id` (schema 31).
-- [#68](https://github.com/BobKerns/analysis/issues/68): `calendar_event.vary_tail_dependence` (schema 32).
-- [#104](https://github.com/BobKerns/analysis/issues/104): a refill leg's `transfer_event.parent_event_id` points at the debit that triggered it.
-- [#115](https://github.com/BobKerns/analysis/issues/115): `calendar_event.vary_process`, `vary_persistence` and `vary_innovation_sd` (schema 33).
-- [#143](https://github.com/BobKerns/analysis/issues/143): `chain.kind` replaced by `chain.role` (`source`/`destination`, NULL for a leaf) (schema 34).
-- [#160](https://github.com/BobKerns/analysis/issues/160): the single-row `account_model` table and every `model_id`/`account_model_id` column are dropped, and `account_model_member` is renamed `account_lot` (Intent layer DDL, placement summary, `schema_overview`; schema 35).
-- [#165](https://github.com/BobKerns/analysis/issues/165): `calendar_event.vary_outcomes` (Intent layer DDL; schema 36).
-- [#181](https://github.com/BobKerns/analysis/issues/181): intent and run files are written without fsync (Conventions).
-- [#197](https://github.com/BobKerns/analysis/issues/197): `Income_LoanOrigination` is no longer reserved, since the `buy_asset` kind that used it is dropped; the reserved names are the growth counterparties (Conventions).
-- [#199](https://github.com/BobKerns/analysis/issues/199): `chain_steps.tax_character` and `basis_of_lot_id`; the `home_sale` and `capital_improvement` tax characters; the run table `capital_loss` (Intent and ledger DDL; schema 37).
-- [#217](https://github.com/BobKerns/analysis/issues/217): account subkind `retirement` replaces the four IRA/401k subkinds; `account_lot` gains `subkind` and the effective `tax_treatment` the engine reads (Intent DDL; schema 38).
-- [#217](https://github.com/BobKerns/analysis/issues/217): tax character `roth_nonqualified`, a Roth lot's earnings paid out before the distribution is qualified (Intent DDL; schema 39).
-- [#221](https://github.com/BobKerns/analysis/issues/221): `person_lifespan` gains `age_at_death` and the `vary_*` columns; `ensemble_draw` records a lifespan under `lifespan:<person>` with target `age_at_death` (Intent layer DDL, glossary; schema 40).
-- [#222](https://github.com/BobKerns/analysis/issues/222): `person.sex` and `person_lifespan.life_table_set_forward`, for a lifespan drawn from the new aux kind `life_table` (Intent layer DDL; schema 41).
-- [#231](https://github.com/BobKerns/analysis/issues/231): asset and expense subkinds `business` and tax characters `business_income` and `business_expense` (Intent and Run layer DDL; schema 42).
-- [#261](https://github.com/BobKerns/analysis/issues/261): `ensemble_draw` gains `noise` and `u`; new member tables `ensemble_tail_scale` and `ensemble_path_shock`; a batch's `draws.sqlite3` (Ensemble provenance, placement summary, `schema_overview`; schema 43).
-- [#255](https://github.com/BobKerns/analysis/issues/255): the run table `basis_step_up` (Intent and ledger DDL, glossary; schema 44).
-- [#284](https://github.com/BobKerns/analysis/issues/284): `calendar_event.vary_innovation_sd` renamed `vary_shock_sd` (Intent layer DDL; schema 45).
-- [#280](https://github.com/BobKerns/analysis/issues/280): `calendar_event.vary_process_start` (Intent layer DDL; schema 46).
-- [#281](https://github.com/BobKerns/analysis/issues/281): `calendar_event.date_refs_json`, for dates written relative to a `date_marker` (Intent layer DDL; schema 47).
-- [#291](https://github.com/BobKerns/analysis/issues/291): `calendar_event.vary_resume`, for a return row that puts back what governed its series (Intent layer DDL; schema 48).
-- [#315](https://github.com/BobKerns/analysis/issues/315): `person_lifespan.life_table`, the life table a scenario reads a person's lifespan against (Intent layer DDL; schema 49).
-- [#324](https://github.com/BobKerns/analysis/issues/324): `scenario.mixin_only`, so a run without the data repo still refuses a mix-in only scenario now that one may have parents (Intent layer DDL; schema 50).
-- [#339](https://github.com/BobKerns/analysis/issues/339): responsive strategies' `strategy`, `strategy_source` and `allocation_target` (Intent layer DDL), `strategy_decision` and `transfer_event.strategy_decision_id` (Ledger layer DDL; schema 51).
-- [#387](https://github.com/BobKerns/analysis/issues/387): spending strategies: `strategy.rule_tag` with `chain_id` optional (Intent layer DDL), `strategy_decision`'s `year_start` and `scale` hooks and `scheduled_transaction_id`, and the run table `spending_baseline` (Ledger layer DDL, glossary; schema 52).
-- [#408](https://github.com/BobKerns/analysis/issues/408): `strategy_vary`, a strategy's varied parameters (Intent layer DDL, glossary; schema 53); a strategy is one file, `strategies/<name>.csv` (data repo layout).
-- [#421](https://github.com/BobKerns/analysis/issues/421): year-end strategy moves: `transfer_event.reason_kind` `strategy` and `strategy_decision.hook` `year_end` (Ledger layer DDL, glossary), and the expense subkind `gift` (Intent layer DDL; schema 54).
-- [#441](https://github.com/BobKerns/analysis/issues/441): triggers on guard rails: `strategy_trigger` (Intent layer DDL), `breach_event`, `strategy_decision.breach_event_id` and its `month_start` and `on_breach` hooks (Ledger layer DDL, glossary; schema 55).
-- [#468](https://github.com/BobKerns/analysis/issues/468): the tax character `qualified_dividend` on `scheduled_transaction` and `year_to_date` (Intent layer DDL; schema 56).
-- [#434](https://github.com/BobKerns/analysis/issues/434): `basis_step_up.rule` records why a lot stepped up (Ledger layer DDL, glossary; schema 57).
+- [#59](https://github.com/BobKerns/zabob-retirement/issues/59): `scenario_tree_id` covers mix-in scenarios' folders too, and `scenario` records `parents_json` and `load_order_json` in place of the never-populated `parent_id` (schema 31).
+- [#68](https://github.com/BobKerns/zabob-retirement/issues/68): `calendar_event.vary_tail_dependence` (schema 32).
+- [#104](https://github.com/BobKerns/zabob-retirement/issues/104): a refill leg's `transfer_event.parent_event_id` points at the debit that triggered it.
+- [#115](https://github.com/BobKerns/zabob-retirement/issues/115): `calendar_event.vary_process`, `vary_persistence` and `vary_innovation_sd` (schema 33).
+- [#143](https://github.com/BobKerns/zabob-retirement/issues/143): `chain.kind` replaced by `chain.role` (`source`/`destination`, NULL for a leaf) (schema 34).
+- [#160](https://github.com/BobKerns/zabob-retirement/issues/160): the single-row `account_model` table and every `model_id`/`account_model_id` column are dropped, and `account_model_member` is renamed `account_lot` (Intent layer DDL, placement summary, `schema_overview`; schema 35).
+- [#165](https://github.com/BobKerns/zabob-retirement/issues/165): `calendar_event.vary_outcomes` (Intent layer DDL; schema 36).
+- [#181](https://github.com/BobKerns/zabob-retirement/issues/181): intent and run files are written without fsync (Conventions).
+- [#197](https://github.com/BobKerns/zabob-retirement/issues/197): `Income_LoanOrigination` is no longer reserved, since the `buy_asset` kind that used it is dropped; the reserved names are the growth counterparties (Conventions).
+- [#199](https://github.com/BobKerns/zabob-retirement/issues/199): `chain_steps.tax_character` and `basis_of_lot_id`; the `home_sale` and `capital_improvement` tax characters; the run table `capital_loss` (Intent and ledger DDL; schema 37).
+- [#217](https://github.com/BobKerns/zabob-retirement/issues/217): account subkind `retirement` replaces the four IRA/401k subkinds; `account_lot` gains `subkind` and the effective `tax_treatment` the engine reads (Intent DDL; schema 38).
+- [#217](https://github.com/BobKerns/zabob-retirement/issues/217): tax character `roth_nonqualified`, a Roth lot's earnings paid out before the distribution is qualified (Intent DDL; schema 39).
+- [#221](https://github.com/BobKerns/zabob-retirement/issues/221): `person_lifespan` gains `age_at_death` and the `vary_*` columns; `ensemble_draw` records a lifespan under `lifespan:<person>` with target `age_at_death` (Intent layer DDL, glossary; schema 40).
+- [#222](https://github.com/BobKerns/zabob-retirement/issues/222): `person.sex` and `person_lifespan.life_table_set_forward`, for a lifespan drawn from the new aux kind `life_table` (Intent layer DDL; schema 41).
+- [#231](https://github.com/BobKerns/zabob-retirement/issues/231): asset and expense subkinds `business` and tax characters `business_income` and `business_expense` (Intent and Run layer DDL; schema 42).
+- [#261](https://github.com/BobKerns/zabob-retirement/issues/261): `ensemble_draw` gains `noise` and `u`; new member tables `ensemble_tail_scale` and `ensemble_path_shock`; a batch's `draws.sqlite3` (Ensemble provenance, placement summary, `schema_overview`; schema 43).
+- [#255](https://github.com/BobKerns/zabob-retirement/issues/255): the run table `basis_step_up` (Intent and ledger DDL, glossary; schema 44).
+- [#284](https://github.com/BobKerns/zabob-retirement/issues/284): `calendar_event.vary_innovation_sd` renamed `vary_shock_sd` (Intent layer DDL; schema 45).
+- [#280](https://github.com/BobKerns/zabob-retirement/issues/280): `calendar_event.vary_process_start` (Intent layer DDL; schema 46).
+- [#281](https://github.com/BobKerns/zabob-retirement/issues/281): `calendar_event.date_refs_json`, for dates written relative to a `date_marker` (Intent layer DDL; schema 47).
+- [#291](https://github.com/BobKerns/zabob-retirement/issues/291): `calendar_event.vary_resume`, for a return row that puts back what governed its series (Intent layer DDL; schema 48).
+- [#315](https://github.com/BobKerns/zabob-retirement/issues/315): `person_lifespan.life_table`, the life table a scenario reads a person's lifespan against (Intent layer DDL; schema 49).
+- [#324](https://github.com/BobKerns/zabob-retirement/issues/324): `scenario.mixin_only`, so a run without the data repo still refuses a mix-in only scenario now that one may have parents (Intent layer DDL; schema 50).
+- [#339](https://github.com/BobKerns/zabob-retirement/issues/339): responsive strategies' `strategy`, `strategy_source` and `allocation_target` (Intent layer DDL), `strategy_decision` and `transfer_event.strategy_decision_id` (Ledger layer DDL; schema 51).
+- [#387](https://github.com/BobKerns/zabob-retirement/issues/387): spending strategies: `strategy.rule_tag` with `chain_id` optional (Intent layer DDL), `strategy_decision`'s `year_start` and `scale` hooks and `scheduled_transaction_id`, and the run table `spending_baseline` (Ledger layer DDL, glossary; schema 52).
+- [#408](https://github.com/BobKerns/zabob-retirement/issues/408): `strategy_vary`, a strategy's varied parameters (Intent layer DDL, glossary; schema 53); a strategy is one file, `strategies/<name>.csv` (data repo layout).
+- [#421](https://github.com/BobKerns/zabob-retirement/issues/421): year-end strategy moves: `transfer_event.reason_kind` `strategy` and `strategy_decision.hook` `year_end` (Ledger layer DDL, glossary), and the expense subkind `gift` (Intent layer DDL; schema 54).
+- [#441](https://github.com/BobKerns/zabob-retirement/issues/441): triggers on guard rails: `strategy_trigger` (Intent layer DDL), `breach_event`, `strategy_decision.breach_event_id` and its `month_start` and `on_breach` hooks (Ledger layer DDL, glossary; schema 55).
+- [#468](https://github.com/BobKerns/zabob-retirement/issues/468): the tax character `qualified_dividend` on `scheduled_transaction` and `year_to_date` (Intent layer DDL; schema 56).
+- [#434](https://github.com/BobKerns/zabob-retirement/issues/434): `basis_step_up.rule` records why a lot stepped up (Ledger layer DDL, glossary; schema 57).
 - Readers assume the current schema until public release: no fallbacks for files from an earlier `SCHEMA_VERSION`, and a draws database from another version is gathered again (Schema changes).
-- [#507](https://github.com/BobKerns/analysis/issues/507): table `tax_jurisdiction` (a scenario's `taxes/<name>.csv` files) and `transfer_event.reason_kind` `tax` for its payments, in place of the `tax_accumulator` rule (table of tables, Intent layer DDL, Ledger layer DDL; schema 58).
-- [#432](https://github.com/BobKerns/analysis/issues/432): `load_warning` keeps the load's warnings with the intent and the run snapshot (Placement summary, Load warnings, glossary; schema 59).
-- [#507](https://github.com/BobKerns/analysis/issues/507): the tax calculator API renames `tax_year_summary`'s income tax buckets (`<scope>_agi`, `_tax`, `_deduction`, `_ss_benefits`, `_ss_taxable`, `_ltcg_taxed`, `_capital_loss_used`, `_business_net`, `_hobby_disallowed`) and adds `<scope>_ordinary_taxable` (schema 60).
-- [#508](https://github.com/BobKerns/analysis/issues/508): the local income tax is its own jurisdiction, so `tax_year_summary` has `local_*` buckets in place of `state_local_tax`, and the state's adjustment lines (`state_dividends_as_ordinary`, `state_hsa_addback`, `state_capital_gain_difference`, `state_ss_difference`, `state_credits`); `tax_jurisdiction.upstream` holds the calculator's own when the file leaves it blank (schema 61).
-- [#410](https://github.com/BobKerns/analysis/issues/410): table `strategy_disabled` keeps a disabled strategy's kind and parameters with the intent and the run snapshot (Placement summary, Intent layer DDL, glossary; schema 62).
-- [#509](https://github.com/BobKerns/analysis/issues/509): table `residence` (a scenario's `residence.csv`: where the household lives, by date), in the intent and the run snapshot (Placement summary, Intent layer DDL, glossary; schema 63).
-- [#510](https://github.com/BobKerns/analysis/issues/510): table `tax_source` (the household's tax calculator code), in the intent and the run snapshot (Placement summary, Intent layer DDL, glossary; schema 64).
-- [#547](https://github.com/BobKerns/analysis/issues/547): the reserved account names include the payout accounts (`dividends`, `investment_interest`, `ordinary_dividends`, `gain_distributions`, `deferred_payouts`, `tax_free_payouts`) (Conventions).
-- [#497](https://github.com/BobKerns/analysis/issues/497): run table `hsa_gain` (an HSA withdrawal's gain over its basis, for a state that taxes HSAs); the reserved account names include `hsa_dividends` and `hsa_gain_distributions` (Placement summary, Ledger DDL, glossary, Conventions; schema 65).
-- [#265](https://github.com/BobKerns/analysis/issues/265): tax character `tax_exempt` (municipal bond interest); the reserved account names include `muni_interest` and `muni_interest__<ST>` (Intent layer DDL, Conventions; schema 66).
-- [#568](https://github.com/BobKerns/analysis/issues/568): a tax jurisdiction also pays back what was paid past the year's tax (Intent layer DDL).
-- [#542](https://github.com/BobKerns/analysis/issues/542): run table `mortgage_balance` (the balance each month's mortgage interest was figured on, for the debt limit) (Placement summary, Ledger DDL, glossary; schema 67).
-- [#586](https://github.com/BobKerns/analysis/issues/586): expense subkind `taxes_local` (Intent layer DDL; schema 68).
-- [#640](https://github.com/BobKerns/analysis/issues/640): `security.no_fetch`, and a blank `security.name` (Intent layer DDL; schema 69).
+- [#507](https://github.com/BobKerns/zabob-retirement/issues/507): table `tax_jurisdiction` (a scenario's `taxes/<name>.csv` files) and `transfer_event.reason_kind` `tax` for its payments, in place of the `tax_accumulator` rule (table of tables, Intent layer DDL, Ledger layer DDL; schema 58).
+- [#432](https://github.com/BobKerns/zabob-retirement/issues/432): `load_warning` keeps the load's warnings with the intent and the run snapshot (Placement summary, Load warnings, glossary; schema 59).
+- [#507](https://github.com/BobKerns/zabob-retirement/issues/507): the tax calculator API renames `tax_year_summary`'s income tax buckets (`<scope>_agi`, `_tax`, `_deduction`, `_ss_benefits`, `_ss_taxable`, `_ltcg_taxed`, `_capital_loss_used`, `_business_net`, `_hobby_disallowed`) and adds `<scope>_ordinary_taxable` (schema 60).
+- [#508](https://github.com/BobKerns/zabob-retirement/issues/508): the local income tax is its own jurisdiction, so `tax_year_summary` has `local_*` buckets in place of `state_local_tax`, and the state's adjustment lines (`state_dividends_as_ordinary`, `state_hsa_addback`, `state_capital_gain_difference`, `state_ss_difference`, `state_credits`); `tax_jurisdiction.upstream` holds the calculator's own when the file leaves it blank (schema 61).
+- [#410](https://github.com/BobKerns/zabob-retirement/issues/410): table `strategy_disabled` keeps a disabled strategy's kind and parameters with the intent and the run snapshot (Placement summary, Intent layer DDL, glossary; schema 62).
+- [#509](https://github.com/BobKerns/zabob-retirement/issues/509): table `residence` (a scenario's `residence.csv`: where the household lives, by date), in the intent and the run snapshot (Placement summary, Intent layer DDL, glossary; schema 63).
+- [#510](https://github.com/BobKerns/zabob-retirement/issues/510): table `tax_source` (the household's tax calculator code), in the intent and the run snapshot (Placement summary, Intent layer DDL, glossary; schema 64).
+- [#547](https://github.com/BobKerns/zabob-retirement/issues/547): the reserved account names include the payout accounts (`dividends`, `investment_interest`, `ordinary_dividends`, `gain_distributions`, `deferred_payouts`, `tax_free_payouts`) (Conventions).
+- [#497](https://github.com/BobKerns/zabob-retirement/issues/497): run table `hsa_gain` (an HSA withdrawal's gain over its basis, for a state that taxes HSAs); the reserved account names include `hsa_dividends` and `hsa_gain_distributions` (Placement summary, Ledger DDL, glossary, Conventions; schema 65).
+- [#265](https://github.com/BobKerns/zabob-retirement/issues/265): tax character `tax_exempt` (municipal bond interest); the reserved account names include `muni_interest` and `muni_interest__<ST>` (Intent layer DDL, Conventions; schema 66).
+- [#568](https://github.com/BobKerns/zabob-retirement/issues/568): a tax jurisdiction also pays back what was paid past the year's tax (Intent layer DDL).
+- [#542](https://github.com/BobKerns/zabob-retirement/issues/542): run table `mortgage_balance` (the balance each month's mortgage interest was figured on, for the debt limit) (Placement summary, Ledger DDL, glossary; schema 67).
+- [#586](https://github.com/BobKerns/zabob-retirement/issues/586): expense subkind `taxes_local` (Intent layer DDL; schema 68).
+- [#640](https://github.com/BobKerns/zabob-retirement/issues/640): `security.no_fetch`, and a blank `security.name` (Intent layer DDL; schema 69).
+- [#274](https://github.com/BobKerns/zabob-retirement/issues/274): `person.kind`, `account.beneficiary_owner`, `account_lot.beneficiary_chain_id`, run table `inheritance`, `transfer_event.reason_kind` `inheritance`, and `balance_by_owner` following owner changes (Intent and ledger DDL, views, glossary; schema 70).

@@ -8,7 +8,7 @@
         }
     ],
     "settings": {
-        "cSpell.configFile": "${workspaceFolder:analysis}/cspell.json",
+        "cSpell.configFile": "${workspaceFolder:retirement}/cspell.json",
         "cSpell.import": ["./cspell.json"],
         "explorerExclude.backup": {},
         "explorerExcludeManager.backup": {},

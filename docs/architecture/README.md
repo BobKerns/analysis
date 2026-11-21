@@ -381,7 +381,7 @@ flowchart TB
 
 ## 4a. Income tax: accumulate, compute, settle
 
-There is no tax accumulator rule (the `tax_accumulator` kind was retired with [#507](https://github.com/BobKerns/analysis/issues/507)). The ledger does the accumulating: each transfer already carries its tax character, and each April the engine sums the year into a read-only TaxYear and asks the calculators. The same prepared year answers every what-if, which is why `fill_bracket`, IRMAA and after-tax net worth agree with the April bill.
+There is no tax accumulator rule (the `tax_accumulator` kind was retired with [#507](https://github.com/BobKerns/zabob-retirement/issues/507)). The ledger does the accumulating: each transfer already carries its tax character, and each April the engine sums the year into a read-only TaxYear and asks the calculators. The same prepared year answers every what-if, which is why `fill_bracket`, IRMAA and after-tax net worth agree with the April bill.
 
 Guides: [How tax is handled](../user-guide.md#3-how-tax-is-handled), [state income tax, state by state](../guides/state-income-tax.md), [itemized deductions](../user-guide.md#49-itemized-deductions), [IRMAA](../user-guide.md#414-medicares-income-surcharge-irmaa).
 
