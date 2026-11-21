@@ -1,3 +1,5 @@
+![Zabob Retirement](../assets/brand/banner.jpg)
+
 # ADR-003: Rule registry, event-kind registry, subkind vocabulary, and CSV schemas
 
 - **Status:** Accepted

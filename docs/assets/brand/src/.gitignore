@@ -1,0 +1,5 @@
+# Intermediates of mute.py and render.js; the committed stream-*.jpg are the masters.
+scene.jpg
+strip.jpg
+*.png
+!host.png

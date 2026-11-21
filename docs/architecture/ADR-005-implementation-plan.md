@@ -1,3 +1,5 @@
+![Zabob Retirement](../assets/brand/banner.jpg)
+
 # [ADR-005](ADR-005-lots-and-per-lot-state.md) implementation plan: lots and per-lot state
 
 Companion to [ADR-005](ADR-005-lots-and-per-lot-state.md). Phases are ordered so each ends with a green test suite and a shippable state. Phase 1 is a pure refactor and must not change any output.

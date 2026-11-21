@@ -1,3 +1,5 @@
+![Zabob Retirement](assets/brand/banner.jpg)
+
 # User Guide: Building and Editing Scenarios
 
 > To read a formatted `.md` file:

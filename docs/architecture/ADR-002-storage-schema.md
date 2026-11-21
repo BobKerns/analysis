@@ -1,3 +1,5 @@
+![Zabob Retirement](../assets/brand/banner.jpg)
+
 # ADR-002: Storage schema for the finance simulator
 
 - **Status:** Accepted

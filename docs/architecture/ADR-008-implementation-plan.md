@@ -1,3 +1,5 @@
+![Zabob Retirement](../assets/brand/banner.jpg)
+
 # [ADR-008](ADR-008-correlated-parameters.md) implementation plan: correlated parameters
 
 **Status: implemented.** Phase 0 (`8f77956`): schema, the `latent_factor` kind, validation, load warnings. Phase 1 (`6c2fe37`): `correlation.py` and `value_at`. Phase 2 (`912c27e`): `resolve_member` integration and provenance. Phase 3: CLI authoring, the parameters table, and docs.

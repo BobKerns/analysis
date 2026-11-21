@@ -1,3 +1,5 @@
+![Zabob Retirement](../assets/brand/banner.jpg)
+
 # [ADR-007](ADR-007-sensitivity-analysis.md) implementation plan: sensitivity analysis
 
 **Status: implemented.** All eight phases have shipped:

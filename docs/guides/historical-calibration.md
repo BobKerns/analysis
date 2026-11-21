@@ -1,3 +1,5 @@
+![Zabob Retirement](../assets/brand/banner.jpg)
+
 # Historical calibration: what numbers to put in
 
 > To read a formatted `.md` file:

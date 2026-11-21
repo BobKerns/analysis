@@ -1,3 +1,5 @@
+![Zabob Retirement: a simulator for your future. Free, open source, runs on your own computer.](docs/assets/brand/hero.jpg)
+
 # Zabob Retirement
 
 *A simulator for your future.* Zabob Retirement is a retirement simulator for

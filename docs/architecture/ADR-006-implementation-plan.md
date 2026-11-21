@@ -1,3 +1,5 @@
+![Zabob Retirement](../assets/brand/banner.jpg)
+
 # [ADR-006](ADR-006-ensemble-scenarios.md) implementation plan: ensemble scenarios
 
 **Status: implemented.** All five phases below have shipped: `calendar.csv` variation/validation (Phase 0, `src/zabob/retirement/sim/loader.py`, `src/zabob/retirement/sim/engine.py`), draws (Phase 1, `src/zabob/retirement/sim/distributions.py`), member resolution (Phase 2, `src/zabob/retirement/sim/ensemble.py`'s `resolve_member`), `sim run <recipe> --ensemble-size N`'s ensemble-generation path plus `sim ensemble create`/`sim calendar add` (Phase 3, `src/zabob/retirement/sim/cli.py`), and aggregation/reporting via `sim ensemble summary` and `notebooks/ensemble.ipynb` (Phase 4, `src/zabob/retirement/sim/ensemble.py`, `src/zabob/retirement/sim/notebook_ui/ensemble_widgets.py`). The phase breakdown below is kept as a record of the design sequencing, not a pending TODO list.
