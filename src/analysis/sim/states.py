@@ -19,7 +19,7 @@ NOT_SUPPORTED = "Not supported"  # a tax code of its own the model can't express
 # Puerto Rico and American Samoa: a code of their own, and the federal tax
 # reaches only the income from outside them, so neither the federal rule
 # nor state tables can stand in (#491).
-OWN_TAX_CODE_ISSUE = "https://github.com/BobKerns/analysis/issues/570"
+OWN_TAX_CODE_ISSUE = "https://github.com/BobKerns/zabob-retirement/issues/570"
 
 # The series a state tax reads while the household lives in a state with
 # no income tax: templates/aux/ ships it as a 0% table.

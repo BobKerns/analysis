@@ -11,7 +11,7 @@ summary = """
 証券会社のサイトからは口座ごとの保有もダウンロードできるので、計画に数字を打ち込むのをやめます。\
 レポートを二つエクスポートし、ダウンロードを二つ保存して、外の名前がどの口座、ロット、カテゴリーにあたるかを一度だけ答えると、\
 その後の取り込みはコマンド一つです。ガイド(英語): \
-https://github.com/BobKerns/analysis/blob/main/docs/guides/importing-data.md"""
+https://github.com/BobKerns/zabob-retirement/blob/main/docs/guides/importing-data.md"""
 contents = [
   "名前を一度だけ対応させる",
   "レポートとダウンロード",

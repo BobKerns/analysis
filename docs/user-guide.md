@@ -1126,7 +1126,7 @@ are refused, since they would tax the same income twice. Each has local breaks f
 income earned there, such as the Northern Mariana Islands' rebate, which a
 household retiring from the mainland seldom has. Puerto Rico and American
 Samoa have tax codes of their own, which the simulator can't model yet
-([#570](https://github.com/BobKerns/analysis/issues/570)), so a move to
+([#570](https://github.com/BobKerns/zabob-retirement/issues/570)), so a move to
 either is refused.
 
 Any other aux table can be swapped with a calendar row, `swap_aux_table`: a
@@ -1620,7 +1620,7 @@ taxable wages. Self-employment tax on a
 business's profit counts a person's wages toward their own Social Security
 wage base, so wages entered under the wrong person, or as take-home pay with
 no tax character, make it come out wrong
-([#623](https://github.com/BobKerns/analysis/issues/623)).
+([#623](https://github.com/BobKerns/zabob-retirement/issues/623)).
 
 ### 4.14 Medicare's income surcharge (IRMAA)
 
