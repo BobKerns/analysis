@@ -316,7 +316,7 @@ def _format_warning(
 
 @click.group(name="sim")
 def sim_group_command() -> None:
-    """Scenario-based finance simulator."""
+    """Zabob Retirement: a scenario-based retirement simulator."""
     # setattr: ty won't assign a function to a module attribute declared as a def.
     setattr(warnings, "formatwarning", _format_warning)  # noqa: B010
 

@@ -1,10 +1,11 @@
-# Financial Analysis and Planning
+# Zabob Retirement
 
-A retirement simulator for exploring your options and possible futures, at
-home, at your own pace, and for free. A session with a financial planner
-typically gives you one projection from one set of assumptions; here you can
-compare what-if scenarios side by side, and run hundreds of simulated futures
-to see the range of outcomes, not just one number.
+*A simulator for your future.* Zabob Retirement is a retirement simulator for
+exploring your options and possible futures, at home, at your own pace, and
+for free. A session with a financial planner typically gives you one
+projection from one set of assumptions; here you can compare what-if
+scenarios side by side, and run hundreds of simulated futures to see the
+range of outcomes, not just one number.
 
 - **Guidelines:** check a plan against the 4% rule, or let Guyton-Klinger
   guardrails adjust your spending

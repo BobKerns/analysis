@@ -72,7 +72,7 @@ def code_stamps() -> CodeStamps:
     repo = _open_repo(Path(analysis.__file__).parent)
     if repo is None:
         try:
-            v = _pkg_version("analysis")
+            v = _pkg_version("zabob-retirement")
         except PackageNotFoundError:
             v = "unknown"
         return CodeStamps(version=v, dirty=False, repo_path=None)

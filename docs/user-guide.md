@@ -4,7 +4,7 @@
 > - In Jupyter: right-click on it and select `Open With / Markdown Preview`
 > - In VSCode: Command `Markdown Preview Enhanced: Open Preview` or ⌘⇧V
 
-This guide shows how to make common changes to a scenario, step by step, with
+This guide shows how to make common changes to a Zabob Retirement scenario, step by step, with
 real examples, and how to look at what a run produced. It assumes you already
 have a data repo. If you don't, start one with `sim init` in the code checkout
 (it is made at `data/shared`; `sim init DIR` puts it elsewhere and links it there). It asks who you

@@ -1,4 +1,4 @@
-# Setup
+# Setting up Zabob Retirement
 
 > To read a formatted `.md` file:
 > - In Jupyter: right-click on it and select `Open With / Markdown Preview`

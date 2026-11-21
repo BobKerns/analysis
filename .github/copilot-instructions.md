@@ -1,7 +1,7 @@
 # Working in this repository
 
-Personal finance analysis and planning: an Amazon expense categorizer and a
-scenario-based finance simulator, usable from both a CLI and Jupyter notebooks.
+Zabob Retirement, a retirement simulator: a scenario-based finance simulator
+and an Amazon expense categorizer, usable from both a CLI and Jupyter notebooks.
 Python 3.14+, `uv`, `src/` layout, single top-level project (no nested repos).
 
 ## Two repositories, one workflow
