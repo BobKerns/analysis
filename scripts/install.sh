@@ -1,7 +1,7 @@
 #!/bin/sh
 # Install Zabob Retirement with one line, no git knowledge needed (#308):
 #
-#   curl -fsSL https://raw.githubusercontent.com/BobKerns/analysis/main/scripts/install.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/BobKerns/zabob-retirement/main/scripts/install.sh | sh
 #
 # Gets git if it's missing, clones the code into ~/retirement/analysis (or
 # updates the clone already there), runs scripts/setup.sh, and links the data
@@ -22,7 +22,7 @@
 # input, so questions are read from /dev/tty, never from stdin.
 set -eu
 
-REPO_URL=${ANALYSIS_REPO_URL:-https://github.com/BobKerns/analysis.git}
+REPO_URL=${ANALYSIS_REPO_URL:-https://github.com/BobKerns/zabob-retirement.git}
 
 say() { printf '%s\n' "$*"; }
 die() {

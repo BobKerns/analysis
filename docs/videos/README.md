@@ -1,6 +1,6 @@
 # Instructional videos
 
-How the videos for [#366](https://github.com/BobKerns/analysis/issues/366) are
+How the videos for [#366](https://github.com/BobKerns/zabob-retirement/issues/366) are
 made. Everything a video needs is committed here as text: its script, the
 terminal sessions it records, its slides and the shared look. The pictures
 and sound are rebuilt from those, so a CLI change means re-running a build,

@@ -98,7 +98,7 @@ an issue to close, or a row you write yourself.
 | Arkansas | Partial | Low-income tax tables |
 | California | Shipped | |
 | Colorado | Partial | Social Security sharing the pension subtraction's cap from 55 to 64, over the income |
-| Connecticut | Partial | Benefit recapture ([#549](https://github.com/BobKerns/analysis/issues/549)); personal tax credit; Social Security's 25% cap |
+| Connecticut | Partial | Benefit recapture ([#549](https://github.com/BobKerns/zabob-retirement/issues/549)); personal tax credit; Social Security's 25% cap |
 | Delaware | Tables needed | |
 | District of Columbia | Shipped | Extra deduction when blind |
 | Florida | No tax | |
@@ -124,7 +124,7 @@ an issue to close, or a row you write yourself.
 | New Hampshire | No tax | |
 | New Jersey | Tables needed | |
 | New Mexico | Tables needed | |
-| New York | Partial | Benefit recapture ([#549](https://github.com/BobKerns/analysis/issues/549)); Yonkers surcharge (a share of state tax) |
+| New York | Partial | Benefit recapture ([#549](https://github.com/BobKerns/zabob-retirement/issues/549)); Yonkers surcharge (a share of state tax) |
 | North Carolina | Shipped | Exclusion for government pensions vested before August 1989 (a row you write) |
 | North Dakota | Tables needed | |
 | Ohio | Tables needed | |
@@ -146,10 +146,10 @@ an issue to close, or a row you write yourself.
 
 | Territory | Status | Not modeled |
 | --- | --- | --- |
-| American Samoa | Not supported | Own tax code; local income exempt from federal tax ([#570](https://github.com/BobKerns/analysis/issues/570)) |
+| American Samoa | Not supported | Own tax code; local income exempt from federal tax ([#570](https://github.com/BobKerns/zabob-retirement/issues/570)) |
 | Guam | Federal rule | |
 | Northern Mariana Islands | Federal rule | Rebate of the tax on CNMI-source income; wage tax |
-| Puerto Rico | Not supported | Own tax code; local income exempt from federal tax ([#570](https://github.com/BobKerns/analysis/issues/570)) |
+| Puerto Rico | Not supported | Own tax code; local income exempt from federal tax ([#570](https://github.com/BobKerns/zabob-retirement/issues/570)) |
 | U.S. Virgin Islands | Federal rule | Economic Development Commission incentives |
 
 ## Directory Structure
@@ -167,7 +167,7 @@ This repository is a single top-level Python project. There are no nested repos 
 ## Setup
 To install without git knowledge, paste this into a terminal:
 ```sh
-curl -fsSL https://raw.githubusercontent.com/BobKerns/analysis/main/scripts/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/BobKerns/zabob-retirement/main/scripts/install.sh | sh
 ```
 In a clone, run the setup script (idempotent — safe to re-run):
 ```sh
